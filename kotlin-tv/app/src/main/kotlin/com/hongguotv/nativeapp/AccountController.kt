@@ -70,6 +70,15 @@ class AccountController(private val activity: Activity,private val play: (CloudP
     private var lastProgress: Pair<CloudProgress,Int>?=null
     private var draining=false
     private var dialog: AlertDialog?=null
+    var onHistoryChanged: (() -> Unit)?=null
+    val signedIn get()=credentials!=null
+    val accountLabel get()=profile?.nickname ?: if(signedIn) "红果账号" else "未登录"
+    val historyStatus get()=status
+    val historyLoading get()=busy
+    val historyScope get()=generation
+    fun historyRows(): List<CloudProgress> = if(signedIn) history.toList() else emptyList()
+    fun refreshHistory() { refresh(false) }
+    private fun changed() { onHistoryChanged?.invoke() }
     val showing get() = dialog?.isShowing==true
     init {
         worker.execute {
@@ -78,6 +87,7 @@ class AccountController(private val activity: Activity,private val play: (CloudP
                 if(closed) return@post
                 credentials=saved.getOrNull()
                 status=if(credentials!=null) "登录态已恢复，打开账号页面刷新云端记录" else if(saved.isFailure) "登录态无法读取，请重新登录" else "未登录"
+                changed()
                 if(credentials!=null) refresh(false)
             }
         }
@@ -148,8 +158,8 @@ class AccountController(private val activity: Activity,private val play: (CloudP
     }
     private fun acceptAccount(next: AccountCredentials,account: CloudProfile) {
         credentials=next; profile=account; history=emptyList(); generation++
-        status="已登录，正在读取云端记录"; lastUpload=0; lastEpisode=""; lastProgress=null
-        toast("已登录 ${account.nickname}"); refresh(true)
+        status="已登录，正在读取云端记录"; lastUpload=0; lastEpisode=""; lastProgress=null; pending=null; draining=false
+        changed(); toast("已登录 ${account.nickname}"); refresh(true)
     }
     private fun qrLogin() {
         val login=WebLogin(http)
@@ -236,12 +246,16 @@ class AccountController(private val activity: Activity,private val play: (CloudP
     }
     private fun refresh(showResult: Boolean) {
         val account=credentials ?: return
+        if(busy || closed) return
+        status="正在读取账号观看历史…"
         task({ client.profile(account) to client.history(account) },{ (user,rows) ->
             profile=user
-            history=(rows+history).groupBy { it.series.id }.values.map { group -> group.maxBy { it.updatedAt } }.sortedByDescending { it.updatedAt }.take(50)
+            history=rows.distinctBy { it.series.id }.sortedByDescending { it.updatedAt }.take(50)
             status="已读取 ${rows.size} 部云端观看记录"
+            changed()
             if(showResult) { toast(status); show() }
-        })
+        },{ changed(); toast(safeError(it)) })
+        changed()
     }
     private fun showHistory() {
         if(history.isEmpty()) { toast("暂无已读取的云端记录，请先刷新"); return }
@@ -252,7 +266,7 @@ class AccountController(private val activity: Activity,private val play: (CloudP
     }
     private fun logout() {
         generation++; busy=false; credentials=null; profile=null; history=emptyList(); pending=null; lastProgress=null; draining=false
-        http.dispatcher.cancelAll(); status="已退出账号，自动同步已停止"
+        http.dispatcher.cancelAll(); status="已退出账号，自动同步已停止"; changed()
         worker.execute { val result=runCatching { store.clear() }; main.post { toast(if(result.isSuccess) status else "清除登录态失败，请重试退出") } }
     }
     fun upload(progress: CloudProgress,episodes: Int,force: Boolean) {
@@ -261,6 +275,7 @@ class AccountController(private val activity: Activity,private val play: (CloudP
         if(!force && progress.episodeId==lastEpisode && now-lastUpload<30000) return
         lastUpload=now; lastEpisode=progress.episodeId
         history=(listOf(progress)+history.filterNot { it.series.id==progress.series.id }).take(50)
+        changed()
         pending=progress to episodes
         lastProgress=pending
         if(draining) return
@@ -282,6 +297,7 @@ class AccountController(private val activity: Activity,private val play: (CloudP
     }
     fun destroy() {
         val account=credentials; val final=lastProgress
+        onHistoryChanged=null
         closed=true; generation++; pending=null; dialog?.dismiss(); http.dispatcher.cancelAll()
         worker.execute {
             if(account!=null && final!=null) runCatching { client.upload(account,final.first,final.second) }
