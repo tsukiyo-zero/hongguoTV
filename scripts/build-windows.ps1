@@ -108,11 +108,28 @@ New-Item -ItemType Directory -Force -Path $outputs | Out-Null
 if (-not $NoZip) {
     $zip = Join-Path $outputs "GuoyingTV-windows-x64-$version.zip"
     if (Test-Path $zip) { Remove-Item $zip -Force }
-    # ZipFile is used instead of Compress-Archive: the cmdlet chokes on this tree
-    # ("could not find the end of central directory") and is far slower.
+    # Written entry by entry: Compress-Archive is slow here, and
+    # ZipFile.CreateFromDirectory on .NET Framework stores backslash separators.
+    Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    [System.IO.Compression.ZipFile]::CreateFromDirectory(
-        $app, $zip, [System.IO.Compression.CompressionLevel]::Optimal, $true)
+    $stream = [System.IO.File]::Create($zip)
+    try {
+        $archive = New-Object System.IO.Compression.ZipArchive(
+            $stream, [System.IO.Compression.ZipArchiveMode]::Create)
+        try {
+            foreach ($file in Get-ChildItem $app -Recurse -File) {
+                $relative = $file.FullName.Substring($app.Length + 1).Replace("\", "/")
+                $entry = $archive.CreateEntry(
+                    "GuoyingTV/$relative", [System.IO.Compression.CompressionLevel]::Optimal)
+                $entry.LastWriteTime = $file.LastWriteTime
+                $target = $entry.Open()
+                try {
+                    $source = [System.IO.File]::OpenRead($file.FullName)
+                    try { $source.CopyTo($target) } finally { $source.Dispose() }
+                } finally { $target.Dispose() }
+            }
+        } finally { $archive.Dispose() }
+    } finally { $stream.Dispose() }
     $size = [math]::Round((Get-Item $zip).Length / 1MB, 1)
     Write-Host "Archive: $zip ($size MB)"
 }
