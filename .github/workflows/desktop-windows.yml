@@ -1,0 +1,88 @@
+name: Build Windows portable client
+
+on:
+  push:
+    branches: [main, 'feature-windows-client']
+    paths:
+      - 'desktop-windows/**'
+      - 'desktop-mac/backend/**'
+      - 'kotlin-tv/core/**'
+      - 'scripts/build-windows.ps1'
+      - '.github/workflows/desktop-windows.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'desktop-windows/**'
+      - 'desktop-mac/backend/**'
+      - 'kotlin-tv/core/**'
+      - 'scripts/build-windows.ps1'
+      - '.github/workflows/desktop-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    # The portable ZIP is an app-image only (no MSI), so WiX is not needed.
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      # :core:test has a Windows-only failure in AppUpdatesTest (verified download rename,
+      # tracked separately), so CI only gates on the Windows client's own tests.
+      - name: Unit tests
+        shell: cmd
+        run: kotlin-tv\gradlew.bat -p desktop-windows :app:test --console=plain
+      - name: Download VLC runtime
+        shell: pwsh
+        run: |
+          $url = 'https://get.videolan.org/vlc/3.0.21/win64/vlc-3.0.21-win64.zip'
+          $zip = Join-Path $env:RUNNER_TEMP 'vlc-3.0.21-win64.zip'
+          curl.exe -sSL --retry 3 --retry-delay 5 -o $zip $url
+          if (-not (Test-Path $zip)) { throw "VLC download failed: $url" }
+          $size = [math]::Round((Get-Item $zip).Length / 1MB, 1)
+          if ($size -lt 60) { throw "VLC archive looks truncated: $size MB" }
+          Write-Host "VLC archive: $size MB"
+          "vlc_zip=$zip" >> $env:GITHUB_OUTPUT
+        id: vlc
+      - name: Build portable ZIP
+        shell: cmd
+        run: powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -VlcZip "${{ steps.vlc.outputs.vlc_zip }}"
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $line = Select-String -Path desktop-windows\gradle.properties -Pattern '^guoyingtv\.version=(.+)$'
+          if (-not $line) { throw 'guoyingtv.version is missing from desktop-windows/gradle.properties.' }
+          "version=$($line.Matches[0].Groups[1].Value.Trim())" >> $env:GITHUB_OUTPUT
+      - name: Report artifact sizes
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem outputs\windows\*.zip | Select-Object -First 1
+          if (-not $zip) { throw 'The portable ZIP was not produced.' }
+          Write-Host ("Archive: {0} ({1} MB)" -f $zip.FullName, [math]::Round($zip.Length / 1MB, 1))
+          $app = 'desktop-windows\app\build\compose\binaries\main\app\GuoyingTV'
+          Get-ChildItem $app -Recurse -File |
+            Group-Object { $_.Directory.Name } |
+            ForEach-Object { [pscustomobject]@{ Folder = $_.Name; MB = [math]::Round((($_.Group | Measure-Object Length -Sum).Sum) / 1MB, 1) } } |
+            Sort-Object MB -Descending |
+            Format-Table -AutoSize |
+            Out-String |
+            Write-Host
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: guoyingtv-windows-x64-${{ steps.version.outputs.version }}
+          path: outputs/windows/*.zip
+          if-no-files-found: error
+          retention-days: 14
+          # The artifact service always zips again; storing the ZIP as-is avoids a slow second pass.
+          compression-level: 0

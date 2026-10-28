@@ -190,7 +190,7 @@ Mac 与 TV **分别管理版本号和更新清单**。Mac 固定读取 GitCode �
 - 本机收藏与观看记录；红果扫码登录后可查看账户历史、收藏、预约并同步播放进度。
 - 登录态用 Windows DPAPI 绑定当前用户加密保存在本机。
 
-Windows 与 Mac 共用同一份本机 bridge 源码（`desktop-mac/backend`），UI 只通过带随机令牌的 127.0.0.1 接口取数据。**弹幕画面叠加**尚未实现（libVLC 使用独立视频表面，Compose 无法在其上绘制），也暂未接入自动更新；当前仅在本地构建便携 ZIP，尚未发布正式下载包。
+Windows 与 Mac 共用同一份本机 bridge 源码（`desktop-mac/backend`），UI 只通过带随机令牌的 127.0.0.1 接口取数据。**弹幕画面叠加**尚未实现（libVLC 使用独立视频表面，Compose 无法在其上绘制），也暂未接入自动更新；便携 ZIP 可用本地脚本或 GitHub Actions 构建产物获得，尚未发布正式下载包。
 
 ## 维护资料
 

@@ -59,6 +59,18 @@ powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -VlcZip .\vlc
 
 自行编译运行但没有安装 VLC 时，可在“我的 → 播放器”里填写 VLC 目录后点“应用”。
 
+### GitHub Actions 构建
+
+`Build Windows portable client` 工作流在 `windows-latest` 上构建便携 ZIP：改动涉及
+`desktop-windows/`、`desktop-mac/backend/`、`kotlin-tv/core/` 或 `scripts/build-windows.ps1`
+时自动触发，也可在 Actions 页面手动 `Run workflow`。流程为运行 `:app:test`、下载 VLC 3.0.21
+win64 运行库、执行本节的打包脚本，最后上传名为 `guoyingtv-windows-x64-<版本>` 的构建产物
+（保留 14 天）。
+
+- 只产出构建产物，不发 Release；正式分发仍以本地打包和发布流程为准。
+- 产物未签名，首次运行同样会出现 SmartScreen 提示。
+- `:core:test` 有一个仅在 Windows 上失败的 `AppUpdatesTest` 用例，暂未纳入该工作流的检查。
+
 ### 打包实现备注
 
 - `jpackage` 生成的运行时使用 `--strip-native-commands`，不含 `runtime\bin\java.exe`；Gradle 的
