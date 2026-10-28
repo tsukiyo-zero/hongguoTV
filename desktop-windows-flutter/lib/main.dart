@@ -50,18 +50,28 @@ class _GuoyingAppState extends State<GuoyingApp> with WindowListener {
   AppSession? _session;
   String? _error;
   bool _starting = true;
+  late String _themeMode = widget.store.themeMode;
 
   @override
   void initState() {
     super.initState();
     windowManager.addListener(this);
+    widget.store.addListener(_onStoreChanged);
     _start();
   }
 
   @override
   void dispose() {
+    widget.store.removeListener(_onStoreChanged);
     windowManager.removeListener(this);
     super.dispose();
+  }
+
+  /// Watch progress saves notify the store every few seconds; rebuilding the whole
+  /// MaterialApp for those would be wasteful, so only theme changes reach this level.
+  void _onStoreChanged() {
+    if (_themeMode == widget.store.themeMode) return;
+    setState(() => _themeMode = widget.store.themeMode);
   }
 
   Future<void> _start() async {
@@ -128,19 +138,16 @@ class _GuoyingAppState extends State<GuoyingApp> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: widget.store,
-      builder: (context, _) => MaterialApp(
-        title: AppInfo.name,
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.light,
-        darkTheme: AppTheme.dark,
-        themeMode: AppTheme.mode(widget.store.themeMode),
-        locale: const Locale('zh', 'CN'),
-        supportedLocales: const [Locale('zh', 'CN')],
-        localizationsDelegates: GlobalMaterialLocalizations.delegates,
-        home: _home(),
-      ),
+    return MaterialApp(
+      title: AppInfo.name,
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.light,
+      darkTheme: AppTheme.dark,
+      themeMode: AppTheme.mode(_themeMode),
+      locale: const Locale('zh', 'CN'),
+      supportedLocales: const [Locale('zh', 'CN')],
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
+      home: _home(),
     );
   }
 
