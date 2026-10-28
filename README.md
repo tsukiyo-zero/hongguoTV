@@ -179,18 +179,14 @@ Mac 与 TV **分别管理版本号和更新清单**。Mac 固定读取 GitCode �
 
 ## Windows 客户端
 
-支持 **Windows 10/11 x64**，以便携 ZIP 分发：解压后运行 `GuoyingTV.exe`（或 `GuoyingTV.cmd`），自带 Java 运行环境与 VLC 播放库，无需安装 Java 或 VLC。
+支持 **Windows 10/11 x64**，以便携 ZIP 分发：解压后运行客户端程序，自带运行环境与播放库，无需安装 Java 或 VLC。
 
-[Windows 构建与使用说明](desktop-windows/README.md)
+- **Flutter 重构版（验收中）**：`desktop-windows-flutter/`。界面参照「红果鉴」的浅色 / 深色主题，播放改用 media_kit（libmpv），新增弹幕画面叠加；[构建与使用说明](desktop-windows-flutter/README.md)。尚未发布正式下载包，可通过 GitHub Actions 构件或本地脚本构建。
+- **Compose 版（当前正式分发的回退版本）**：`desktop-windows/`。使用 Compose Desktop 与 libVLC；[构建与使用说明](desktop-windows/README.md)。待 Flutter 版人工验收后再切换。
 
-- 界面使用 Compose Desktop，播放使用 libVLC；内容解析复用 TV 端内核。
-- 首页推荐试播、搜索、找剧（漫剧 / 真人剧 / AI 剧与题材筛选）、热播榜、相关作品。
-- 详情页选集、480P/720P/1080P、倍速、自动下一集与断点续播。
-- 本集评论分页加载与整剧剧评节选，可筛选、排序、复制链接；发送和回复尚未接入。
-- 本机收藏与观看记录；红果扫码登录后可查看账户历史、收藏、预约并同步播放进度。
-- 登录态用 Windows DPAPI 绑定当前用户加密保存在本机。
+两版功能一致：首页推荐、搜索、找剧（漫剧 / 真人剧 / AI 剧与题材筛选）、热播榜、相关作品、详情选集、480P/720P/1080P、倍速、自动下一集、断点续播、本机收藏与观看记录；红果扫码登录后可查看账户历史、收藏、预约并同步播放进度。登录态用 Windows DPAPI 绑定当前用户加密保存在本机。
 
-Windows 与 Mac 共用同一份本机 bridge 源码（`desktop-mac/backend`），UI 只通过带随机令牌的 127.0.0.1 接口取数据。**弹幕画面叠加**尚未实现（libVLC 使用独立视频表面，Compose 无法在其上绘制），也暂未接入自动更新；便携 ZIP 可用本地脚本或 GitHub Actions 构建产物获得，尚未发布正式下载包。
+Windows 与 Mac 共用同一份本机 bridge 源码（`desktop-mac/backend`），UI 只通过带随机令牌的 127.0.0.1 接口取数据。Compose 版受 libVLC 独立视频表面限制无法叠加弹幕，Flutter 版已实现；两版均未接入自动更新。
 
 ## 维护资料
 

@@ -1,0 +1,30 @@
+name: guoyingtv_windows
+description: "果映 TV Windows 桌面客户端（Flutter + media_kit）"
+publish_to: 'none'
+
+# Windows 客户端版本：与 scripts/release-windows.py 及打包脚本同步。
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  media_kit_libs_windows_video: ^1.0.11
+  window_manager: ^0.5.2
+  http: ^1.6.0
+  win32: ^6.4.0
+  ffi: ^2.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
