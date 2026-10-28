@@ -1,6 +1,6 @@
 # 果映 TV · hongguoTV
 
-非官方红果短剧客户端，主要维护 Android TV 版，同时提供原生 Mac 客户端 hongguoMac。
+非官方红果短剧客户端，主要维护 Android TV 版，同时提供原生 Mac 客户端 hongguoMac 与 Windows 客户端。
 
 Android TV 使用 `kotlin-tv/` 中的 Kotlin 原生客户端，支持 **Android 6.0 及以上**。安装一个 APK 即可使用，无需部署 Node 或 Docker。Mac 客户端独立构建、独立更新。
 
@@ -176,6 +176,21 @@ Mac 登录态保存在本机钥匙串，不随安装包分发。当前使用临�
 Mac 与 TV **分别管理版本号和更新清单**。Mac 固定读取 GitCode 同仓库 `mac-stable` Release 中的 `mac-update.json`；每次发布上传新 ZIP 并替换该清单，保持标签不变，**不要将 Mac Release 设为 Latest／最新版**，最新版保留给 TV。Mac 目前下载并校验更新包后，需要手动解压替换应用。
 
 已验证的 Mac 版本纳入 `main`。后续 Mac 开发继续在长期分支 **`feature-mac-client`** 进行，测试通过后按需通过 PR 合并到 `main`，不随每个 Mac 功能另开分支。TV 仍是主要维护版本，Mac 源码位于 `desktop-mac/`。
+
+## Windows 客户端
+
+支持 **Windows 10/11 x64**，以便携 ZIP 分发：解压后运行 `GuoyingTV.exe`（或 `GuoyingTV.cmd`），自带 Java 运行环境与 VLC 播放库，无需安装 Java 或 VLC。
+
+[Windows 构建与使用说明](desktop-windows/README.md)
+
+- 界面使用 Compose Desktop，播放使用 libVLC；内容解析复用 TV 端内核。
+- 首页推荐试播、搜索、找剧（漫剧 / 真人剧 / AI 剧与题材筛选）、热播榜、相关作品。
+- 详情页选集、480P/720P/1080P、倍速、自动下一集与断点续播。
+- 本集评论分页加载与整剧剧评节选，可筛选、排序、复制链接；发送和回复尚未接入。
+- 本机收藏与观看记录；红果扫码登录后可查看账户历史、收藏、预约并同步播放进度。
+- 登录态用 Windows DPAPI 绑定当前用户加密保存在本机。
+
+Windows 与 Mac 共用同一份本机 bridge 源码（`desktop-mac/backend`），UI 只通过带随机令牌的 127.0.0.1 接口取数据。**弹幕画面叠加**尚未实现（libVLC 使用独立视频表面，Compose 无法在其上绘制），也暂未接入自动更新；当前仅在本地构建便携 ZIP，尚未发布正式下载包。
 
 ## 维护资料
 
