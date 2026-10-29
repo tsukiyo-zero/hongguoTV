@@ -2,6 +2,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -314,7 +315,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
       controller: _controller,
       fit: BoxFit.contain,
       controls: (state) => _danmakuEnabled
-          ? DanmakuLayer(comments: _danmaku, positionMs: _position.inMilliseconds)
+          ? DanmakuLayer(
+              comments: _danmaku,
+              positionMs: _position.inMilliseconds,
+              playing: _playing,
+            )
           : const SizedBox.shrink(),
     ),
   );
@@ -749,17 +754,74 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
 /// Two-lane danmaku layer drawn above the video surface. Entries travel right to left over
 /// 8 seconds starting at their timestamp.
-class DanmakuLayer extends StatelessWidget {
-  const DanmakuLayer({super.key, required this.comments, required this.positionMs});
+///
+/// libmpv reports `time-pos` only a few times per second, so a purely
+/// position-driven layer would visibly stutter. The ticker extrapolates between player
+/// updates using a local clock, and re-anchors whenever a new position arrives.
+class DanmakuLayer extends StatefulWidget {
+  const DanmakuLayer({
+    super.key,
+    required this.comments,
+    required this.positionMs,
+    required this.playing,
+  });
 
   final List<TimedComment> comments;
   final int positionMs;
+  final bool playing;
 
-  static const _travelMs = 8000;
+  static const travelMs = 8000;
+
+  @override
+  State<DanmakuLayer> createState() => _DanmakuLayerState();
+}
+
+class _DanmakuLayerState extends State<DanmakuLayer> with SingleTickerProviderStateMixin {
+  late final Ticker _ticker;
+  int _anchorMs = 0;
+  int _anchoredAt = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _sync();
+    _ticker = createTicker((_) {
+      if (widget.playing) setState(() {});
+    });
+    _ticker.muted = !widget.playing;
+    _ticker.start();
+  }
+
+  @override
+  void didUpdateWidget(DanmakuLayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.positionMs != oldWidget.positionMs) _sync();
+    _ticker.muted = !widget.playing;
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    super.dispose();
+  }
+
+  void _sync() {
+    _anchorMs = widget.positionMs;
+    _anchoredAt = DateTime.now().millisecondsSinceEpoch;
+  }
+
+  int get _now {
+    if (!widget.playing) return widget.positionMs;
+    // Never extrapolate more than 600 ms past the last real update: a stalled or seeked
+    // player then resyncs on the next update instead of drifting.
+    final drift = DateTime.now().millisecondsSinceEpoch - _anchoredAt;
+    return _anchorMs + (drift > 600 ? 600 : drift);
+  }
 
   @override
   Widget build(BuildContext context) {
-    if (comments.isEmpty) return const SizedBox.shrink();
+    if (widget.comments.isEmpty) return const SizedBox.shrink();
+    final positionMs = _now;
     return IgnorePointer(
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -767,11 +829,11 @@ class DanmakuLayer extends StatelessWidget {
           const lanes = 2;
           final laneHeight = 28.0;
           final visible = <Widget>[];
-          for (var index = 0; index < comments.length; index++) {
-            final item = comments[index];
+          for (var index = 0; index < widget.comments.length; index++) {
+            final item = widget.comments[index];
             final elapsed = positionMs - item.timeMs;
-            if (elapsed < 0 || elapsed > _travelMs) continue;
-            final progress = elapsed / _travelMs;
+            if (elapsed < 0 || elapsed > DanmakuLayer.travelMs) continue;
+            final progress = elapsed / DanmakuLayer.travelMs;
             final x = width - (width + 320) * progress;
             final lane = index % lanes;
             visible.add(

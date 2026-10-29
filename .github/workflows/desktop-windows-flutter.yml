@@ -54,8 +54,23 @@ jobs:
       - name: Build portable ZIP
         shell: cmd
         run: powershell -ExecutionPolicy Bypass -File scripts\build-windows-flutter.ps1
-      # The script mirrors Gradle/Flutter/jlink output into build.log; keep it even when
-      # the build fails so the failure can be diagnosed without the Actions log.
+      # The script mirrors Gradle/Flutter/jlink output into build.log. Annotations are the only
+      # CI output readable without repository authentication, so surface the tail as errors.
+      - name: Report build failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $log = 'outputs/windows-flutter/build.log'
+          if (-not (Test-Path $log)) { Write-Host '::error::build.log was not produced'; exit 0 }
+          $lines = Get-Content $log
+          $interesting = $lines | Where-Object { $_ -match '(?i)error|failed|exception|cannot|not found|denied' } | Select-Object -Last 8
+          if (-not $interesting) { $interesting = $lines | Select-Object -Last 8 }
+          $count = 0
+          foreach ($line in $interesting) {
+            if ($count -ge 9) { break }
+            Write-Host "::error::$line"
+            $count++
+          }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

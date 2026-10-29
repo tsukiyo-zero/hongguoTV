@@ -216,7 +216,12 @@ void _writeAtomically(File file, List<int> bytes) {
 /// DPAPI-encrypted QR session. The file alone is useless on another Windows account or PC,
 /// which matches the Compose client's `session.bin`.
 abstract final class SecretStore {
-  static File get _file => File('${AppDirs.data.path}${Platform.pathSeparator}session.bin');
+  /// Test seam: lets the unit test use a temporary directory instead of `%APPDATA%`.
+  @visibleForTesting
+  static File? debugFile;
+
+  static File get _file =>
+      debugFile ?? File('${AppDirs.data.path}${Platform.pathSeparator}session.bin');
 
   static String? load() {
     final file = _file;
