@@ -54,6 +54,15 @@ jobs:
       - name: Build portable ZIP
         shell: cmd
         run: powershell -ExecutionPolicy Bypass -File scripts\build-windows-flutter.ps1
+      # The script mirrors Gradle/Flutter/jlink output into build.log; keep it even when
+      # the build fails so the failure can be diagnosed without the Actions log.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: windows-flutter-build-log
+          path: outputs/windows-flutter/build.log
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Read version
         id: version
         shell: pwsh

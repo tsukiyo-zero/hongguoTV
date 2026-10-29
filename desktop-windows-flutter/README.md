@@ -51,6 +51,9 @@ powershell -ExecutionPolicy Bypass -File scripts\build-windows-flutter.ps1
 
 不需要 VLC：旧 Compose 版的 `vlc\` 目录（约 136 MB）在 Flutter 版中已被 libmpv 取代。
 
+应用图标已提交在 `windows/runner/resources/app_icon.ico`（16–256 像素共 7 个尺寸，取自
+`kotlin-tv/artwork/guoying-icon-c3.png`），构建时写入 exe 资源。
+
 ## 开发
 
 ```powershell
