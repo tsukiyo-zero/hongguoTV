@@ -212,6 +212,93 @@ fun main(args: Array<String>) {
         }
         return
     }
+    if (args.contains("--soak")) {
+        // 长时间采样空响应窗口（issue #38/#41 后续观测）：每约 5 秒一轮 × 3 条路径（主 host
+        // 池化连接 / 主 host 新连接 / 备用 host hl 新连接），与线上重试策略及 --issue38 窗口
+        // 捕捉一致。统计窗口簇数、簇时长、簇内路径分歧与总空响应率，为恢复预算判据提供数据。
+        // 输出仅含计数与 host 代号，不打印地址与凭据。
+        val minutes =
+            args.getOrNull(args.indexOf("--soak") + 1)?.takeIf { !it.startsWith("--") }?.toIntOrNull()
+                ?: 45
+        val sessionA = PlaybackDeviceSession()
+        val repo = ContentRepository(playbackSession = sessionA)
+        try {
+            val keyword = "美人替嫁祁王"
+            val found = runCatching { repo.search(keyword) }.getOrElse { repo.searchAll(keyword) }
+            val series =
+                found.items.firstOrNull { it.title == "春色韫韫，美人替嫁祁王" }
+                    ?: found.items.firstOrNull { "美人替嫁祁王" in it.title }
+            checkNotNull(series) { "search=${found.items.size}; no match for $keyword" }
+            val detail = repo.detail(series.id)
+            val episode8 = detail.episodes.getOrNull(7) ?: detail.episodes.first()
+            println(
+                "soak series=${series.title}; id=${series.id}; episodes=${detail.episodes.size}; minutes=$minutes"
+            )
+            val deadline = System.currentTimeMillis() + minutes * 60_000L
+            var cycle = 0
+            var probes = 0
+            var empties = 0
+            var clusters = 0
+            var inCluster = false
+            var clusterStart = 0L
+            var clusterLast = 0L
+            var longestSpan = 0L
+            var escape = ""
+            while (System.currentTimeMillis() < deadline) {
+                cycle++
+                val marks =
+                    listOf(
+                            "pooled" to
+                                playerProbe(repo.http, sessionA, episode8, 1, PLAYER_HOST_PRIMARY),
+                            "fresh" to
+                                playerProbe(repo.http, sessionA, episode8, 1, PLAYER_HOST_PRIMARY, fresh = true),
+                            "altHost" to
+                                playerProbe(repo.http, sessionA, episode8, 1, PLAYER_HOST_FALLBACKS.first(), fresh = true),
+                        )
+                        .map { (label, result) -> label to result.contains("EMPTY") }
+                probes += marks.size
+                val now = System.currentTimeMillis()
+                val bad = marks.filter { it.second }.map { it.first }
+                val good = marks.filterNot { it.second }.map { it.first }
+                empties += bad.size
+                if (bad.isNotEmpty()) {
+                    if (!inCluster) {
+                        inCluster = true
+                        clusterStart = now
+                        escape = ""
+                        clusters++
+                    }
+                    clusterLast = now
+                    // 同一轮内「部分路径空、部分路径通」即路径分歧：记下第一条逃逸路径。
+                    if (good.isNotEmpty() && escape.isEmpty()) escape = good.first()
+                    println(
+                        "soak window; cycle=$cycle; empty=${bad.joinToString(",")}; ok=${good.joinToString(",")}"
+                    )
+                } else if (inCluster) {
+                    inCluster = false
+                    val span = clusterLast - clusterStart
+                    if (span > longestSpan) longestSpan = span
+                    println(
+                        "soak windowEnd; cluster=$clusters; spanMs=$span; escape=${escape.ifEmpty { "none-observed" }}"
+                    )
+                }
+                if (cycle % 10 == 0)
+                    println("soak progress; cycle=$cycle; clusters=$clusters; empty=$empties/$probes")
+                Thread.sleep(3000)
+            }
+            val spanText =
+                if (inCluster) "ongoingSpanMs=${System.currentTimeMillis() - clusterStart}"
+                else "longestSpanMs=$longestSpan"
+            val rate = if (probes > 0) "%.1f%%".format(java.util.Locale.US, empties * 100.0 / probes) else "n/a"
+            println(
+                "soak summary; minutes=$minutes; cycles=$cycle; probes=$probes; empty=$empties; rate=$rate; clusters=$clusters; $spanText"
+            )
+        } finally {
+            repo.http.connectionPool.evictAll()
+            repo.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
     if (args.contains("--official-qr-login")) {
         try {
             val login = WebLogin(repository.http)

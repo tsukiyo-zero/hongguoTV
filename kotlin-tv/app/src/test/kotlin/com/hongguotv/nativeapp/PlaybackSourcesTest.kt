@@ -20,6 +20,38 @@ class PlaybackSourcesTest {
     }
 
     @Test
+    fun knownPrefixCategoriesSurfaceTheirFullMessageInsteadOfTheFallback() {
+        assertEquals(
+            "没有电视可播放的清晰度，请稍后再试或选择其他剧集",
+            playbackFailureSummary(java.io.IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")),
+        )
+        assertEquals(
+            "视频服务器不支持分段读取（HTTP 416）",
+            playbackFailureSummary(java.io.IOException("视频服务器不支持分段读取（HTTP 416）")),
+        )
+        assertEquals("播放数据读取失败", playbackFailureSummary(java.io.IOException("某种全新的错误")))
+    }
+
+    @Test
+    fun diagnosticDetailPassesEmptyResponseMetadataThrough() {
+        assertEquals(
+            "空响应x4 host=b,hl,lf,b",
+            diagnosticDetail(com.hongguotv.core.EmptyPlaybackResponseException("空响应x4 host=b,hl,lf,b")),
+        )
+    }
+
+    @Test
+    fun diagnosticDetailIsNullWhenTheChainHasNothingStructured() {
+        assertNull(diagnosticDetail(java.io.IOException("网络请求超时")))
+    }
+
+    @Test
+    fun diagnosticDetailCapsLengthAtSixtyChars() {
+        val detail = diagnosticDetail(com.hongguotv.core.EmptyPlaybackResponseException("x".repeat(200)))
+        assertEquals(60, detail!!.length)
+    }
+
+    @Test
     fun manualRetryOffersTheLowestLadderTierBelowAttempted() {
         val ladder =
             listOf(

@@ -164,6 +164,25 @@ class MainActivity : Activity() {
     private val recovery = RecoveryBudget()
     private var retryPending = false
     private var autoRecovery = false
+    private var recoveryScheduledAt = 0L
+    private var recoveryDelayMillis = 0L
+
+    /**
+     * 恢复等待期的逐秒倒计时（issue #41 后续）：慢段单次等待最长 105 秒，静态文案看起来像死机。
+     * 只按剩余毫秒刷新文本，调度权仍在 scheduleRecovery/retryRunnable；remaining 归零即停，
+     * 由 retryRunnable 接管。
+     */
+    private val recoveryCountdown =
+        object : Runnable {
+            override fun run() {
+                if (!retryPending) return
+                val remaining =
+                    recoveryScheduledAt + recoveryDelayMillis - android.os.SystemClock.uptimeMillis()
+                if (remaining <= 0) return
+                showRecoveryStatus(remaining)
+                main.postDelayed(this, 1000)
+            }
+        }
     private var startPosition = 0L
     private var retryPosition = 0L
     private var requestedAutoplay = true
@@ -3360,8 +3379,22 @@ class MainActivity : Activity() {
 
     private fun cancelRecovery() {
         main.removeCallbacks(retryRunnable)
+        main.removeCallbacks(recoveryCountdown)
         retryPending = false
         autoRecovery = false
+    }
+
+    private fun showRecoveryStatus(remainingMillis: Long) {
+        playbackText.text =
+            recoveryStatusText(
+                failure = lastPlaybackFailure,
+                autoplay = retryAutoplay,
+                slow = recovery.slow,
+                attempt = recovery.attempts + 1,
+                total = recovery.total,
+                remainingMillis = remainingMillis,
+                positionText = formatTime(retryPosition),
+            ) + diagnosticSuffix()
     }
 
     private fun scheduleRecovery() {
@@ -3378,18 +3411,12 @@ class MainActivity : Activity() {
             return
         }
         val delay = recovery.delayMillis ?: return
-        playbackText.text =
-            recoveryStatusText(
-                failure = lastPlaybackFailure,
-                autoplay = retryAutoplay,
-                slow = recovery.slow,
-                attempt = recovery.attempts + 1,
-                total = recovery.total,
-                delayMillis = delay,
-                positionText = formatTime(retryPosition),
-            ) + diagnosticSuffix()
+        recoveryScheduledAt = android.os.SystemClock.uptimeMillis()
+        recoveryDelayMillis = delay
+        showRecoveryStatus(delay)
         retryPending = true
         main.postDelayed(retryRunnable, delay)
+        main.postDelayed(recoveryCountdown, 1000)
     }
 
     /** 错误页末尾的脱敏诊断行（issue #38）：机型/系统/版本/失败阶段/恢复计数，便于截图定位。 */
@@ -3454,11 +3481,7 @@ class MainActivity : Activity() {
 
     private fun playerFailure(problem: Throwable) {
         lastPlaybackFailure = playbackFailureSummary(problem)
-        lastPlaybackDetail =
-            generateSequence(problem) { it.cause }
-                .take(8)
-                .filterIsInstance<EmptyPlaybackResponseException>()
-                .firstOrNull()?.detail
+        lastPlaybackDetail = diagnosticDetail(problem)
         retryPosition = currentPosition().coerceAtLeast(0)
         retryAutoplay = requestedAutoplay && !sleepStopped
         saveProgress()
