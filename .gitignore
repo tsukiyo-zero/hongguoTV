@@ -29,6 +29,12 @@ keystore.properties
 /downloads/
 /tmp/
 
+# Local tool working dirs and scratch output
+.mimosa/
+.v2c/
+.video_agent/
+out/
+
 # Delivery artifacts, native intermediates, local runtime
 /outputs/
 /server/.local/
