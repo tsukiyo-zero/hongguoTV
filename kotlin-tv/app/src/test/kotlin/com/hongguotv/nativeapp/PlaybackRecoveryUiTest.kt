@@ -17,24 +17,31 @@ class PlaybackRecoveryUiTest {
                 slow = false,
                 attempt = 2,
                 total = 8,
-                delayMillis = 2500L,
+                remainingMillis = 2500L,
                 positionText = "12:34",
             )
-        assertEquals("$failure\n准备恢复播放 · 2.5 秒后重试 2/8 · 12:34", text)
+        assertEquals("$failure\n准备恢复播放 · 3 秒后重试 2/8 · 12:34", text)
+    }
+
+    @Test
+    fun `remaining millis round up to whole seconds`() {
+        val text =
+            recoveryStatusText(failure, autoplay = true, slow = false, attempt = 1, total = 8, remainingMillis = 1L, positionText = "00:05")
+        assertEquals("$failure\n准备恢复播放 · 1 秒后重试 1/8 · 00:05", text)
     }
 
     @Test
     fun `paused recovery keeps the pause wording`() {
         val text =
-            recoveryStatusText(failure, autoplay = false, slow = false, attempt = 1, total = 8, delayMillis = 1000L, positionText = "00:05")
-        assertEquals("$failure\n准备恢复暂停位置 · 1.0 秒后重试 1/8 · 00:05", text)
+            recoveryStatusText(failure, autoplay = false, slow = false, attempt = 1, total = 8, remainingMillis = 1000L, positionText = "00:05")
+        assertEquals("$failure\n准备恢复暂停位置 · 1 秒后重试 1/8 · 00:05", text)
     }
 
     @Test
-    fun `slow phase explains recovery is still running without a countdown`() {
+    fun `slow phase keeps recovery wording with a visible countdown`() {
         val text =
-            recoveryStatusText(failure, autoplay = true, slow = true, attempt = 5, total = 8, delayMillis = 60000L, positionText = "12:34")
-        assertEquals("$failure\n服务暂时没有响应，正在自动恢复 · 第 5/8 次尝试 · 12:34", text)
+            recoveryStatusText(failure, autoplay = true, slow = true, attempt = 5, total = 8, remainingMillis = 60000L, positionText = "12:34")
+        assertEquals("$failure\n服务暂时没有响应，正在自动恢复 · 60 秒后第 5/8 次尝试 · 12:34", text)
     }
 
     @Test

@@ -159,6 +159,9 @@ class SearchSessionExpiredException : IOException("搜索结果已过期，请�
 class EmptyPlaybackResponseException(val detail: String? = null) :
     IOException("播放接口暂时返回空响应，请稍后重试")
 
+/** 连续整轮空响应达到该次数后轮换一次设备身份（两轮 = 8 发跨 3 域名全空，约 25 秒）。 */
+private const val IDENTITY_ROTATE_ROUNDS = 2
+
 class ContentRepository
 @JvmOverloads
 constructor(
@@ -171,8 +174,16 @@ constructor(
             .build(),
     private val clock: () -> Long = System::currentTimeMillis,
     private val playbackSession: PlaybackDeviceSession = PlaybackDeviceSession(),
+    private val sleep: (Long) -> Unit = Thread::sleep,
 ) {
     private val signer = Signer()
+
+    // 空响应身份屏蔽自愈状态（2026-11-01 事件实测：屏蔽按设备身份生效，换路无法逃逸，
+    // 全新身份即时恢复）。连续整轮空响应达到阈值时轮换一次身份；成功即复位。
+    // prefetch/试播/正式播放可能并发，统一持锁；轮换的网络 I/O 在锁外执行。
+    private val playbackIdentityLock = Any()
+    private var emptyPlaybackRounds = 0
+    private var emptyPlaybackRotated = false
 
     // 榜单页偶发被 CDN 软拦截（空响应或挂起到超时）：收紧超时并单次重试，
     // 让整榜失败在最坏约 15 秒内暴露，而不是分钟级的全局超时。
@@ -684,18 +695,30 @@ constructor(
                     val payload =
                         """{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":${JSONArray(ids)}}}"""
                             .toByteArray()
-                    val identity = playbackSession.profile(http)
                     // 批量接口同次读取当前集和至多后两集，减少连续手动切集时的播放信息请求。
-                    // 空响应按有界退避逐次换路恢复（换 host + 新连接）；只刷新请求时间戳，
-                    // 不轮换设备或账号身份。探针实测（2026-10-31）：服务端空响应是短暂成簇
-                    // 窗口，同连接同 host 的重试无法逃逸，见 issue #38 与 PlayRetryPlan。
+                    // 空响应按有界退避逐次换路恢复（换 host + 新连接）；只刷新请求时间戳。
+                    // 探针实测（2026-10-31）同连接同 host 的重试无法逃逸，见 issue #38 与
+                    // PlayRetryPlan；2026-11-01 事件进一步实测：空响应事件按设备身份选择性屏蔽
+                    //（被屏蔽身份全部路径 100% 空且贯穿事件全程，全新身份即时恢复），因此连续
+                    // 两轮换路全空后轮换一次匿名设备身份，详见规格
+                    // docs/superpowers/specs/2026-11-02-playinfo-identity-rotation-design.md。
+                    val rotated =
+                        synchronized(playbackIdentityLock) {
+                            emptyPlaybackRounds >= IDENTITY_ROTATE_ROUNDS && !emptyPlaybackRotated
+                        }
+                    if (rotated) {
+                        // 网络 I/O 在锁外；无论成败都视为本失败期已轮换，不重复尝试。
+                        playbackSession.rotate(http)
+                        synchronized(playbackIdentityLock) { emptyPlaybackRotated = true }
+                    }
+                    val identity = playbackSession.profile(http)
                     var content: String? = null
                     var lastError: IOException? = null
                     val tried = mutableListOf<String>()
                     for (attempt in 0 until PlayRetryPlan.maxAttempts) {
                         if (attempt > 0) {
                             try {
-                                Thread.sleep(PlayRetryPlan.delaysMillis[attempt - 1])
+                                sleep(PlayRetryPlan.delaysMillis[attempt - 1])
                             } catch (_: InterruptedException) {
                                 Thread.currentThread().interrupt()
                                 throw java.io.InterruptedIOException("请求已取消")
@@ -735,14 +758,26 @@ constructor(
                         }
                     }
                     // 全部尝试耗尽时直接抛出（带计数与 host 代号），保持 response 为纯文本。
+                    // 空响应整轮耗尽计入身份屏蔽计数；拿到有效响应则复位轮换状态。
+                    if (content != null) {
+                        synchronized(playbackIdentityLock) {
+                            emptyPlaybackRounds = 0
+                            emptyPlaybackRotated = false
+                        }
+                    }
                     val response =
                         content
                             ?: throw (lastError?.let { error ->
-                                if (error is EmptyPlaybackResponseException)
+                                if (error is EmptyPlaybackResponseException) {
+                                    synchronized(playbackIdentityLock) { emptyPlaybackRounds += 1 }
+                                    // 本失败期已轮换过身份（含本轮触发）即带标记，便于诊断区分
+                                    val rotatedInPeriod =
+                                        synchronized(playbackIdentityLock) { emptyPlaybackRotated }
                                     EmptyPlaybackResponseException(
-                                        "空响应x${tried.size} host=${tried.joinToString(",")}"
+                                        "空响应x${tried.size} host=${tried.joinToString(",")}" +
+                                            (if (rotatedInPeriod) " rotated=1" else ""),
                                     )
-                                else error
+                                } else error
                             } ?: IOException("播放信息请求失败"))
                     val data = JSONObject(response)
                     val code = data.optInt("Code", data.optInt("code", 0))

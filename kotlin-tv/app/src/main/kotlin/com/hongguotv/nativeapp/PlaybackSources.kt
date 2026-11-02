@@ -28,16 +28,48 @@ internal fun playbackFailureSummary(problem: Throwable): String {
     if (causes.any { it is java.net.SocketTimeoutException }) return "网络请求超时"
     if (causes.any { it is java.net.UnknownHostException }) return "无法解析服务器域名"
     if (causes.any { it is java.io.EOFException }) return "视频分段提前断开"
-    val known = setOf("播放请求已取消", "播放准备已取消", "视频分段范围不匹配", "视频资源已变化，请重试", "播放信息为空", "播放地址格式异常")
+    val known =
+        listOf(
+            "播放请求已取消",
+            "播放准备已取消",
+            "视频分段范围不匹配",
+            "视频资源已变化，请重试",
+            "播放信息为空",
+            "播放地址格式异常",
+            // 前缀匹配：这两类消息带变量后缀（清晰度建议语、HTTP 码），完整文案原样透出。
+            "没有电视可播放的清晰度",
+            "视频服务器不支持分段读取",
+        )
     causes
         .mapNotNull { it.message }
-        .firstOrNull { it in known }
+        .firstOrNull { message -> known.any { message.startsWith(it) } }
         ?.let {
             return it
         }
     if (problem is androidx.media3.common.PlaybackException) return "播放器错误：${problem.errorCodeName}"
     return if (causes.any { it is java.io.IOException }) "播放数据读取失败" else "播放准备失败"
 }
+
+/**
+ * 错误页诊断行的结构化 detail（issue #38 后续）：从异常链提取紧凑键值对，让用户截图自带可定位的
+ * 错误类别与关键参数。只含类别代号、状态码与既有脱敏元数据，不含 Cookie、地址与凭据。
+ */
+internal fun diagnosticDetail(problem: Throwable): String? =
+    generateSequence(problem) { it.cause }
+        .take(8)
+        .mapNotNull { cause ->
+            when {
+                cause is EmptyPlaybackResponseException -> cause.detail?.takeIf { it.isNotBlank() }
+                cause is ContentHttpException -> "http=${cause.statusCode}"
+                cause is androidx.media3.common.PlaybackException ->
+                    "exo=${cause.errorCodeName.removePrefix("ERROR_CODE_")}"
+                else -> null
+            }
+        }
+        .distinct()
+        .joinToString(" · ")
+        .take(60)
+        .ifEmpty { null }
 
 internal class OpenedStream(
     val video: RemoteVideo,

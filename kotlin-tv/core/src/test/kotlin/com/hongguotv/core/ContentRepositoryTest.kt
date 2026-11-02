@@ -1,6 +1,7 @@
 package com.hongguotv.core
 
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicInteger
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
@@ -12,6 +13,80 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ContentRepositoryTest {
+    private val playbackModel =
+        """{"data":{"123":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}}"""
+
+    @Test
+    fun twoConsecutiveEmptyRoundsRotateIdentityOnceAndTagSubsequentFailures() {
+        val registrations = AtomicInteger()
+        val http =
+            OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val request = chain.request()
+                    if (request.url.encodedPath == "/service/2/device_register/") {
+                        registrations.incrementAndGet()
+                        return@addInterceptor fixtureResponse(request, """{"device_id":"333","install_id":"444"}""", setCookie = true)
+                    }
+                    fixtureResponse(request, "")
+                }
+                .build()
+        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession(), sleep = {})
+        val first = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+        assertFalse(first.detail.orEmpty().contains("rotated"))
+        val second = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+        assertFalse(second.detail.orEmpty().contains("rotated"))
+        assertEquals(1, registrations.get())
+        // 第三轮开始前轮换一次身份，此后 detail 带标记且不再轮换
+        val third = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+        assertTrue(third.detail.orEmpty().contains("rotated=1"))
+        assertEquals(2, registrations.get())
+        val fourth = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+        assertTrue(fourth.detail.orEmpty().contains("rotated=1"))
+        assertEquals(2, registrations.get())
+    }
+
+    @Test
+    fun successfulPlaybackResetsIdentityRotationStateForTheNextIncident() {
+        val registrations = AtomicInteger()
+        var playinfoCalls = 0
+        val http =
+            OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val request = chain.request()
+                    if (request.url.encodedPath == "/service/2/device_register/") {
+                        registrations.incrementAndGet()
+                        return@addInterceptor fixtureResponse(request, """{"device_id":"333","install_id":"444"}""", setCookie = true)
+                    }
+                    playinfoCalls++
+                    // 1-8：两轮全空；9 起成功；10-17：再现两轮全空；18 起成功
+                    fixtureResponse(
+                        request,
+                        if (playinfoCalls in 1..8 || playinfoCalls in 10..17) "" else playbackModel,
+                    )
+                }
+                .build()
+        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession(), sleep = {})
+        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+        assertEquals(1, registrations.get())
+        repo.streamLadder("123") // 第三轮轮换身份后成功
+        assertEquals(2, registrations.get())
+        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+        repo.streamLadder("123") // 成功复位后，新的连续失败期可再次轮换
+        assertEquals(3, registrations.get())
+    }
+
+    private fun fixtureResponse(request: Request, body: String, setCookie: Boolean = false) =
+        Response.Builder()
+            .request(request)
+            .protocol(Protocol.HTTP_1_1)
+            .code(200)
+            .message("fixture")
+            .apply { if (setCookie) addHeader("Set-Cookie", "ttreq=test-only; Path=/") }
+            .body(body.toResponseBody())
+            .build()
+
     @Test
     fun inlinePlaybackModelUsesItsOwnMetadataAndKeyWithoutFallbackRequest() {
         val requests = mutableListOf<Request>()

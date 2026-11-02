@@ -3,6 +3,7 @@ package com.hongguotv.nativeapp
 
 /**
  * 播放页恢复状态的文案构建（issue #38）：快段给倒计时，慢段说明仍在自动恢复，终局诚实引导。
+ * 两段文案都带逐秒倒计时（秒数向上取整），等待期间屏幕持续变化，避免「画面死了」的错觉。
  * 全部为纯函数，便于单测；诊断行只含公开设备信息与重试计数，不含 Cookie、地址与凭据。
  */
 
@@ -12,13 +13,15 @@ internal fun recoveryStatusText(
     slow: Boolean,
     attempt: Int,
     total: Int,
-    delayMillis: Long,
+    remainingMillis: Long,
     positionText: String,
-): String =
-    if (slow)
-        "$failure\n服务暂时没有响应，正在自动恢复 · 第 $attempt/$total 次尝试 · $positionText"
+): String {
+    val seconds = ((remainingMillis + 999) / 1000).coerceAtLeast(0)
+    return if (slow)
+        "$failure\n服务暂时没有响应，正在自动恢复 · $seconds 秒后第 $attempt/$total 次尝试 · $positionText"
     else
-        "$failure\n${if (autoplay) "准备恢复播放" else "准备恢复暂停位置"} · ${delayMillis / 1000f} 秒后重试 $attempt/$total · $positionText"
+        "$failure\n${if (autoplay) "准备恢复播放" else "准备恢复暂停位置"} · $seconds 秒后重试 $attempt/$total · $positionText"
+}
 
 internal fun recoveryExhaustedText(failure: String) =
     "$failure\n本集暂时无法播放，可以先看其他内容，稍后再回来试试。"
