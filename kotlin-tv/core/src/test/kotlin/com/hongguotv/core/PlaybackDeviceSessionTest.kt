@@ -32,6 +32,9 @@ class PlaybackDeviceSessionTest {
                             assertNull(request.header("Cookie"))
                             assertNull(request.header("x-gorgon"))
                             """{"device_id":"333","install_id":"444"}"""
+                        } else if (request.url.encodedPath.startsWith("/reading/bookapi/video_tab/")) {
+                            // 新接口统一回 100103 让调用方回退；本用例只统计旧接口模型请求。
+                            """{"code":100103,"message":"PARAM_INVALID","data":null}"""
                         } else {
                             requests += request
                             assertEquals("333", request.url.queryParameter("device_id"))
