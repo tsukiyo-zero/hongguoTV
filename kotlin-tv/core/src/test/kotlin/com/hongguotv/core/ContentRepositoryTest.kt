@@ -57,6 +57,12 @@ class ContentRepositoryTest {
                         registrations.incrementAndGet()
                         return@addInterceptor fixtureResponse(request, """{"device_id":"333","install_id":"444"}""", setCookie = true)
                     }
+                    // 本用例覆盖旧接口的轮换时序：新接口统一回 100103 让调用方回退，且不计次。
+                    if (request.url.encodedPath.startsWith("/reading/bookapi/video_tab/"))
+                        return@addInterceptor fixtureResponse(
+                            request,
+                            """{"code":100103,"message":"PARAM_INVALID","data":null}""",
+                        )
                     playinfoCalls++
                     // 1-8：两轮全空；9 起成功；10-17：再现两轮全空；18 起成功
                     fixtureResponse(
@@ -77,6 +83,9 @@ class ContentRepositoryTest {
         assertEquals(3, registrations.get())
     }
 
+    private val videoTabModel =
+        """{"code":0,"message":"SUCCESS","data":{"video_model_data":{"123":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}}}"""
+
     private fun fixtureResponse(request: Request, body: String, setCookie: Boolean = false) =
         Response.Builder()
             .request(request)
@@ -86,6 +95,81 @@ class ContentRepositoryTest {
             .apply { if (setCookie) addHeader("Set-Cookie", "ttreq=test-only; Path=/") }
             .body(body.toResponseBody())
             .build()
+
+    /** 2026-11-02 起官方 App 走 video_tab GET 接口；命中后不应再打旧 /novel/player 接口。 */
+    @Test
+    fun videoTabModelIsPreferredAndSkipsLegacyEndpoint() {
+        val tabCalls = AtomicInteger()
+        val legacyCalls = AtomicInteger()
+        val http =
+            OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val request = chain.request()
+                    when (request.url.encodedPath) {
+                        "/service/2/device_register/" ->
+                            fixtureResponse(
+                                request,
+                                """{"device_id":"333","install_id":"444"}""",
+                                setCookie = true,
+                            )
+                        "/reading/bookapi/video_tab/multi_video_model/v1/" -> {
+                            tabCalls.incrementAndGet()
+                            // 官方 GetVideoModelRequest 的 snake_case 参数缺一即 100103。
+                            assertEquals("123", request.url.queryParameter("video_id"))
+                            assertEquals("0", request.url.queryParameter("video_id_type"))
+                            assertEquals("1", request.url.queryParameter("device_level"))
+                            assertEquals("1", request.url.queryParameter("need_all_video_definition"))
+                            assertEquals("1024", request.url.queryParameter("video_platform"))
+                            fixtureResponse(request, videoTabModel)
+                        }
+                        "/novel/player/multi_video_model/v1/" -> {
+                            legacyCalls.incrementAndGet()
+                            fixtureResponse(request, playbackModel)
+                        }
+                        else -> fixtureResponse(request, "")
+                    }
+                }
+                .build()
+        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession())
+        val ladder = repo.streamLadder("123")
+        assertEquals(1, ladder.renditions.size)
+        assertEquals(1, tabCalls.get())
+        assertEquals(0, legacyCalls.get())
+    }
+
+    /** 新接口参数不合法或降级时回退旧接口，不改变既有空响应恢复路径。 */
+    @Test
+    fun videoTabParamInvalidFallsBackToLegacyEndpoint() {
+        val legacyCalls = AtomicInteger()
+        val http =
+            OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val request = chain.request()
+                    when (request.url.encodedPath) {
+                        "/service/2/device_register/" ->
+                            fixtureResponse(
+                                request,
+                                """{"device_id":"333","install_id":"444"}""",
+                                setCookie = true,
+                            )
+                        "/reading/bookapi/video_tab/multi_video_model/v1/" ->
+                            fixtureResponse(
+                                request,
+                                """{"code":100103,"message":"PARAM_INVALID","data":null}""",
+                            )
+                        "/novel/player/multi_video_model/v1/" -> {
+                            legacyCalls.incrementAndGet()
+                            fixtureResponse(request, playbackModel)
+                        }
+                        else -> fixtureResponse(request, "")
+                    }
+                }
+                .build()
+        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession())
+        val ladder = repo.streamLadder("123")
+        assertEquals(1, ladder.renditions.size)
+        assertEquals(1, legacyCalls.get())
+    }
 
     @Test
     fun inlinePlaybackModelUsesItsOwnMetadataAndKeyWithoutFallbackRequest() {
@@ -585,12 +669,19 @@ class ContentRepositoryTest {
         ContentRepository(
             OkHttpClient.Builder()
                 .addInterceptor { chain ->
+                    val request = chain.request()
+                    // 本轮起播放先读 video_tab 新接口；只用例覆盖旧接口行为，统一让它回 100103
+                    // 让调用方回退，且不进入用例自己的请求计数。
+                    val body =
+                        if (request.url.encodedPath.startsWith("/reading/bookapi/video_tab/"))
+                            """{"code":100103,"message":"PARAM_INVALID","data":null}"""
+                        else respond(request)
                     Response.Builder()
-                        .request(chain.request())
+                        .request(request)
                         .protocol(Protocol.HTTP_1_1)
                         .code(200)
                         .message("OK")
-                        .body(respond(chain.request()).toResponseBody())
+                        .body(body.toResponseBody())
                         .build()
                 }
                 .build(),

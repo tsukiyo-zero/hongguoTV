@@ -64,6 +64,15 @@ class FeedStartupCacheTest {
             OkHttpClient.Builder()
                 .addInterceptor { chain ->
                     val req = chain.request()
+                    // 播放模型先读 video_tab 新接口；本用例只统计旧接口与视频分段请求。
+                    if (req.url.encodedPath.startsWith("/reading/bookapi/video_tab/"))
+                        return@addInterceptor Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("test")
+                            .body("""{"code":100103,"message":"PARAM_INVALID","data":null}""".toResponseBody())
+                            .build()
                     paths += req.url.encodedPath
                     val builder =
                         Response.Builder().request(req).protocol(Protocol.HTTP_1_1).message("test")
