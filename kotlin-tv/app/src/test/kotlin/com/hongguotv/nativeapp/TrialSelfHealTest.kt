@@ -11,16 +11,32 @@ class TrialSelfHealTest {
     private val io = PlaybackException.ERROR_CODE_IO_UNSPECIFIED
 
     @Test
-    fun healsDecoderFailuresWithTrackOnce() {
-        assertTrue(shouldSelfHealTrial(decoderInit, hasTrack = true, alreadyHealed = false))
-        assertTrue(shouldSelfHealTrial(decoderUnsupported, hasTrack = true, alreadyHealed = false))
-        assertFalse(shouldSelfHealTrial(decoderInit, hasTrack = true, alreadyHealed = true))
+    fun healsDecoderFailuresWithTrackWithinBudget() {
+        assertTrue(shouldSelfHealTrial(decoderInit, hasTrack = true, attempts = 0))
+        assertTrue(shouldSelfHealTrial(decoderUnsupported, hasTrack = true, attempts = 1))
+        assertTrue(
+            shouldSelfHealTrial(
+                decoderInit,
+                hasTrack = true,
+                attempts = TRIAL_SELF_HEAL_LIMIT - 1,
+            )
+        )
+        assertFalse(
+            shouldSelfHealTrial(decoderInit, hasTrack = true, attempts = TRIAL_SELF_HEAL_LIMIT)
+        )
+        assertFalse(
+            shouldSelfHealTrial(
+                decoderInit,
+                hasTrack = true,
+                attempts = TRIAL_SELF_HEAL_LIMIT + 1,
+            )
+        )
     }
 
     @Test
     fun ignoresNetworkErrorsAndMissingTracks() {
-        assertFalse(shouldSelfHealTrial(io, hasTrack = true, alreadyHealed = false))
-        assertFalse(shouldSelfHealTrial(null, hasTrack = true, alreadyHealed = false))
-        assertFalse(shouldSelfHealTrial(decoderInit, hasTrack = false, alreadyHealed = false))
+        assertFalse(shouldSelfHealTrial(io, hasTrack = true, attempts = 0))
+        assertFalse(shouldSelfHealTrial(null, hasTrack = true, attempts = 0))
+        assertFalse(shouldSelfHealTrial(decoderInit, hasTrack = false, attempts = 0))
     }
 }

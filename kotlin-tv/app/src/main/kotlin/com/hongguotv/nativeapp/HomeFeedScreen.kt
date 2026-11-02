@@ -52,7 +52,8 @@ internal class HomeFeedScreen(
     private var loading = false
     private var failed = false
     private var lastPlaybackError: androidx.media3.common.PlaybackException? = null
-    private var healedFor: String? = null
+    private var healTarget: String? = null
+    private var healAttempts = 0
     private val stage = FrameLayout(activity)
     private val title = label("发现下一部好剧", 25f)
     private val meta = label("第一集试播", 13f, TvStyle.accent)
@@ -450,21 +451,28 @@ internal class HomeFeedScreen(
         return cached.clip
     }
 
-    // 试播自愈：解码类失败写入设备能力经验表并自动换低档重载一次（每剧限一次）；
-    // 重载复用 loadCurrent（缓存/预取优先），与手动重试成本相同。不满足条件返回 false 走原面板。
+    // 试播自愈：解码类失败写入设备能力经验表并自动换低档重载（每剧至多 3 轮，且仅在学到
+    // 新失败键时继续，同一键反复重载没有意义）。重载复用 loadCurrent（缓存/预取优先），与
+    // 手动重试成本相同。bytevc2 锁定集学完 1080P 键后，重载即落入确定性报错，不无限循环。
     private fun selfHealTrial(): Boolean {
         val series = state.current ?: return false
         val track = clip?.track
+        if (healTarget != series.id) {
+            healTarget = series.id
+            healAttempts = 0
+        }
         if (
             !shouldSelfHealTrial(
                 lastPlaybackError?.errorCode,
                 track != null,
-                healedFor == series.id,
+                healAttempts,
             )
         )
             return false
+        val knownBefore = CodecCapabilities.learnedCount()
         CodecCapabilities.learnFailure(track!!.fourcc, track.width, track.height)
-        healedFor = series.id
+        if (CodecCapabilities.learnedCount() == knownBefore) return false
+        healAttempts += 1
         loadCurrent("设备不支持该清晰度，正在自动切换…")
         return true
     }
@@ -553,9 +561,13 @@ internal class HomeFeedScreen(
     private fun attach(next: TrialClip) {
         clip = next
         val series = next.detail.series
+        val tags = series.tags.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""
         meta.text =
-            "第一集试播 · 共 ${next.episodeCount} 集" +
-                (series.tags.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")
+            if (next.trialEpisodeIndex > 1) {
+                "第一集暂不支持电视播放 · 试播第 ${next.trialEpisodeIndex} 集 · 共 ${next.episodeCount} 集$tags"
+            } else {
+                "第一集试播 · 共 ${next.episodeCount} 集$tags"
+            }
         if (series.description.isNotBlank()) intro.text = series.description
         val autoplay = active && !state.userPaused && !state.ended
         playback.setCurrentIndex(state.offset + state.index)

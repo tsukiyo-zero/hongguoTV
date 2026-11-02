@@ -3487,10 +3487,15 @@ class MainActivity : Activity() {
         saveProgress()
         cancelRecovery()
         cancelPrefetch()
+        // 确定性失败（本集无任何可解码档，bytevc2 锁定集）：重试与降档都只会得到同一结果，
+        // 不再进入自动恢复预算，不给降档按钮；手动重试保留（供给可能随服务端转码翻转）。
+        val noPlayableQuality =
+            generateSequence(problem) { it.cause }.take(8).any { it is NoPlayableQualityException }
         // The device claimed support it doesn't have (MediaCodecList over-reporting): learn the
         // runtime verdict and retry one tier lower automatically instead of surfacing the panel.
         if (
-            problem is PlaybackException &&
+            !noPlayableQuality &&
+                problem is PlaybackException &&
                 problem.errorCode in
                     PlaybackException.ERROR_CODE_DECODER_INIT_FAILED..PlaybackException
                             .ERROR_CODE_DECODING_FORMAT_UNSUPPORTED
@@ -3529,12 +3534,14 @@ class MainActivity : Activity() {
             if (problem is PlaybackException)
                 problem.errorCode in 2000..2999 ||
                     problem.errorCode == PlaybackException.ERROR_CODE_TIMEOUT
-            else problem is java.io.IOException
+            else problem is java.io.IOException && !noPlayableQuality
         // 按钮直接指向阶梯里真实存在的更低档：没有就明说，不再让用户循环点一个必然重放
         // 同一流（如本集仅剩电视解不了的 1080P）的按钮。
-        val lowerTier = nextLowerQuality(attemptedQuality, currentTiers)
+        val lowerTier =
+            if (noPlayableQuality) null else nextLowerQuality(attemptedQuality, currentTiers)
         playbackText.text =
             when {
+                noPlayableQuality -> lastPlaybackFailure
                 decoding && lowerTier != null -> "电视无法解码当前视频，可尝试更低清晰度。"
                 decoding -> "电视无法解码当前视频，本集没有更低清晰度可用。"
                 else -> "$lastPlaybackFailure · 可手动重试"

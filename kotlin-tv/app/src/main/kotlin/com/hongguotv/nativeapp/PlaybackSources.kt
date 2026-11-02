@@ -15,6 +15,8 @@ internal fun playbackFailureSummary(problem: Throwable): String {
     val causes = generateSequence(problem) { it.cause }.take(8).toList()
     if (causes.any { it is com.hongguotv.core.PlaybackDeviceRegistrationException })
         return "播放设备注册失败"
+    if (causes.any { it is NoPlayableQualityException })
+        return "本集低档为 VVC（bytevc2）编码，电视无法解码，可尝试其他集数"
     if (causes.any { it is EmptyPlaybackResponseException }) return "播放信息接口返回空响应"
     causes.filterIsInstance<ContentHttpException>().firstOrNull()?.let {
         return "播放信息请求失败（HTTP ${it.statusCode}）"
@@ -81,8 +83,37 @@ internal class OpenedStream(
 }
 
 /**
+ * 阶梯非空但没有任何一档能被本机解码（bytevc2 锁定集的确定性结果）：重试只会得到同一结果，
+ * 上层不应再进入自动恢复预算；手动重试保留（服务端转码推进后该集供给可能翻转为 bytevc1）。
+ */
+internal class NoPlayableQualityException :
+    java.io.IOException("本集低档为 VVC（bytevc2）编码，电视无法解码，可尝试其他集数")
+
+/**
+ * 试播后移换集：候选集固定为前三集（绝对上限，试播兜底不无限后移），从 start 集起依次尝试，
+ * 跳过「该集无电视可解码档」的确定性失败，返回首个打开成功的集内序号（0 起）与结果；全部
+ * 不可解返回 null。只吞 NoPlayableQualityException，网络类异常原样上抛。
+ */
+internal fun <T> firstPlayableEpisode(
+    episodes: List<String>,
+    start: Int,
+    open: (String) -> T,
+): Pair<T, Int>? {
+    for (index in start..minOf(2, episodes.size - 1)) {
+        try {
+            return open(episodes[index]) to index
+        } catch (problem: NoPlayableQualityException) {
+            // 该集在电视上无可解码档：尝试下一集。
+        }
+    }
+    return null
+}
+
+/**
  * Opens the first rendition the device can actually decode: select by API metadata, then verify the
- * coded size read from the MP4 header and step down the ladder on mismatch.
+ * coded size read from the MP4 header and step down the ladder on mismatch. Throws
+ * [NoPlayableQualityException] when the ladder has renditions but none is decodable on this device
+ * (deterministic — retrying yields the same result); returns null only for an empty ladder.
  */
 internal fun openStream(
     http: OkHttpClient,
@@ -112,6 +143,9 @@ internal fun openStream(
             throw error
         }
     }
+    // 空阶梯维持 null（供给异常语义，由调用方提示）；非空阶梯走到这里说明每一档都被
+    // 能力判定（metadata 过滤或 moov 复核）拒掉，属确定性失败。
+    if (ladder.renditions.isNotEmpty()) throw NoPlayableQualityException()
     return null
 }
 
