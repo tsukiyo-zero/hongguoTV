@@ -22,6 +22,8 @@ internal data class TrialClip(
     val video: RemoteVideo,
     val episodeCount: Int = detail.episodes.size,
     val track: VideoTracks.Track? = null,
+    // 实际试播集的集内序号（1 起）：bytevc2 锁定集后移换集后 >1，界面据此改文案。
+    val trialEpisodeIndex: Int = 1,
 ) : Closeable {
     val episodeId
         get() = detail.episodes.first()
@@ -160,10 +162,38 @@ internal class PublicFeedBackend(
             it == null || CodecCapabilities.supports(it)
         } ?: throw java.io.IOException("该作品暂时没有可试播的剧集")
 
+    /** 试播集打开结果：流 + 实际集 id + 界面展示序号（1 起）。 */
+    private data class OpenedTrial(
+        val opened: OpenedStream,
+        val episodeId: String,
+        val displayIndex: Int,
+    )
+
+    // 第一集优先；bytevc2 锁定集（该集无电视可解码档）后移，最多探到第三集并回报实际序号。
+    // 全部不可解时给确定性文案，不再报「暂时没有可试播的剧集」。
+    private fun openTrialEpisode(series: Series, hint: TrialHint): OpenedTrial {
+        try {
+            return OpenedTrial(timed("play-address") { open(hint.episodeId) }, hint.episodeId, 1)
+        } catch (problem: NoPlayableQualityException) {
+            val full = detail(series)
+            val found =
+                firstPlayableEpisode(full.episodes, 1, ::open)
+                    ?: throw java.io.IOException("该剧暂无电视可解码的清晰度")
+            return OpenedTrial(found.first, full.episodes[found.second], found.second + 1)
+        }
+    }
+
     override fun prepare(detail: Detail): TrialClip {
-        val id = detail.episodes.firstOrNull() ?: throw java.io.IOException("该作品暂时没有可试播的剧集")
-        val opened = open(id)
-        return TrialClip(detail, opened.video, track = opened.track)
+        if (detail.episodes.isEmpty()) throw java.io.IOException("该作品暂时没有可试播的剧集")
+        val found =
+            firstPlayableEpisode(detail.episodes, 0, ::open)
+                ?: throw java.io.IOException("该剧暂无电视可解码的清晰度")
+        return TrialClip(
+            detail,
+            found.first.video,
+            track = found.first.track,
+            trialEpisodeIndex = found.second + 1,
+        )
     }
 
     override fun trial(series: Series): TrialClip {
@@ -193,12 +223,13 @@ internal class PublicFeedBackend(
                     }
                     verified
                 }
-        val opened = timed("play-address") { open(hint.episodeId) }
+        val openedTrial = openTrialEpisode(series, hint)
         return TrialClip(
-            Detail(series, listOf(hint.episodeId)),
-            opened.video,
+            Detail(series, listOf(openedTrial.episodeId)),
+            openedTrial.opened.video,
             hint.episodeCount,
-            opened.track,
+            openedTrial.opened.track,
+            openedTrial.displayIndex,
         )
     }
 
@@ -262,20 +293,23 @@ internal interface TrialPlayback {
         set(_) {}
 }
 
+/** 试播自愈的迭代上限：竖屏首播通常 1080P→720P→480P 两轮收敛，3 轮留出余量。 */
+internal const val TRIAL_SELF_HEAL_LIMIT = 3
+
 /**
- * 试播自愈判定：解码类失败 + 有可学习的轨道信息 + 该剧本次会话尚未自愈过。网络类错误与缺失
- * 轨道（无法定位学习键）不自愈。
+ * 试播自愈判定：解码类失败 + 有可学习的轨道信息 + 该剧本次会话自愈次数未达上限。网络类错误
+ * 与缺失轨道（无法定位学习键）不自愈。
  */
 internal fun shouldSelfHealTrial(
     errorCode: Int?,
     hasTrack: Boolean,
-    alreadyHealed: Boolean,
+    attempts: Int,
 ): Boolean =
     errorCode != null &&
         errorCode in PlaybackException.ERROR_CODE_DECODER_INIT_FAILED..
                 PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED &&
         hasTrack &&
-        !alreadyHealed
+        attempts < TRIAL_SELF_HEAL_LIMIT
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 internal class Media3TrialPlayback(context: Context) : TrialPlayback {

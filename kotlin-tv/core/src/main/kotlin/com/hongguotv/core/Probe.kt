@@ -212,6 +212,208 @@ fun main(args: Array<String>) {
         }
         return
     }
+    if (args.contains("--tab-matrix")) {
+        // 2026-11-02 video_tab 切换后续（方案 C）：官方现行 GET /reading/bookapi/video_tab/
+        // multi_video_model/v1/ 现状只给 bytevc2 低档 + bytevc1 1080P，竖屏 1080x1920 超出
+        // 电视解码上限且降无可降。跑请求参数矩阵（use_os_player / need_mp4_align / source /
+        // video_id_type / device_level 等），目标找回低档 bytevc1 供给。可选位置参数指定集 id；
+        // 命中可解档（* = max(w,h)≤1088）的非 base 变体用其余样本复核。输出仅含档位元数据，
+        // 不打印地址与凭据。
+        val session = PlaybackDeviceSession()
+        val repo = ContentRepository(playbackSession = session)
+        try {
+            val explicit = args.firstOrNull { it.matches(Regex("[0-9]{1,30}")) }
+            val samples =
+                if (explicit != null) {
+                    listOf("explicit" to explicit)
+                } else {
+                    repo.home().items.take(3).mapNotNull { item ->
+                        runCatching { repo.detail(item.id).episodes.firstOrNull() }
+                            .getOrNull()
+                            ?.let { item.id to it }
+                    }
+                }
+            check(samples.isNotEmpty()) { "no samples" }
+            val firstEpisode = samples.first().second
+            val base = tabBaseParams()
+            val variants: List<Pair<String, Map<String, String>>> =
+                listOf(
+                    "base" to base,
+                    "use_os_player=1" to base + ("use_os_player" to "1"),
+                    "need_mp4_align=1" to base + ("need_mp4_align" to "1"),
+                    "os1+mp4a1" to base + mapOf("use_os_player" to "1", "need_mp4_align" to "1"),
+                    "use_os_player=true" to base + ("use_os_player" to "true"),
+                    "need_all=0" to base + ("need_all_video_definition" to "0"),
+                    "device_level=0" to base + ("device_level" to "0"),
+                    "device_level=3" to base + ("device_level" to "3"),
+                    "source=1" to base + ("source" to "1"),
+                    "source=2" to base + ("source" to "2"),
+                    "video_id_type=1" to base + ("video_id_type" to "1"),
+                    "from_video_id=self" to base + ("from_video_id" to firstEpisode),
+                )
+            val results = mutableListOf<Pair<String, List<String>>>()
+            var matrixIndex = 0
+            for ((name, extra) in variants) {
+                if (matrixIndex > 0) Thread.sleep(400)
+                val line = tabProbe(repo.http, session, firstEpisode, extra)
+                results += name to listOf(line)
+                println("tab-matrix variant=$name; episode=$firstEpisode; $line")
+                matrixIndex++
+            }
+            val winners =
+                results
+                    .filter { (_, lines) -> lines.any { row -> row.substringAfter("renditions=").split(",").any { it.endsWith("*") } } }
+                    .map { it.first }
+            for ((label, episode) in samples.drop(1)) {
+                Thread.sleep(400)
+                println("tab-matrix confirm=base; label=$label; episode=$episode; ${tabProbe(repo.http, session, episode, base)}")
+                for (name in winners.take(3)) {
+                    Thread.sleep(400)
+                    val extra = variants.first { it.first == name }.second
+                    println(
+                        "tab-matrix confirm=$name; label=$label; episode=$episode; ${tabProbe(repo.http, session, episode, extra)}"
+                    )
+                }
+            }
+            println(
+                "tab-matrix bookapiOldPath; episode=$firstEpisode; ${tabOldPathProbe(repo.http, session, firstEpisode)}"
+            )
+            println("tab-matrix winners=$winners")
+        } finally {
+            repo.http.connectionPool.evictAll()
+            repo.http.dispatcher.executorService.shutdown()
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
+    if (args.contains("--tab-fallback")) {
+        // 2026-11-02 探针后续：video_tab 的低档编码供给按内容决定（部分剧集低档只发 bytevc2，
+        // 参数无法改变）。验证两条候选出路：① 全新设备身份是否改变该内容的编码供给；
+        // ② 模型内 fallback_api 遗留端点（历史上供系统播放器的兼容供给）现在的档位与编码。
+        // 输出仅含档位元数据与 fallback URL 的 host/path 形状，不含查询与凭据。
+        val session = PlaybackDeviceSession()
+        val repo = ContentRepository(playbackSession = session)
+        try {
+            val ids = args.filter { it.matches(Regex("[0-9]{1,30}")) }
+            val targets =
+                if (ids.isNotEmpty()) {
+                    ids
+                } else {
+                    listOfNotNull(
+                        repo.home().items.firstOrNull()?.id?.let { repo.detail(it).episodes.firstOrNull() },
+                    )
+                }
+            check(targets.isNotEmpty()) { "no targets" }
+            for (episode in targets) {
+                println("tab-fallback episode=$episode; tab=${tabProbe(repo.http, session, episode, tabBaseParams())}")
+                val model = tabModelRaw(repo.http, session, episode)
+                val fallback = model?.fallbackUrl()
+                println(
+                    "tab-fallback fallbackApi=" +
+                        (fallback?.let { Regex("https://([^/]+)(/[^?]*)").find(it)?.let { m -> "${m.groupValues[1]}${m.groupValues[2]}" } } ?: "MISSING"),
+                )
+                if (fallback != null && fallback.startsWith("https://"))
+                    println("tab-fallback legacy=${legacyProbe(repo.http, fallback)}")
+            }
+            val sessionB = PlaybackDeviceSession()
+            println(
+                "tab-fallback freshIdentity; episode=${targets.first()}; ${tabProbe(repo.http, sessionB, targets.first(), tabBaseParams())}"
+            )
+        } finally {
+            repo.http.connectionPool.evictAll()
+            repo.http.dispatcher.executorService.shutdown()
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
+    if (args.contains("--tab-episodes")) {
+        // 2026-11-02 探针后续：编码供给按内容锁定（bytevc1 剧集全档 bytevc1，bytevc2 剧集低档
+        // bytevc2 + bytevc1 1080P）。验证锁定粒度是剧还是集：同剧前 N 集逐集探 base 参数。
+        // 输出仅含档位元数据，不含地址与凭据。
+        val session = PlaybackDeviceSession()
+        val repo = ContentRepository(playbackSession = session)
+        try {
+            val seriesId =
+                args.firstOrNull { it.matches(Regex("[0-9]{1,30}")) }
+                    ?: error("用法: --tab-episodes <seriesId> [count]")
+            val count =
+                args.mapNotNull { it.toIntOrNull() }.maxOrNull() ?: 4
+            val detail = repo.detail(seriesId)
+            println("tab-episodes series=$seriesId; title=${detail.series.title}; episodes=${detail.episodes.size}")
+            for (episode in detail.episodes.take(count)) {
+                Thread.sleep(400)
+                println("tab-episodes episode=$episode; ${tabProbe(repo.http, session, episode, tabBaseParams())}")
+            }
+        } finally {
+            repo.http.connectionPool.evictAll()
+            repo.http.dispatcher.executorService.shutdown()
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
+    if (args.contains("--novel-batch")) {
+        // 2026-11-02 逆向发现（红果 7.3.9.32 classes8）：官方 PlayerApiService.getVideoModelRx
+        // 现行使用 `POST /novel/player/video_model/v1/`（KMP 批量 body：biz_param + 
+        // mixed_video_id_map），与已死的 multi_video_model 同族但从未实测。逐 host 探该路径
+        // 在 bytevc2 样本集上的供给，device_level 1/3 各一发。输出仅含档位元数据。
+        val session = PlaybackDeviceSession()
+        val repo = ContentRepository(playbackSession = session)
+        try {
+            val episodes = args.filter { it.matches(Regex("[0-9]{1,30}")) }
+            check(episodes.isNotEmpty()) { "用法: --novel-batch <episodeId> [episodeId2...]" }
+            for (level in listOf(1, 3)) {
+                for (host in PlayRetryPlan.hosts) {
+                    Thread.sleep(400)
+                    println(
+                        "novel-batch level=$level; host=${PlayRetryPlan.tag(host)}; " +
+                            novelBatchProbe(repo.http, session, host, level, episodes.take(1))
+                    )
+                }
+            }
+        } finally {
+            repo.http.connectionPool.evictAll()
+            repo.http.dispatcher.executorService.shutdown()
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
+    if (args.contains("--tab-ua")) {
+        // 2026-11-02 探针后续：bytevc2 供给按集锁定且参数无法改变。最后一条线索——服务端可能
+        // 按 UA 版本号推断客户端 VVC 能力（71532=7.3.5.32 自带 VVC 解码器），旧版本 UA 可能
+        // 回退 bytevc1 供给。逐个 UA 探同一集。输出仅含档位元数据，不含地址与凭据。
+        val session = PlaybackDeviceSession()
+        val repo = ContentRepository(playbackSession = session)
+        try {
+            val episode =
+                args.firstOrNull { it.matches(Regex("[0-9]{1,30}")) }
+                    ?: error("用法: --tab-ua <episodeId>")
+            val uas =
+                listOf(
+                    "71532" to
+                        "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)",
+                    "65532" to
+                        "com.phoenix.read/65532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)",
+                    "62117" to
+                        "com.phoenix.read/62117 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)",
+                    "65532-old-ok" to
+                        "com.phoenix.read/65532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.12)",
+                )
+            for ((label, ua) in uas) {
+                Thread.sleep(400)
+                println("tab-ua ua=$label; episode=$episode; ${tabProbe(repo.http, session, episode, tabBaseParams(), ua)}")
+            }
+        } finally {
+            repo.http.connectionPool.evictAll()
+            repo.http.dispatcher.executorService.shutdown()
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
     if (args.contains("--soak")) {
         // 长时间采样空响应窗口（issue #38/#41 后续观测）：每约 5 秒一轮 × 3 条路径（主 host
         // 池化连接 / 主 host 新连接 / 备用 host hl 新连接），与线上重试策略及 --issue38 窗口
@@ -497,6 +699,267 @@ private fun playerProbe(
                     "${meta.optString("codec_type")}/${meta.optString("definition")}/${meta.optInt("vwidth")}x${meta.optInt("vheight")}"
                 }
             "http=${response.code}; code=$code; rows=${data?.length() ?: 0}; renditions=${renditions.joinToString(",")}; skewSec=$skew"
+        }
+    } catch (problem: Exception) {
+        "error=${problem.javaClass.simpleName}: ${problem.message?.take(80)}"
+    }
+}
+
+/**
+ * video_tab 接口单发探测：请求构造与 ContentRepository.tabVideoModel 一致，仅 extra 参数可变。
+ * 档位行格式 codec/definition/wxh，电视可解档（max(w,h)≤1088）追加 * 标记。输出不含地址与凭据。
+ */
+private fun tabProbe(
+    http: OkHttpClient,
+    session: PlaybackDeviceSession,
+    episodeId: String,
+    extra: Map<String, String>,
+    ua: String = "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)",
+): String {
+    val identity = session.profile(http)
+    val query = Signer.encode(identity.values + ("_rticket" to System.currentTimeMillis().toString()))
+    val tail = extra.entries.joinToString("&") { (key, value) -> "$key=$value" }
+    val request =
+        okhttp3.Request.Builder()
+            .url(
+                "https://${PlayRetryPlan.hosts.first()}/reading/bookapi/video_tab/multi_video_model/v1/" +
+                    "?$query&video_id=$episodeId&$tail",
+            )
+            .header("User-Agent", ua)
+            .header("Accept", "application/json; charset=utf-8")
+            .apply { if (identity.cookie.isNotBlank()) header("Cookie", identity.cookie) }
+            .get()
+            .build()
+    return try {
+        RequestScope.execute(http.newCall(request)) { response ->
+            val body = response.body?.string().orEmpty()
+            if (body.isBlank()) return@execute "http=${response.code}; body=EMPTY"
+            val json = runCatching { org.json.JSONObject(body) }.getOrNull()
+                ?: return@execute "http=${response.code}; body=NOT_JSON(${body.length})"
+            val code = json.optInt("code", json.optInt("Code", -1))
+            if (code != 0)
+                return@execute "http=${response.code}; code=$code; message=${json.optString("message").take(50)}"
+            val data = json.optJSONObject("data")
+            val rows = data?.optJSONObject("video_model_data") ?: data
+            val row =
+                rows?.optJSONObject(episodeId)
+                    ?: rows?.keys()?.asSequence()?.mapNotNull { rows.optJSONObject(it) }?.firstOrNull()
+                    ?: return@execute "http=${response.code}; code=$code; row=MISSING"
+            val model =
+                row.opt("video_model")?.let { value ->
+                    runCatching {
+                        (value as? org.json.JSONObject) ?: org.json.JSONObject(value.toString())
+                    }
+                        .getOrNull()
+                }
+                    ?: return@execute "http=${response.code}; code=$code; model=MISSING"
+            val tiers =
+                model.optJSONArray("video_list")?.objects().orEmpty().mapNotNull { entry ->
+                    val meta = entry.optJSONObject("video_meta") ?: return@mapNotNull null
+                    val codec = meta.optString("codec_type")
+                    val w = meta.optInt("vwidth")
+                    val h = meta.optInt("vheight")
+                    "${codec}/${meta.optString("definition")}/${w}x${h}${if (maxOf(w, h) in 1..1088) "*" else ""}"
+                }
+            "http=${response.code}; code=$code; renditions=${tiers.joinToString(",")}"
+        }
+    } catch (problem: Exception) {
+        "error=${problem.javaClass.simpleName}: ${problem.message?.take(80)}"
+    }
+}
+
+/** 与 ContentRepository.tabVideoModel 相同的 base 参数；供 --tab-matrix / --tab-fallback 复用。 */
+private fun tabBaseParams() =
+    linkedMapOf(
+        "video_id_type" to "0",
+        "device_level" to "1",
+        "need_all_video_definition" to "1",
+        "need_mp4_align" to "0",
+        "use_os_player" to "0",
+        "video_platform" to "1024",
+        "source" to "0",
+        "from_video_id" to "",
+    )
+
+/** 取 video_tab 原始 video_model 对象（对象或字符串两种形态都兼容），失败返回 null。 */
+private fun tabModelRaw(
+    http: OkHttpClient,
+    session: PlaybackDeviceSession,
+    episodeId: String,
+): org.json.JSONObject? {
+    val identity = session.profile(http)
+    val query = Signer.encode(identity.values + ("_rticket" to System.currentTimeMillis().toString()))
+    val request =
+        okhttp3.Request.Builder()
+            .url(
+                "https://${PlayRetryPlan.hosts.first()}/reading/bookapi/video_tab/multi_video_model/v1/" +
+                    "?$query&video_id=$episodeId&${tabBaseParams().entries.joinToString("&") { (k, v) -> "$k=$v" }}",
+            )
+            .header(
+                "User-Agent",
+                "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)",
+            )
+            .header("Accept", "application/json; charset=utf-8")
+            .apply { if (identity.cookie.isNotBlank()) header("Cookie", identity.cookie) }
+            .get()
+            .build()
+    return runCatching {
+        RequestScope.execute(http.newCall(request)) { response ->
+            val root = runCatching { org.json.JSONObject(response.body?.string().orEmpty()) }.getOrNull()
+                ?: return@execute null
+            if (root.optInt("code", root.optInt("Code", -1)) != 0) return@execute null
+            val data = root.optJSONObject("data")
+            val rows = data?.optJSONObject("video_model_data") ?: data
+            val row =
+                rows?.optJSONObject(episodeId)
+                    ?: rows?.keys()?.asSequence()?.mapNotNull { rows.optJSONObject(it) }?.firstOrNull()
+                    ?: return@execute null
+            val raw = row.opt("video_model") ?: return@execute null
+            (raw as? org.json.JSONObject) ?: runCatching { org.json.JSONObject(raw.toString()) }.getOrNull()
+        }
+    }.getOrNull()
+}
+
+/** 提取模型内 fallback_api 完整地址（对象/数组/字符串三种形态都兼容），缺失返回 null。 */
+private fun org.json.JSONObject.fallbackUrl(): String? {
+    val raw = opt("fallback_api") ?: return null
+    val url =
+        when (raw) {
+            is org.json.JSONObject -> raw.optString("fallback_api")
+            is org.json.JSONArray -> raw.optString(0)
+            else ->
+                runCatching { org.json.JSONObject(raw.toString()).optString("fallback_api") }
+                    .getOrDefault(raw.toString())
+        }
+    return url.takeIf { it.startsWith("https://") }
+}
+
+/** 遗留 fallback 端点单发探测：解析 video_info.data.video_list 的档位元数据，电视可解档加 *。 */
+private fun legacyProbe(http: OkHttpClient, url: String): String {
+    val request =
+        okhttp3.Request.Builder()
+            .url(url)
+            .header(
+                "User-Agent",
+                "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)",
+            )
+            .header("Accept", "application/json; charset=utf-8")
+            .get()
+            .build()
+    return try {
+        RequestScope.execute(http.newCall(request)) { response ->
+            val body = response.body?.string().orEmpty()
+            if (body.isBlank()) return@execute "http=${response.code}; body=EMPTY"
+            val json = runCatching { org.json.JSONObject(body) }.getOrNull()
+                ?: return@execute "http=${response.code}; body=NOT_JSON(${body.length})"
+            val code = json.optInt("code", json.optInt("Code", 0))
+            val info = json.optJSONObject("video_info")?.optJSONObject("data")
+            val videoList = info?.optJSONObject("video_list")
+                ?: return@execute "http=${response.code}; code=$code; video_list=MISSING"
+            val tiers =
+                videoList.keys().asSequence().mapNotNull { key ->
+                    val row = videoList.optJSONObject(key) ?: return@mapNotNull null
+                    val codec = row.optString("codec_type")
+                    val w = row.optInt("vwidth", row.optInt("width", 0))
+                    val h = row.optInt("vheight", row.optInt("height", 0))
+                    "${codec}/${row.optString("quality_desc").ifEmpty { row.optString("definition") }}/${w}x${h}${if (maxOf(w, h) in 1..1088) "*" else ""}"
+                }
+            "http=${response.code}; code=$code; renditions=${tiers.joinToString(",")}"
+        }
+    } catch (problem: Exception) {
+        "error=${problem.javaClass.simpleName}: ${problem.message?.take(80)}"
+    }
+}
+
+/** 旧批量家族子路径单发探测：POST /novel/player/<sub>，body 与线上批量请求一致。 */
+private fun novelBatchProbe(
+    http: OkHttpClient,
+    session: PlaybackDeviceSession,
+    host: String,
+    deviceLevel: Int,
+    episodes: List<String>,
+): String {
+    val identity = session.profile(http)
+    val query = Signer.encode(identity.values + ("_rticket" to System.currentTimeMillis().toString()))
+    val payload =
+        """{"biz_param":{"detail_page_version":0,"device_level":$deviceLevel,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":${org.json.JSONArray(episodes)}}}"""
+            .toByteArray()
+    val request =
+        okhttp3.Request.Builder()
+            .url("https://$host/novel/player/video_model/v1/?$query")
+            .header(
+                "User-Agent",
+                "com.phoenix.read/73932 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)",
+            )
+            .header("Accept", "application/json; charset=utf-8,application/x-protobuf")
+            .apply { if (identity.cookie.isNotBlank()) header("Cookie", identity.cookie) }
+            .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+    return try {
+        RequestScope.execute(http.newCall(request)) { response ->
+            val body = response.body?.string().orEmpty()
+            if (body.isBlank()) return@execute "http=${response.code}; body=EMPTY"
+            val json = runCatching { org.json.JSONObject(body) }.getOrNull()
+                ?: return@execute "http=${response.code}; body=NOT_JSON(${body.length})"
+            val code = json.optInt("code", json.optInt("Code", -1))
+            if (code != 0)
+                return@execute "http=${response.code}; code=$code; message=${json.optString("message").take(50)}"
+            val data = json.optJSONObject("data")
+            val row = data?.optJSONObject(episodes.first())
+            val model =
+                row?.opt("video_model")?.let { value ->
+                    runCatching {
+                        (value as? org.json.JSONObject) ?: org.json.JSONObject(value.toString())
+                    }
+                        .getOrNull()
+                }
+                    ?: return@execute "http=${response.code}; code=$code; model=MISSING"
+            val tiers =
+                model.optJSONArray("video_list")?.objects().orEmpty().mapNotNull { entry ->
+                    val meta = entry.optJSONObject("video_meta") ?: return@mapNotNull null
+                    val codec = meta.optString("codec_type")
+                    val w = meta.optInt("vwidth")
+                    val h = meta.optInt("vheight")
+                    "${codec}/${meta.optString("definition")}/${w}x${h}${if (maxOf(w, h) in 1..1088) "*" else ""}"
+                }
+            "http=${response.code}; code=$code; renditions=${tiers.joinToString(",")}"
+        }
+    } catch (problem: Exception) {
+        "error=${problem.javaClass.simpleName}: ${problem.message?.take(80)}"
+    }
+}
+
+/** 旧批量路径换 bookapi 前缀的一次性验证（原 /novel/player 前缀八个域名已实测全空）。 */
+private fun tabOldPathProbe(
+    http: OkHttpClient,
+    session: PlaybackDeviceSession,
+    episodeId: String,
+): String {
+    val identity = session.profile(http)
+    val query = Signer.encode(identity.values + ("_rticket" to System.currentTimeMillis().toString()))
+    val payload =
+        """{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":${org.json.JSONArray(listOf(episodeId))}}}"""
+            .toByteArray()
+    val request =
+        okhttp3.Request.Builder()
+            .url(
+                "https://${PlayRetryPlan.hosts.first()}/reading/bookapi/novel/player/multi_video_model/v1/?$query",
+            )
+            .header(
+                "User-Agent",
+                "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)",
+            )
+            .header("Accept", "application/json; charset=utf-8,application/x-protobuf")
+            .apply { if (identity.cookie.isNotBlank()) header("Cookie", identity.cookie) }
+            .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+    return try {
+        RequestScope.execute(http.newCall(request)) { response ->
+            val body = response.body?.string().orEmpty()
+            if (body.isBlank()) return@execute "http=${response.code}; body=EMPTY"
+            val json = runCatching { org.json.JSONObject(body) }.getOrNull()
+            val code = json?.optInt("code", json.optInt("Code", -1)) ?: -1
+            "http=${response.code}; body=${body.length}B; code=$code"
         }
     } catch (problem: Exception) {
         "error=${problem.javaClass.simpleName}: ${problem.message?.take(80)}"

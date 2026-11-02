@@ -33,6 +33,52 @@ class PlaybackSourcesTest {
     }
 
     @Test
+    fun noPlayableQualitySurfacesAsDeterministicVvcMessage() {
+        val message =
+            "本集低档为 VVC（bytevc2）编码，电视无法解码，可尝试其他集数"
+        assertEquals(message, playbackFailureSummary(NoPlayableQualityException()))
+        // 包在异常链里（openStream 由 playEpisode 的包装层传递）也要能识别。
+        assertEquals(message, playbackFailureSummary(java.io.IOException("wrapper", NoPlayableQualityException())))
+    }
+
+    @Test
+    fun firstPlayableEpisodeSkipsDeterministicFailuresWithinFirstThreeEpisodes() {
+        val episodes = listOf("ep1", "ep2", "ep3", "ep4")
+        val attempts = mutableListOf<String>()
+        fun opener(failing: Set<String>, result: String = "opened") = { id: String ->
+            attempts += id
+            if (id in failing) throw NoPlayableQualityException()
+            result
+        }
+        // 第一集不可解：落到第二集并回报集内序号。
+        attempts.clear()
+        assertEquals("opened" to 1, firstPlayableEpisode(episodes, 0, opener(setOf("ep1"))))
+        assertEquals(listOf("ep1", "ep2"), attempts)
+        // 前两集都不可解：落到第三集（绝对上限）。
+        attempts.clear()
+        assertEquals(
+            "opened" to 2,
+            firstPlayableEpisode(episodes, 0, opener(setOf("ep1", "ep2"))),
+        )
+        assertEquals(listOf("ep1", "ep2", "ep3"), attempts)
+        // 试播兜底从第二集起：只探 EP2/EP3，绝不越界到第四集。
+        attempts.clear()
+        assertNull(firstPlayableEpisode(episodes, 1, opener(setOf("ep2", "ep3", "ep4"))))
+        assertEquals(listOf("ep2", "ep3"), attempts)
+        // 前三集全部不可解返回 null。
+        assertNull(firstPlayableEpisode(episodes, 0, opener(setOf("ep1", "ep2", "ep3"))))
+        // 分集不足三集时按实际数量收敛。
+        assertNull(firstPlayableEpisode(listOf("ep1"), 0, opener(setOf("ep1"))))
+        // 非确定性异常原样上抛。
+        try {
+            firstPlayableEpisode(episodes, 0) { throw java.io.IOException("网络故障") }
+            fail("网络异常不应被吞掉")
+        } catch (expected: java.io.IOException) {
+            assertEquals("网络故障", expected.message)
+        }
+    }
+
+    @Test
     fun diagnosticDetailPassesEmptyResponseMetadataThrough() {
         assertEquals(
             "空响应x4 host=b,hl,lf,b",
