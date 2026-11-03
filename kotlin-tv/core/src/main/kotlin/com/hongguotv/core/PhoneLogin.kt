@@ -137,11 +137,9 @@ class PhoneLogin(private val http: OkHttpClient) {
                 .sign(PASSPORT + path, if (form) queryDevice else queryDevice + passport, payload)
         val request = Request.Builder().url(signed.url)
         signed.headers.forEach { (k, v) -> request.header(k, v) }
-        if (cookies.isNotEmpty())
-            request.header(
-                "Cookie",
-                cookies.entries.joinToString("; ") { (name, value) -> "$name=$value" },
-            )
+        // 刻意不回发 Cookie：实测把 send_code 下发的 cookie 带到 sms_login 会被 passport
+        // 判 `2046`，而不带 cookie 时同一请求回 `1202 验证码错误`。Set-Cookie 仍会解析并保留，
+        // 只用于判断是否已经拿到 sessionid。
         if (payload != null)
             request.post(payload.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
         val reply =
