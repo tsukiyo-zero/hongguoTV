@@ -59,35 +59,43 @@ class PhoneLogin(private val http: OkHttpClient) {
     }
 
     fun verify(code: String): AccountCredentials {
-        if (expired) throw Failure("本次登录会话已失效，不能继续使用此会话提交验证码", 1)
+        if (expired) throw Failure("本次登录会话已失效，请重新获取验证码", 1)
         check(deviceId.isNotEmpty()) { "请先发送验证码" }
-        val params =
+        var params =
             mapOf("mobile" to mobile, "code" to code, "type" to type, "mobile_ticket" to ticket)
-        val replies = mutableListOf<JSONObject>()
+        val failures = mutableListOf<Failure>()
         for ((path, form) in VERIFY_ATTEMPTS) {
             val reply = call(path, params, form)
-            replies += reply
             if (cookies.containsKey("sessionid")) break
-            val error = reply.optJSONObject("data")
-            if (error != null && error.optInt("error_code", 0) != 0) {
-                val errorCode = error.optInt("error_code")
-                if (errorCode == 1) {
+            val data = reply.optJSONObject("data")
+            // 平台会在每次尝试后下发新的 mobile_ticket，后续端点沿用最新值。
+            data?.optString("mobile_ticket")?.takeIf(String::isNotBlank)?.let { fresh ->
+                ticket = fresh
+                params = params + ("mobile_ticket" to fresh)
+            }
+            val errorCode = data?.optInt("error_code", 0) ?: 0
+            when {
+                // 1 = 会话过期：这条端点不适用于「未登录换验证码」，继续试下一条。
+                errorCode == 0 || errorCode == 1 -> {
+                    if (errorCode == 1) failures += Failure("会话过期，请重新登录", 1)
+                    continue
+                }
+                // 1203 = 错误次数过多或验证码过期：本次会话作废，继续提交只会更糟。
+                errorCode == 1203 -> {
                     expired = true
                     cookies.clear()
                     ticket = ""
                     throw Failure(
-                        "平台拒绝本次登录会话（错误码 1）。短信发送成功不代表登录会话有效，当前登录链路尚未接通；请勿反复获取或提交验证码。",
+                        describe(data) ?: "错误次数过多或验证码过期，请重新获取验证码",
                         errorCode,
                     )
                 }
-                throw Failure(describe(error) ?: "验证码校验失败", errorCode, errorCode == 1102)
+                else -> throw Failure(describe(data) ?: "验证码校验失败", errorCode, errorCode == 1102)
             }
         }
         if (!cookies.containsKey("sessionid")) {
-            throw Failure(
-                replies.firstNotNullOfOrNull { describe(it.optJSONObject("data") ?: JSONObject()) }
-                    ?: "登录没有成功，平台没有下发登录态"
-            )
+            throw failures.firstOrNull()
+                ?: Failure("登录没有成功，平台没有下发登录态")
         }
         val header = cookies.entries.joinToString("; ") { (name, value) -> "$name=$value" }
         return AccountCredentialsParser.parseHeader(header)
@@ -157,13 +165,17 @@ class PhoneLogin(private val http: OkHttpClient) {
         private const val PASSPORT = "https://is.snssdk.com"
         /** login-lab 实测：24 = 登录验证码；1 / 3 是绑定 / 换绑手机号。 */
         const val LOGIN_CODE_TYPE = "24"
-        /** `validate_code` 是要验证的主角；`sms_login` 系列是同一套 passport 上常见的直登端点，顺手一起试。 */
+        /**
+         * 短信登录的主端点是 `sms_login` 系列；`validate_code` 是「已登录后校验手机号」的入口，
+         * 对未登录会话固定回 `error_code 1 会话过期`（2026-11-03 实测），因此放到最后兜底。
+         */
         private val VERIFY_ATTEMPTS =
             listOf(
-                "/passport/mobile/validate_code/v1/" to false,
-                "/passport/mobile/validate_code/v1/" to true,
                 "/passport/mobile/sms_login/" to true,
                 "/passport/mobile/sms_login_only/" to true,
+                "/passport/mobile/sms_login_continue/" to true,
+                "/passport/mobile/validate_code/v1/" to false,
+                "/passport/mobile/validate_code/v1/" to true,
             )
 
         /**

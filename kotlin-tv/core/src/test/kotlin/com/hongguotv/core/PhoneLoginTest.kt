@@ -103,16 +103,20 @@ class PhoneLoginTest {
         assertEquals(1, calls.get())
     }
 
+    /** `error_code 1` 表示端点不适用（validate_code 对未登录会话固定回它），应继续尝试后续端点。 */
     @Test
-    fun rejectedSessionBlocksFurtherCodesWithoutRetryPrompt() {
+    fun sessionExpiredErrorKeepsTryingOtherEndpoints() {
+        val endpoints = mutableListOf<String>()
         val login = PhoneLogin(
             client { request ->
                 when {
                     deviceRegister(request) -> registered
                     request.url.encodedPath.contains("/send_code/") ->
                         200 to """{"message":"success","data":{"mobile":"138******00","mobile_ticket":"tk"}}"""
-                    else ->
-                        200 to """{"message":"error","data":{"error_code":1,"description":"session expired"}}"""
+                    else -> {
+                        endpoints += request.url.encodedPath
+                        200 to """{"message":"error","data":{"error_code":1,"description":"会话过期，请重新登录"}}"""
+                    }
                 }
             }
         )
@@ -124,13 +128,69 @@ class PhoneLoginTest {
             assertEquals(1, failure.errorCode)
             assertFalse(failure.canRetryCode)
         }
-        // 会话作废后不再发请求，直接给出一次性失败。
+        // 五条端点都试过，且不会把会话标记成不可再用（用户可换验证码重试）。
+        assertEquals(5, endpoints.size)
+        try {
+            login.verify("123456")
+            fail("expected another rejection")
+        } catch (failure: PhoneLogin.Failure) {
+            assertFalse(failure.message.orEmpty().contains("已失效"))
+        }
+    }
+
+    /** 1203 是「错误次数过多或验证码过期」，本次会话作废，不再继续提交。 */
+    @Test
+    fun tooManyAttemptsExpiresTheSession() {
+        val login = PhoneLogin(
+            client { request ->
+                when {
+                    deviceRegister(request) -> registered
+                    request.url.encodedPath.contains("/send_code/") ->
+                        200 to """{"message":"success","data":{"mobile":"138******00","mobile_ticket":"tk"}}"""
+                    else ->
+                        200 to """{"message":"error","data":{"error_code":1203,"description":"错误次数过多或验证码过期，请稍后重试"}}"""
+                }
+            }
+        )
+        login.send("13800000000")
+        try {
+            login.verify("123456")
+            fail("expected exhausted session")
+        } catch (failure: PhoneLogin.Failure) {
+            assertEquals(1203, failure.errorCode)
+            assertTrue(failure.message.orEmpty().contains("错误次数过多"))
+        }
         try {
             login.verify("123456")
             fail("expected expired session")
         } catch (failure: PhoneLogin.Failure) {
             assertTrue(failure.message.orEmpty().contains("已失效"))
         }
+    }
+
+    /** sms_login 成功时直接基于它建立会话，不应再打 validate_code。 */
+    @Test
+    fun smsLoginEstablishesSessionWithoutTouchingValidateCode() {
+        val paths = mutableListOf<String>()
+        val login = PhoneLogin(
+            client(
+                cookies = mapOf("sessionid" to "abc"),
+                respond = { request ->
+                    when {
+                        deviceRegister(request) -> registered
+                        request.url.encodedPath.contains("/send_code/") ->
+                            200 to """{"message":"success","data":{"mobile":"138******00","mobile_ticket":"tk"}}"""
+                        else -> {
+                            paths += request.url.encodedPath
+                            200 to """{"message":"success","data":{}}"""
+                        }
+                    }
+                },
+            )
+        )
+        login.send("13800000000")
+        login.verify("123456")
+        assertEquals(listOf("/passport/mobile/sms_login/"), paths)
     }
 
     @Test
