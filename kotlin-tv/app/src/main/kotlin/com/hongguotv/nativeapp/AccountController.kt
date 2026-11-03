@@ -12,7 +12,10 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.text.InputType
 import android.util.Base64
+import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import com.hongguotv.core.*
 import java.security.KeyStore
@@ -469,55 +472,168 @@ class AccountController(private val activity: Activity, private val play: (Cloud
         }
     }
 
+    /**
+     * 手机号与验证码放在同一个对话框里：号码输入、「获取验证码」（发送后按钮倒数读秒）、
+     * 验证码输入与登录按钮，流程与手机 App 一致，避免电视上两次弹窗来回切换。
+     */
     private fun phone() {
-        input("手机号（确认后发送登录验证码）", false) { raw ->
-            val mobile =
-                runCatching { PhoneLogin.parse(raw) }
-                    .getOrElse {
-                        toast(safeError(it))
-                        return@input
+        val context = activity
+        val density = context.resources.displayMetrics.density
+        fun px(value: Int) = (value * density).toInt()
+
+        val mobile =
+            EditText(context).apply {
+                hint = "手机号（大陆 11 位，或 +886 912345678）"
+                inputType = InputType.TYPE_CLASS_PHONE
+                isSingleLine = true
+            }
+        val code =
+            EditText(context).apply {
+                hint = "短信验证码"
+                inputType = InputType.TYPE_CLASS_NUMBER
+                isSingleLine = true
+            }
+        val send =
+            Button(context).apply {
+                text = "获取验证码"
+                isAllCaps = false
+            }
+        val hint =
+            TextView(context).apply {
+                text = "先获取验证码，再输入短信里的数字"
+                textSize = 13f
+                setPadding(0, px(8), 0, 0)
+            }
+        val row =
+            LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(
+                    code,
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+                )
+                addView(
+                    send,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    ),
+                )
+            }
+        val column =
+            LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(px(24), px(12), px(24), 0)
+                addView(mobile)
+                addView(row)
+                addView(hint)
+            }
+
+        var login: PhoneLogin? = null
+        var countdown: Runnable? = null
+        fun stopCountdown() {
+            countdown?.let(main::removeCallbacks)
+            countdown = null
+        }
+        fun startCountdown(seconds: Int) {
+            stopCountdown()
+            var left = seconds.coerceIn(1, 600)
+            val tick =
+                object : Runnable {
+                    override fun run() {
+                        if (dialog?.isShowing != true) return
+                        send.isEnabled = left <= 0
+                        send.text = if (left > 0) "${left}s 后重发" else "获取验证码"
+                        if (left > 0) {
+                            left--
+                            main.postDelayed(this, 1000)
+                        }
                     }
-            // 网页端发码已被滑块拦住（1105「红果要求完成滑块验证」），改用 App passport
-            // 通道：同一设备先注册再发码，验证码会话与设备身份绑定。
-            val login = PhoneLogin(phoneHttp)
+                }
+            countdown = tick
+            send.isEnabled = false
+            send.text = "${left}s 后重发"
+            left--
+            main.postDelayed(tick, 1000)
+        }
+
+        dialog?.dismiss()
+        dialog =
+            AlertDialog.Builder(context)
+                .setTitle("手机号 + 验证码登录")
+                .setView(column)
+                .setPositiveButton("登录", null)
+                .setNegativeButton("取消", null)
+                .setOnDismissListener { stopCountdown() }
+                .create()
+                .also { it.show() }
+
+        dialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
+            val current = login
+            val value = code.text.toString().trim()
+            if (current == null) {
+                hint.text = "请先点「获取验证码」"
+                return@setOnClickListener
+            }
+            if (!value.matches(Regex("[0-9]{4,8}"))) {
+                hint.text = "请输入 4—8 位验证码"
+                return@setOnClickListener
+            }
+            dialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = false
+            hint.text = "正在登录…"
             task(
-                { login.send(mobile) },
-                { sent -> code(login, sent.maskedMobile) },
-                { failure ->
-                    showDialog(
-                        AlertDialog.Builder(activity)
-                            .setTitle("短信登录未完成")
-                            .setMessage(safeError(failure))
-                            .setPositiveButton("改用扫码") { _, _ -> qrLogin() }
-                            .setNegativeButton("返回", null)
-                    )
+                { validatePhoneAccount(current.verify(value)).also { store.save(it.first) } },
+                { (next, account) ->
+                    dialog?.dismiss()
+                    acceptAccount(next, account)
                 },
+                { failure ->
+                    dialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = true
+                    hint.text = safeError(failure)
+                    if (failure is PhoneLogin.Failure && !failure.canRetryCode)
+                        phoneLoginFailure(failure)
+                },
+                announce = false,
+            )
+        }
+
+        send.setOnClickListener {
+            val number =
+                runCatching { PhoneLogin.parse(mobile.text.toString().trim()) }
+                    .getOrElse {
+                        hint.text = safeError(it)
+                        return@setOnClickListener
+                    }
+            val fresh = PhoneLogin(phoneHttp)
+            stopCountdown()
+            send.isEnabled = false
+            send.text = "发送中…"
+            hint.text = "正在发送验证码…"
+            task(
+                { fresh.send(number) },
+                { sent ->
+                    login = fresh
+                    hint.text = "验证码已发送至 ${sent.maskedMobile}"
+                    startCountdown(sent.retrySeconds)
+                },
+                { failure ->
+                    send.isEnabled = true
+                    send.text = "获取验证码"
+                    hint.text = safeError(failure)
+                },
+                announce = false,
             )
         }
     }
 
-    private fun code(login: PhoneLogin, masked: String, error: String? = null) {
-        input("输入发送至 $masked 的验证码", true, error) { value ->
-            if (!value.matches(Regex("[0-9]{4,8}"))) {
-                code(login, masked, "请输入 4—8 位验证码")
-                return@input
-            }
-            task(
-                { validatePhoneAccount(login.verify(value)).also { store.save(it.first) } },
-                { (next, account) -> acceptAccount(next, account) },
-                { failure ->
-                    if (failure is PhoneLogin.Failure && !failure.canRetryCode) {
-                        showDialog(
-                            AlertDialog.Builder(activity)
-                                .setTitle("登录未完成")
-                                .setMessage(safeError(failure))
-                                .setPositiveButton("返回账号页") { _, _ -> show() }
-                                .setNeutralButton("改用扫码") { _, _ -> qrLogin() }
-                        )
-                    } else code(login, masked, safeError(failure))
-                },
-            )
-        }
+    /** 需要重新发码或改用扫码时才打断用户；可重试的错误留在面板里显示。 */
+    private fun phoneLoginFailure(failure: PhoneLogin.Failure) {
+        showDialog(
+            AlertDialog.Builder(activity)
+                .setTitle("登录未完成")
+                .setMessage(safeError(failure))
+                .setPositiveButton("返回账号页") { _, _ -> show() }
+                .setNeutralButton("改用扫码") { _, _ -> qrLogin() }
+        )
     }
 
     /**
@@ -692,11 +808,12 @@ class AccountController(private val activity: Activity, private val play: (Cloud
         action: () -> T,
         success: (T) -> Unit,
         failure: (Throwable) -> Unit = { toast(safeError(it)) },
+        announce: Boolean = true,
     ) {
         if (busy || closed) return
         busy = true
         val token = generation
-        toast("正在连接红果账号…")
+        if (announce) toast("正在连接红果账号…")
         worker.execute {
             if (closed || token != generation) return@execute
             val result = runCatching(action)

@@ -77,7 +77,7 @@ class PhoneLogin(private val http: OkHttpClient) {
             when {
                 // 1 = 会话过期：这条端点不适用于「未登录换验证码」，继续试下一条。
                 errorCode == 0 || errorCode == 1 -> {
-                    if (errorCode == 1) failures += Failure("会话过期，请重新登录", 1)
+                    if (errorCode == 1) failures += Failure("会话过期，请重新登录（错误码 1）", 1)
                     continue
                 }
                 // 1203 = 错误次数过多或验证码过期：本次会话作废，继续提交只会更糟。
@@ -86,11 +86,16 @@ class PhoneLogin(private val http: OkHttpClient) {
                     cookies.clear()
                     ticket = ""
                     throw Failure(
-                        describe(data) ?: "错误次数过多或验证码过期，请重新获取验证码",
+                        describe(data) ?: "错误次数过多或验证码过期，请重新获取验证码（错误码 $errorCode）",
                         errorCode,
                     )
                 }
-                else -> throw Failure(describe(data) ?: "验证码校验失败", errorCode, errorCode == 1102)
+                else ->
+                    throw Failure(
+                        describe(data) ?: "验证码校验失败（错误码 $errorCode）",
+                        errorCode,
+                        errorCode == 1102,
+                    )
             }
         }
         if (!cookies.containsKey("sessionid")) {
