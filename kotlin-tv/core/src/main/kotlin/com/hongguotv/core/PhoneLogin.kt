@@ -35,12 +35,11 @@ class PhoneLogin(private val http: OkHttpClient) {
     data class Sent(val maskedMobile: String, val retrySeconds: Int)
 
     fun send(mobile: String): Sent {
-        val registered =
-            CloudAccountClient(http).registerDevice() ?: throw Failure("设备注册失败，请检查网络后重试")
-        deviceId = registered.deviceId
-        installId = registered.installId
+        // 官方 App 的短信登录不注册新设备：它直接用设备表里的固定 device_id/iid，且不携带
+        // 注册 cookie。实测新注册设备 + query 带 device_id 会被 passport 判 `2046`。
+        deviceId = VendorConstants.device.getValue("device_id")
+        installId = VendorConstants.device.getValue("iid")
         cookies.clear()
-        cookies.putAll(registered.cookies)
         expired = false
         this.mobile = mobile
         val reply =

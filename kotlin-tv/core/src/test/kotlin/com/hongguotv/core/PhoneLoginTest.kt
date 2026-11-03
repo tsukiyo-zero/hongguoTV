@@ -55,8 +55,9 @@ class PhoneLoginTest {
         assertEquals("138******00", sent.maskedMobile)
         assertEquals(60, sent.retrySeconds)
         assertEquals("tk", login.ticket)
-        assertEquals("333", login.deviceId)
-        assertEquals("444", login.installId)
+        // 官方 App 的登录直接用设备表里的固定号，不注册新设备。
+        assertEquals("1905892595378490", login.deviceId)
+        assertEquals("1905892595382586", login.installId)
     }
 
     @Test
@@ -97,9 +98,9 @@ class PhoneLoginTest {
         login.send("13800000000")
         val credentials = login.verify("123456")
         assertEquals("sessionid=abc", credentials.cookie)
-        assertEquals("333", credentials.deviceId)
-        assertEquals("444", credentials.installId)
-        assertEquals("333", credentials.device["device_id"])
+        assertEquals("1905892595378490", credentials.deviceId)
+        assertEquals("1905892595382586", credentials.installId)
+        assertEquals("1905892595378490", credentials.device["device_id"])
         assertEquals(1, calls.get())
     }
 
