@@ -165,7 +165,9 @@ class RecommendationFeedTest {
         RecommendationFeed(http, account).page(1)
         assertEquals("api5-normal-sinfonlinea.fqnovel.com", requested!!.url.host)
         assertEquals(account.cookie, requested!!.header("Cookie"))
-        assertEquals("test-device", requested!!.url.queryParameter("device_id"))
+        // 账号态只带 Cookie：再带 device_id 会被 feed 接口判 110 ILLEGAL_ACCESS。
+        assertNull(requested!!.url.queryParameter("device_id"))
+        assertNull(requested!!.url.queryParameter("iid"))
         RecommendationFeed(http).page(1)
         assertNull(requested!!.header("Cookie"))
         assertNull(requested!!.url.queryParameter("session_id"))
@@ -338,6 +340,8 @@ class RecommendationFeedTest {
         assertEquals(1, page.items.size)
         assertEquals(2, requests.size)
         assertEquals("stale-session", requests[0].url.queryParameter("session_id"))
+        // 重试同时换到备用域名，避免反复打同一个被限流的节点。
+        assertNotEquals(requests[0].url.host, requests[1].url.host)
         assertNull(requests[1].url.queryParameter("session_id"))
         assertEquals("0", requests[1].url.queryParameter("offset"))
         assertEquals("1", requests[1].url.queryParameter("client_req_type"))

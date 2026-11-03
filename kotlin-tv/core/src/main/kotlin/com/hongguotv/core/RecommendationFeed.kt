@@ -63,7 +63,7 @@ class RecommendationFeed(
             require(page in 1..100)
             if (page == cursor.lastPage) return@synchronized checkNotNull(cursor.lastResult)
             if (page != cursor.expectedPage) throw IOException("推荐已刷新，请重新获取")
-            repeat(3) {
+            repeat(3) { attempt ->
                 val params =
                     linkedMapOf(
                             "aid" to "8662",
@@ -99,8 +99,9 @@ class RecommendationFeed(
                                         "ac",
                                     )
                                 putAll(it.device.filterKeys { key -> key in allowed })
-                                if (it.deviceId.isNotBlank()) put("device_id", it.deviceId)
-                                if (it.installId.isNotBlank()) put("iid", it.installId)
+                                // 登录后不再带 device_id/iid：2026-11-03 实测带账号 Cookie 时
+                                // 再塞登录用的固定设备号，feed 直接回 `110 ILLEGAL_ACCESS`；
+                                // 只带 Cookie 返回 `0 SUCCESS`。设备身份由会话自身体现。
                             }
                             put("version_code", "73532")
                             put("version_name", "7.3.5.32")
@@ -114,7 +115,9 @@ class RecommendationFeed(
                             put("_rticket", System.currentTimeMillis().toString())
                             if (cursor.session.isNotEmpty()) put("session_id", cursor.session)
                         }
-                val host = "https://api5-normal-sinfonlinea.fqnovel.com"
+                // 主域之外再备两个可用的同族域名：110 一类校验/限流错误换路比反复打同一节点更容易
+                // 逃出去（与播放接口的换路策略一致）。
+                val host = FEED_HOSTS[attempt % FEED_HOSTS.size]
                 val request =
                     if (category == null) {
                         val url = "$host/reading/bookapi/bookmall/tab/v1/".toHttpUrl().newBuilder()
@@ -230,6 +233,14 @@ class RecommendationFeed(
          * MiB account reader must not gate this feed.
          */
         private const val FEED_RESPONSE_LIMIT = 16 * 1024 * 1024L
+
+        /** 推荐可用的同族域名；首选项沿用原来的 fqnovel 端点。 */
+        private val FEED_HOSTS =
+            listOf(
+                "https://api5-normal-sinfonlinea.fqnovel.com",
+                "https://api5-normal-hl.fqnovel.com",
+                "https://api5-normal-lf.fqnovel.com",
+            )
 
         internal fun feedResponse(response: okhttp3.Response): String {
             if (!response.isSuccessful) throw IOException("推荐请求失败（HTTP ${response.code}）")
