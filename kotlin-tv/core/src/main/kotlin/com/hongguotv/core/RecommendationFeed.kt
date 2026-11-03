@@ -99,8 +99,9 @@ class RecommendationFeed(
                                         "ac",
                                     )
                                 putAll(it.device.filterKeys { key -> key in allowed })
-                                if (it.deviceId.isNotBlank()) put("device_id", it.deviceId)
-                                if (it.installId.isNotBlank()) put("iid", it.installId)
+                                // 登录后不再带 device_id/iid：2026-11-03 实测带账号 Cookie 时
+                                // 再塞登录用的固定设备号，feed 直接回 `110 ILLEGAL_ACCESS`；
+                                // 只带 Cookie 返回 `0 SUCCESS`。设备身份由会话自身体现。
                             }
                             put("version_code", "73532")
                             put("version_name", "7.3.5.32")
