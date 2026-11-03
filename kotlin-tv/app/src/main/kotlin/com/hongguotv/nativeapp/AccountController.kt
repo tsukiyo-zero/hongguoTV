@@ -12,7 +12,14 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.text.InputType
 import android.util.Base64
+import android.text.Editable
+import android.text.TextWatcher
+import android.widget.ArrayAdapter
+import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ListView
+import android.widget.TextView
 import android.widget.Toast
 import com.hongguotv.core.*
 import java.security.KeyStore
@@ -104,6 +111,13 @@ class AccountController(private val activity: Activity, private val play: (Cloud
             .followSslRedirects(false)
             .build()
     private val client = CloudAccountClient(http)
+    // passport 短信登录沿用默认重定向策略（与网页登录的 no-redirect 客户端分开）。
+    private val phoneHttp =
+        okhttp3.OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .callTimeout(30, TimeUnit.SECONDS)
+            .build()
     private val store = AccountStore(activity)
     @Volatile private var generation = 0
     @Volatile private var closed = false
@@ -462,54 +476,334 @@ class AccountController(private val activity: Activity, private val play: (Cloud
         }
     }
 
+    /**
+     * 手机号与验证码放在同一个对话框里：号码输入、「获取验证码」（发送后按钮倒数读秒）、
+     * 验证码输入与登录按钮，流程与手机 App 一致，避免电视上两次弹窗来回切换。
+     */
     private fun phone() {
-        input("手机号（确认后发送登录验证码）", false) { raw ->
-            val mobile =
-                runCatching { PhoneLogin.parse(raw) }
-                    .getOrElse {
-                        toast(safeError(it))
-                        return@input
+        val context = activity
+        val density = context.resources.displayMetrics.density
+        fun px(value: Int) = (value * density).toInt()
+
+        var country = "86"
+        val countryButton =
+            Button(context).apply {
+                text = "+86 ▾"
+                isAllCaps = false
+            }
+        val mobile =
+            EditText(context).apply {
+                hint = "手机号（大陆 11 位，境外不填前导 0）"
+                inputType = InputType.TYPE_CLASS_PHONE
+                isSingleLine = true
+            }
+        val mobileRow =
+            LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(
+                    countryButton,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    ),
+                )
+                addView(
+                    mobile,
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+                )
+            }
+        val code =
+            EditText(context).apply {
+                hint = "短信验证码"
+                inputType = InputType.TYPE_CLASS_NUMBER
+                isSingleLine = true
+            }
+        val send =
+            Button(context).apply {
+                text = "获取验证码"
+                isAllCaps = false
+            }
+        val hint =
+            TextView(context).apply {
+                text = "先获取验证码，再输入短信里的数字"
+                textSize = 13f
+                setPadding(0, px(8), 0, 0)
+            }
+        val row =
+            LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(
+                    code,
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+                )
+                addView(
+                    send,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    ),
+                )
+            }
+        val column =
+            LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(px(24), px(12), px(24), 0)
+                addView(mobileRow)
+                addView(row)
+                addView(hint)
+            }
+
+        var login: PhoneLogin? = null
+        var countdown: Runnable? = null
+        fun stopCountdown() {
+            countdown?.let(main::removeCallbacks)
+            countdown = null
+        }
+        fun startCountdown(seconds: Int) {
+            stopCountdown()
+            var left = seconds.coerceIn(1, 600)
+            val tick =
+                object : Runnable {
+                    override fun run() {
+                        if (dialog?.isShowing != true) return
+                        send.isEnabled = left <= 0
+                        send.text = if (left > 0) "${left}s 后重发" else "获取验证码"
+                        if (left > 0) {
+                            left--
+                            main.postDelayed(this, 1000)
+                        }
                     }
-            val login = WebLogin(http)
+                }
+            countdown = tick
+            send.isEnabled = false
+            send.text = "${left}s 后重发"
+            left--
+            main.postDelayed(tick, 1000)
+        }
+
+        dialog?.dismiss()
+        dialog =
+            AlertDialog.Builder(context)
+                .setTitle("手机号 + 验证码登录")
+                .setView(column)
+                .setPositiveButton("登录", null)
+                .setNegativeButton("取消", null)
+                .setOnDismissListener { stopCountdown() }
+                .create()
+                .also { it.show() }
+
+        dialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
+            val current = login
+            val value = code.text.toString().trim()
+            if (current == null) {
+                hint.text = "请先点「获取验证码」"
+                return@setOnClickListener
+            }
+            if (!value.matches(Regex("[0-9]{4,8}"))) {
+                hint.text = "请输入 4—8 位验证码"
+                return@setOnClickListener
+            }
+            dialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = false
+            hint.text = "正在登录…"
             task(
-                { login.send(mobile) },
-                { sent -> code(login, sent.maskedMobile) },
-                { failure ->
-                    showDialog(
-                        AlertDialog.Builder(activity)
-                            .setTitle("短信登录未完成")
-                            .setMessage(safeError(failure))
-                            .setPositiveButton("改用扫码") { _, _ -> qrLogin() }
-                            .setNegativeButton("返回", null)
-                    )
+                { validatePhoneAccount(current.verify(value)).also { store.save(it.first) } },
+                { (next, account) ->
+                    dialog?.dismiss()
+                    acceptAccount(next, account)
                 },
+                { failure ->
+                    dialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = true
+                    hint.text = safeError(failure)
+                    if (failure is PhoneLogin.Failure && !failure.canRetryCode)
+                        phoneLoginFailure(failure)
+                },
+                announce = false,
+            )
+        }
+
+        countryButton.setOnClickListener {
+            pickCountryCode(context, country) { picked ->
+                country = picked
+                countryButton.text = "+$picked ▾"
+            }
+        }
+
+        send.setOnClickListener {
+            val typed = mobile.text.toString().trim()
+            val number =
+                runCatching {
+                        // 直接粘贴完整国际号码时按 +区号 解析，否则用下拉选中的区号拼接。
+                        if (typed.startsWith("+")) PhoneLogin.parse(typed)
+                        else PhoneLogin.format(country, typed)
+                    }
+                    .getOrElse {
+                        hint.text = safeError(it)
+                        return@setOnClickListener
+                    }
+            val fresh = PhoneLogin(phoneHttp)
+            stopCountdown()
+            send.isEnabled = false
+            send.text = "发送中…"
+            hint.text = "正在发送验证码…"
+            task(
+                { fresh.send(number) },
+                { sent ->
+                    login = fresh
+                    hint.text = "验证码已发送至 ${sent.maskedMobile}"
+                    startCountdown(sent.retrySeconds)
+                },
+                { failure ->
+                    send.isEnabled = true
+                    send.text = "获取验证码"
+                    hint.text = safeError(failure)
+                },
+                announce = false,
             )
         }
     }
 
-    private fun code(login: WebLogin, masked: String, error: String? = null) {
-        input("输入发送至 $masked 的验证码", true, error) { value ->
-            if (!value.matches(Regex("[0-9]{4,8}"))) {
-                code(login, masked, "请输入 4—8 位验证码")
-                return@input
+    private data class CountryCode(val code: String, val name: String)
+
+    /** 常用国家/地区区号；电视上先选再输号码，避免记格式。 */
+    private val countryCodes =
+        listOf(
+            CountryCode("86", "中国大陆"),
+            CountryCode("852", "中国香港"),
+            CountryCode("853", "中国澳门"),
+            CountryCode("886", "中国台湾"),
+            CountryCode("65", "新加坡"),
+            CountryCode("60", "马来西亚"),
+            CountryCode("62", "印度尼西亚"),
+            CountryCode("63", "菲律宾"),
+            CountryCode("66", "泰国"),
+            CountryCode("84", "越南"),
+            CountryCode("855", "柬埔寨"),
+            CountryCode("856", "老挝"),
+            CountryCode("95", "缅甸"),
+            CountryCode("81", "日本"),
+            CountryCode("82", "韩国"),
+            CountryCode("850", "朝鲜"),
+            CountryCode("91", "印度"),
+            CountryCode("92", "巴基斯坦"),
+            CountryCode("880", "孟加拉国"),
+            CountryCode("94", "斯里兰卡"),
+            CountryCode("977", "尼泊尔"),
+            CountryCode("1", "美国 / 加拿大"),
+            CountryCode("52", "墨西哥"),
+            CountryCode("55", "巴西"),
+            CountryCode("54", "阿根廷"),
+            CountryCode("56", "智利"),
+            CountryCode("57", "哥伦比亚"),
+            CountryCode("51", "秘鲁"),
+            CountryCode("44", "英国"),
+            CountryCode("33", "法国"),
+            CountryCode("49", "德国"),
+            CountryCode("39", "意大利"),
+            CountryCode("34", "西班牙"),
+            CountryCode("31", "荷兰"),
+            CountryCode("32", "比利时"),
+            CountryCode("41", "瑞士"),
+            CountryCode("43", "奥地利"),
+            CountryCode("46", "瑞典"),
+            CountryCode("47", "挪威"),
+            CountryCode("45", "丹麦"),
+            CountryCode("358", "芬兰"),
+            CountryCode("48", "波兰"),
+            CountryCode("420", "捷克"),
+            CountryCode("36", "匈牙利"),
+            CountryCode("30", "希腊"),
+            CountryCode("351", "葡萄牙"),
+            CountryCode("353", "爱尔兰"),
+            CountryCode("7", "俄罗斯 / 哈萨克斯坦"),
+            CountryCode("380", "乌克兰"),
+            CountryCode("90", "土耳其"),
+            CountryCode("972", "以色列"),
+            CountryCode("971", "阿联酋"),
+            CountryCode("966", "沙特阿拉伯"),
+            CountryCode("20", "埃及"),
+            CountryCode("27", "南非"),
+            CountryCode("234", "尼日利亚"),
+            CountryCode("254", "肯尼亚"),
+            CountryCode("61", "澳大利亚"),
+            CountryCode("64", "新西兰"),
+        )
+
+    /** 区号选择器：支持按住遥控器在列表里翻页，也能在搜索框按名称或区号过滤。 */
+    private fun pickCountryCode(
+        context: Context,
+        current: String,
+        onPick: (String) -> Unit,
+    ) {
+        val density = context.resources.displayMetrics.density
+        fun px(value: Int) = (value * density).toInt()
+        val search =
+            EditText(context).apply {
+                hint = "输入国家/地区名称或区号筛选"
+                isSingleLine = true
             }
-            task(
-                { validateAccount(login.verify(value)).also { store.save(it.first) } },
-                { (next, account) -> acceptAccount(next, account) },
-                { failure ->
-                    if (failure is PhoneLogin.Failure && !failure.canRetryCode) {
-                        showDialog(
-                            AlertDialog.Builder(activity)
-                                .setTitle("登录未完成")
-                                .setMessage(safeError(failure))
-                                .setPositiveButton("返回账号页") { _, _ -> show() }
-                                .setNeutralButton("改用扫码") { _, _ -> qrLogin() }
-                        )
-                    } else code(login, masked, safeError(failure))
-                },
-            )
+        val list = ListView(context)
+        fun label(rows: List<CountryCode>) = rows.map { "${it.name}  +${it.code}" }
+        var rows = countryCodes.sortedBy { if (it.code == current) "" else it.name }
+        list.adapter =
+            ArrayAdapter(context, android.R.layout.simple_list_item_1, label(rows))
+        var picker: AlertDialog? = null
+        search.addTextChangedListener(
+            object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                override fun afterTextChanged(editable: Editable?) {
+                    val query = editable?.toString().orEmpty().trim()
+                    rows =
+                        countryCodes
+                            .filter {
+                                query.isEmpty() ||
+                                    it.name.contains(query) ||
+                                    it.code.startsWith(query.removePrefix("+"))
+                            }
+                            .sortedBy { if (it.code == current) "" else it.name }
+                    list.adapter =
+                        ArrayAdapter(context, android.R.layout.simple_list_item_1, label(rows))
+                }
+            }
+        )
+        list.setOnItemClickListener { _, _, position, _ ->
+            rows.getOrNull(position)?.let { onPick(it.code) }
+            picker?.dismiss()
         }
+        val column =
+            LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(px(20), px(8), px(20), 0)
+                addView(search)
+                addView(list, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, px(260)))
+            }
+        picker =
+            AlertDialog.Builder(context)
+                .setTitle("选择国家/地区区号（当前 +$current）")
+                .setView(column)
+                .setNegativeButton("取消", null)
+                .create()
+        picker.show()
     }
+
+    /** 需要重新发码或改用扫码时才打断用户；可重试的错误留在面板里显示。 */
+    private fun phoneLoginFailure(failure: PhoneLogin.Failure) {
+        showDialog(
+            AlertDialog.Builder(activity)
+                .setTitle("登录未完成")
+                .setMessage(safeError(failure))
+                .setPositiveButton("返回账号页") { _, _ -> show() }
+                .setNeutralButton("改用扫码") { _, _ -> qrLogin() }
+        )
+    }
+
+    /**
+     * App 通道在 passport 阶段已把这台设备写进会话，账号请求必须继续用同一 device_id/iid；
+     * 再注册一次新设备会让签名与登录会话不匹配。
+     */
+    private fun validatePhoneAccount(
+        credentials: AccountCredentials
+    ): Pair<AccountCredentials, CloudProfile> = credentials to client.profile(credentials)
 
     private fun validateAccount(web: AccountCredentials): Pair<AccountCredentials, CloudProfile> {
         val device = client.registerDevice() ?: throw java.io.IOException("账号设备初始化失败")
@@ -675,11 +969,12 @@ class AccountController(private val activity: Activity, private val play: (Cloud
         action: () -> T,
         success: (T) -> Unit,
         failure: (Throwable) -> Unit = { toast(safeError(it)) },
+        announce: Boolean = true,
     ) {
         if (busy || closed) return
         busy = true
         val token = generation
-        toast("正在连接红果账号…")
+        if (announce) toast("正在连接红果账号…")
         worker.execute {
             if (closed || token != generation) return@execute
             val result = runCatching(action)

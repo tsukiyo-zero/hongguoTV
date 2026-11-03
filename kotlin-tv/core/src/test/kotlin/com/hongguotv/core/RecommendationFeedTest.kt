@@ -309,4 +309,37 @@ class RecommendationFeedTest {
         val page = RecommendationFeed(http).page(1)
         assertEquals(listOf("101"), page.items.map { it.id })
     }
+
+    /** 服务端判定旧分页会话不合法（如 110）时，丢弃 session 从头拉一次，而不是持续报错。 */
+    @Test
+    fun stalePagingSessionIsDroppedAndRetriedFromTheStart() {
+        val requests = mutableListOf<Request>()
+        val http =
+            OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val request = chain.request()
+                    requests += request
+                    val body =
+                        if (requests.size == 1) """{"code":110,"data":null}"""
+                        else response("301")
+                    Response.Builder()
+                        .request(request)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(body.toResponseBody())
+                        .build()
+                }
+                .build()
+        val cursor = RecommendationCursor()
+        cursor.session = "stale-session"
+        cursor.offset = 3
+        val page = RecommendationFeed(http, cursor = cursor).page(1)
+        assertEquals(1, page.items.size)
+        assertEquals(2, requests.size)
+        assertEquals("stale-session", requests[0].url.queryParameter("session_id"))
+        assertNull(requests[1].url.queryParameter("session_id"))
+        assertEquals("0", requests[1].url.queryParameter("offset"))
+        assertEquals("1", requests[1].url.queryParameter("client_req_type"))
+    }
 }

@@ -191,7 +191,19 @@ class RecommendationFeed(
                     RequestScope.execute(accountHttp.newCall(request.build())) { response ->
                         JSONObject(feedResponse(response))
                     }
-                val parsed = if (category == null) parse(result) else parseCategory(result)
+                val parsed =
+                    runCatching { if (category == null) parse(result) else parseCategory(result) }
+                        .getOrElse { problem ->
+                            // 110 一类错误多来自服务端判定旧分页会话不合法的限流/校验：丢掉旧
+                            // session 与 offset 从头拉一次，否则用户只能等下次刷新才恢复。
+                            val code = result.optInt("code", -1)
+                            if (code != 0 && cursor.session.isNotEmpty() && problem is IOException) {
+                                cursor.session = ""
+                                cursor.offset = 0
+                                return@repeat
+                            }
+                            throw problem
+                        }
                 cursor.session = parsed.second.ifBlank { cursor.session }
                 cursor.offset =
                     if (category == null) cursor.offset + 1
