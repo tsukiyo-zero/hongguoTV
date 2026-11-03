@@ -104,6 +104,13 @@ class AccountController(private val activity: Activity, private val play: (Cloud
             .followSslRedirects(false)
             .build()
     private val client = CloudAccountClient(http)
+    // passport 短信登录沿用默认重定向策略（与网页登录的 no-redirect 客户端分开）。
+    private val phoneHttp =
+        okhttp3.OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .callTimeout(30, TimeUnit.SECONDS)
+            .build()
     private val store = AccountStore(activity)
     @Volatile private var generation = 0
     @Volatile private var closed = false
@@ -470,7 +477,9 @@ class AccountController(private val activity: Activity, private val play: (Cloud
                         toast(safeError(it))
                         return@input
                     }
-            val login = WebLogin(http)
+            // 网页端发码已被滑块拦住（1105「红果要求完成滑块验证」），改用 App passport
+            // 通道：同一设备先注册再发码，验证码会话与设备身份绑定。
+            val login = PhoneLogin(phoneHttp)
             task(
                 { login.send(mobile) },
                 { sent -> code(login, sent.maskedMobile) },
@@ -487,14 +496,14 @@ class AccountController(private val activity: Activity, private val play: (Cloud
         }
     }
 
-    private fun code(login: WebLogin, masked: String, error: String? = null) {
+    private fun code(login: PhoneLogin, masked: String, error: String? = null) {
         input("输入发送至 $masked 的验证码", true, error) { value ->
             if (!value.matches(Regex("[0-9]{4,8}"))) {
                 code(login, masked, "请输入 4—8 位验证码")
                 return@input
             }
             task(
-                { validateAccount(login.verify(value)).also { store.save(it.first) } },
+                { validatePhoneAccount(login.verify(value)).also { store.save(it.first) } },
                 { (next, account) -> acceptAccount(next, account) },
                 { failure ->
                     if (failure is PhoneLogin.Failure && !failure.canRetryCode) {
@@ -510,6 +519,14 @@ class AccountController(private val activity: Activity, private val play: (Cloud
             )
         }
     }
+
+    /**
+     * App 通道在 passport 阶段已把这台设备写进会话，账号请求必须继续用同一 device_id/iid；
+     * 再注册一次新设备会让签名与登录会话不匹配。
+     */
+    private fun validatePhoneAccount(
+        credentials: AccountCredentials
+    ): Pair<AccountCredentials, CloudProfile> = credentials to client.profile(credentials)
 
     private fun validateAccount(web: AccountCredentials): Pair<AccountCredentials, CloudProfile> {
         val device = client.registerDevice() ?: throw java.io.IOException("账号设备初始化失败")
