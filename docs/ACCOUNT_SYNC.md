@@ -6,6 +6,7 @@
 
 - 已验证的路线为电视显示二维码，手机红果 App 扫码并确认。
 - 手机号短信入口走 App passport 通道（`/passport/mobile/send_code/v1/` 与 `validate_code`，先用匿名设备注册取得装置身份再发码，验码与账号请求保持同一 device_id/iid）。2026-11-03 实测：网页端 `hongguoduanju.com` 发码已要求滑块验证（错误码 1105），App 通道发码正常返回打码号码、`retry_time` 与 `mobile_ticket`。
+- passport 域用 `https://security.snssdk.com`（官方 App 的 `J1/G0` 只在 `/passport/` 请求上用它），且 passport 的 query **不带** `device_id`/`iid`——`is.snssdk.com` 配 `device_id` 会被风控回 `2046 为保证账号安全，暂不支持此操作`。参考实现（`ljl215186/hongguoTV-updates` 的 1.0.5）与本项目硬编码同一套设备表，差异只在这两处。
 - 验证码端点是 `sms_login` 系列（`sms_login` → `sms_login_only` → `sms_login_continue`），`validate_code/v1/` 只作兜底：2026-11-03 实测它对未登录会话固定回 `error_code 1 会话过期`，把它排在前面会让登录在第一发就中断。
 - 错误码语义：`1` 表示该端点不适用于本次会话，继续试后续端点；`1102` 是验证码错误，可重新输入；`1203`（错误次数过多或验证码过期）与 `1206`（发送太频繁）都会作废本次会话，必须等平台限流解除后重新发码。不应反复自动发送或提交验证码。
 - 该通道的完整登录（拿到 `sessionid` 并通过账号资料校验）尚未实机验收。

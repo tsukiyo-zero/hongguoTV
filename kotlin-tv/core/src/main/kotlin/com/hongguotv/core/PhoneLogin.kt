@@ -130,9 +130,12 @@ class PhoneLogin(private val http: OkHttpClient) {
             mapOf("aid" to "8662", "app_name" to "novelread", "device_platform" to "android") +
                 params.filterValues { it.isNotBlank() }
         val payload = if (form) Signer.encode(passport).toByteArray() else null
+        // 官方 App 的 passport 请求把 device_id/iid 从 query 里去掉（设备靠 Cookie 识别），
+        // 带着它们发会被判异常设备；签名器内部仍使用完整设备表。
+        val queryDevice = device.filterKeys { it != "device_id" && it != "iid" }
         val signed =
             Signer(device = device)
-                .sign(PASSPORT + path, if (form) device else device + passport, payload)
+                .sign(PASSPORT + path, if (form) queryDevice else queryDevice + passport, payload)
         val request = Request.Builder().url(signed.url)
         signed.headers.forEach { (k, v) -> request.header(k, v) }
         if (cookies.isNotEmpty())
@@ -167,7 +170,8 @@ class PhoneLogin(private val http: OkHttpClient) {
             ?.let { "$it（错误码 ${data.optInt("error_code")}）" }
 
     companion object {
-        private const val PASSPORT = "https://is.snssdk.com"
+        /** 官方 App 的 passport 域是 `security.snssdk.com`；`is.snssdk.com` 上短信登录会被风控回 2046。 */
+        private const val PASSPORT = "https://security.snssdk.com"
         /** login-lab 实测：24 = 登录验证码；1 / 3 是绑定 / 换绑手机号。 */
         const val LOGIN_CODE_TYPE = "24"
         /**
