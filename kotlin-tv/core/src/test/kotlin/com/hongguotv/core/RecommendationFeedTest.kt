@@ -338,6 +338,8 @@ class RecommendationFeedTest {
         assertEquals(1, page.items.size)
         assertEquals(2, requests.size)
         assertEquals("stale-session", requests[0].url.queryParameter("session_id"))
+        // 重试同时换到备用域名，避免反复打同一个被限流的节点。
+        assertNotEquals(requests[0].url.host, requests[1].url.host)
         assertNull(requests[1].url.queryParameter("session_id"))
         assertEquals("0", requests[1].url.queryParameter("offset"))
         assertEquals("1", requests[1].url.queryParameter("client_req_type"))
