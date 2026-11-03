@@ -161,4 +161,16 @@ class CloudAccountTest {
         assertEquals("test-ticket", login.ticket)
         assertTrue(login.cookies.isNotEmpty())
     }
+
+    /** 会话有效但业务账号未建立时给出可操作的提示，而不是笼统的“重新登录”。 */
+    @Test
+    fun sessionWithoutBusinessAccountReportsProvisioningHint() {
+        val client = CloudAccountClient(http { """{"code":0,"data":{"biz_user_id":"","user_name":""}}""" })
+        try {
+            client.profile(credentials)
+            fail("expected provisioning failure")
+        } catch (problem: AccountNotProvisionedException) {
+            assertTrue(problem.message.orEmpty().contains("官方红果 App"))
+        }
+    }
 }

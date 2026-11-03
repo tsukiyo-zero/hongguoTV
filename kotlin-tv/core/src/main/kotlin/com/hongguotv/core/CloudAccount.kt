@@ -48,6 +48,16 @@ internal object AccountCredentialsParser {
 
 data class CloudProfile(val id: String, val nickname: String)
 
+/**
+ * 会话有效，但这个手机号还没有红果阅读业务账号（`biz_user_id` 为空）。
+ *
+ * 2026-11-03 实机：三个手机号里两个老账号可登录，一个新的号短信登录成功、会话也拿到了，
+ * 但 `/reading/user/info/v1/` 返回的 `biz_user_id` 为空——该号从未在红果 App 侧建立账号资料。
+ * 与客户端登录链路无关，提示应先到官方 App 登录一次。
+ */
+class AccountNotProvisionedException :
+    IOException("该手机号还没有红果账号资料，请先用官方红果 App 登录一次再回来试（或改用扫码）")
+
 data class CloudProgress(
     val series: Series,
     val episodeId: String,
@@ -153,7 +163,7 @@ class CloudAccountClient(private val http: OkHttpClient) {
             json(credentials, "/reading/user/info/v1/").optJSONObject("data")
                 ?: throw IOException("账号资料为空")
         val id = data.str("biz_user_id")
-        if (id.isBlank()) throw IOException("登录态未通过账号验证，请重新登录")
+        if (id.isBlank()) throw AccountNotProvisionedException()
         return CloudProfile(id, data.str("user_name").ifBlank { "红果用户" })
     }
 
