@@ -4,61 +4,58 @@
 package com.hongguotv.relay
 
 import com.hongguotv.core.ContentRepository
-import com.sun.net.httpserver.HttpServer
 import okhttp3.OkHttpClient
+import java.awt.Dialog
+import java.awt.Frame
+import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.NetworkInterface
-import java.nio.file.Files
+import java.net.URI
 import java.nio.file.Paths
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import javax.jmdns.JmDNS
 import javax.jmdns.ServiceInfo
+import javax.swing.JOptionPane
 
-const val VERSION = "0.1.0-mvp"
+const val VERSION = "1.0.0"
 
 private const val IDLE_TIMEOUT_MS = 10 * 60_000L
 
 fun main(args: Array<String>) {
-    var ffmpegPath = System.getenv("GUOYING_FFMPEG") ?: "ffmpeg"
+    // 菜单栏驻留（不显示 Dock 图标）；必须在任何 AWT 初始化前设置。
+    System.setProperty("apple.awt.UIElement", "true")
+
+    var ffmpegExplicit: String? = System.getenv("GUOYING_FFMPEG")
     var port = 46521
     var selftest: String? = null
     var index = 0
     while (index < args.size) {
         when (args[index]) {
-            "--ffmpeg" -> { ffmpegPath = args[index + 1]; index += 2 }
+            "--ffmpeg" -> { ffmpegExplicit = args[index + 1]; index += 2 }
             "--port" -> { port = args[index + 1].toInt(); index += 2 }
             "--selftest" -> { selftest = args[index + 1]; index += 2 }
             "--debugEs" -> { System.setProperty("guoying.debugEs", args[index + 1]); index += 2 }
-            else -> error("未知参数 ${args[index]}（支持 --ffmpeg/--port/--selftest/--debugEs）")
+            "--launchd" -> index += 1 // 开机自启启动：行为与普通启动一致，仅作标记
+            else -> error("未知参数 ${args[index]}（支持 --ffmpeg/--port/--selftest/--debugEs/--launchd）")
         }
     }
-    val ffmpegOk = hasVvcDecoder(ffmpegPath)
-    val encoder = detectEncoder(ffmpegPath)
-    require(ffmpegOk) { "ffmpeg 缺少 VVC 解码器（需 ffmpeg 7+，本机检查 -h decoder=vvc 失败）" }
 
-    // 伴机令牌：首启生成并持久化到启动目录下 .guoying-relay/token（防局域网滥用）。
-    val stateDir = java.nio.file.Paths.get(".guoying-relay").toAbsolutePath().normalize()
-    require(!stateDir.toString().contains("..")) { "令牌目录路径异常" }
-    val tokenFile = stateDir.resolve("token")
-    val relayToken =
-        if (java.nio.file.Files.exists(tokenFile)) {
-            java.nio.file.Files.readString(tokenFile).trim()
-                .also { require(it.isNotEmpty()) { "令牌文件为空，请删除 $tokenFile 后重启伴机" } }
-        } else {
-            val generated =
-                java.security.SecureRandom()
-                    .run {
-                        val bytes = ByteArray(4)
-                        nextBytes(bytes)
-                        bytes.joinToString("") { "%02x".format(it.toInt() and 255) }
-                    }
-            java.nio.file.Files.createDirectories(stateDir)
-            java.nio.file.Files.writeString(tokenFile, generated)
-            generated
-        }
+    // 单实例：已有伴机在跑则提示后退出（.command 脚本负责「结束旧的」，.app 双击只提示）。
+    if (isAlreadyRunning(port)) {
+        val message = "果映伴机已在运行，无需重复启动。"
+        println(message)
+        showMacDialog(message)
+        return
+    }
 
+    // 令牌：读取/生成/旧目录迁移全部收敛在 RelayLocations（路径校验在同一函数内可证）。
+    val home = Paths.get(System.getProperty("user.home"))
+    val (relayToken, tokenFile) =
+        RelayLocations.ensureToken(home, System.getenv("APPDATA"), Paths.get("").toAbsolutePath())
+
+    val publicBase = "http://${lanIp()}:$port"
     val workRoot = Paths.get(System.getProperty("java.io.tmpdir"), "guoying-relay")
     workRoot.toFile().mkdirs()
     workRoot.toFile().listFiles()?.forEach { it.deleteRecursively() } // 清上次残留
@@ -69,17 +66,57 @@ fun main(args: Array<String>) {
             .readTimeout(30, TimeUnit.SECONDS)
             .callTimeout(60, TimeUnit.SECONDS)
             .build()
-    val publicBase = "http://${lanIp()}:$port"
     val manager = SessionManager(workRoot)
+
+    val appContents =
+        RelayLocations.appContents(
+            System.getProperty("jpackage.app-dir"),
+            ProcessHandle.current().info().command().orElse(null),
+        )
+    val tray =
+        RelayTray.install(
+            autostartHome = home,
+            appContents = appContents,
+            onCopyAddress = { publicBase },
+            onCopyToken = { relayToken },
+            onAutostartChanged = { enabled ->
+                println("开机自启：${if (enabled) "开" else "关"}")
+            },
+            onExit = {
+                manager.shutdown()
+                kotlin.system.exitProcess(0)
+            },
+        )
+
+    // ffmpeg 解析：app 捆绑 → 显式指定/env → 系统 PATH；均无则带错误状态运行（TV 端会回落）。
+    val ffmpegResolved =
+        RelayLocations.resolveFfmpeg(ffmpegExplicit, appContents) { candidate ->
+            runCatching {
+                ProcessBuilder(candidate, "-hide_banner", "-h", "decoder=vvc").start().waitFor() == 0
+            }.getOrDefault(false)
+        }
+    val encoder = ffmpegResolved?.let { detectEncoder(it) } ?: ""
+    if (ffmpegResolved == null) {
+        val message = "未找到带 VVC 解码器的 ffmpeg（需 7+）。已尝试捆绑目录、GUOYING_FFMPEG 与系统 PATH。"
+        tray?.status("错误：缺少 ffmpeg", notify = true, error = true)
+        println(message)
+        showMacDialog(message)
+        // 继续运行：/health 报 ffmpegOk=false，TV 端会自动回落；修复 ffmpeg 后重启伴机即可。
+    } else {
+        println("ffmpeg：$ffmpegResolved（encoder=$encoder）")
+    }
+
     val server =
         try {
-            RelayServer(port, manager, publicBase, VERSION, encoder, ffmpegOk, ffmpegPath, relayToken) { info ->
+            RelayServer(port, manager, publicBase, VERSION, encoder, ffmpegResolved != null, ffmpegResolved ?: ffmpegExplicit ?: "ffmpeg", relayToken) { info ->
                 RemoteVideoSource(http, info)
             }
         } catch (problem: java.net.BindException) {
-            error(
-                "端口 $port 已被占用：很可能已有一个伴机实例在运行（浏览器打开 http://127.0.0.1:$port/health 可确认），无需重复启动",
-            )
+            val message = "端口 $port 已被占用：很可能已有一个伴机实例在运行。"
+            tray?.status(message, notify = true, error = true)
+            println(message)
+            showMacDialog(message)
+            return
         }
     server.start()
     val jmdns = runCatching { registerMdns(port) }.getOrNull()
@@ -112,6 +149,7 @@ fun main(args: Array<String>) {
         println("自测会话 ${session.id} 已启动：${publicBase}/hls/${session.id}/index.m3u8")
     }
 
+    tray?.status("运行中 · $publicBase", notify = true)
     println("果映伴机 $VERSION 已启动：$publicBase（encoder=$encoder）")
     println("伴机令牌：$relayToken（TV 端播放设置需填入同一令牌；文件 $tokenFile）")
     println("mDNS：${if (jmdns != null) "_guoying-relay._tcp 已注册" else "注册失败（TV 端可手动填 IP）"}")
@@ -119,10 +157,22 @@ fun main(args: Array<String>) {
     Thread.currentThread().join()
 }
 
-private fun hasVvcDecoder(ffmpeg: String): Boolean =
+private fun isAlreadyRunning(port: Int): Boolean =
     runCatching {
-        ProcessBuilder(ffmpeg, "-hide_banner", "-h", "decoder=vvc").start().waitFor() == 0
+        val connection = URI("http://127.0.0.1:$port/health").toURL().openConnection() as HttpURLConnection
+        connection.connectTimeout = 600
+        connection.readTimeout = 600
+        val ok = connection.responseCode == 200
+        connection.disconnect()
+        ok
     }.getOrDefault(false)
+
+/** .app 双击场景的错误可见化：弹一个系统对话框（终端场景则看日志）。 */
+private fun showMacDialog(message: String) {
+    runCatching {
+        JOptionPane.showMessageDialog(null, message, "果映伴机", JOptionPane.ERROR_MESSAGE)
+    }
+}
 
 private fun detectEncoder(ffmpeg: String): String {
     val videoToolbox =

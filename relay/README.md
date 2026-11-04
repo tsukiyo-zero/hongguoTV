@@ -8,21 +8,25 @@
 
 ## 启动（macOS）
 
-1. 从源码构建（本仓库 `relay/` 模块，任意一台装了 JDK 17 的电脑）：
-   ```sh
-   ./kotlin-tv/gradlew -p relay :relay:fatJar
-   # 产物 relay/backend/build/libs/guoying-relay-<版本>-all.jar
-   ```
-2. 运行（需系统 ffmpeg 7+ 在 PATH）：
-   ```sh
-   java -jar guoying-relay-*-all.jar
-   ```
-   开发调试也可直接 `scripts/run-relay.command`（macOS 双击/终端均可）。
+**普通用户（推荐）**：从 GitHub Release 下载 `GuoyingRelay-<版本>.dmg` → 拖进「应用程序」→ 双击 `果映伴机`（首次打开需右键 → 打开，或在系统设置允许）。菜单栏出现图标即运行中：
 
-启动日志会打印两样东西：
+- 菜单显示运行状态与局域网地址；**复制地址 / 复制令牌** 一键拷贝
+- **开机自启** 开关（LaunchAgents，默认关）
+- 令牌持久化在 `~/Library/Application Support/GuoyingRelay/token`，重启不变
+
+构建（本仓库）：
+
+```sh
+scripts/build-relay-macos.sh
+# = ffmpeg 下载+sha256 校验 + fatJar + jpackage dmg（需 JDK 17；下载走 osxexperts，需代理时 export https_proxy）
+```
+
+**开发调试**：`scripts/run-relay.command`（终端直跑 fat jar，依赖系统 PATH 里的 ffmpeg 7+；令牌存启动目录 `.guoying-relay/token`，与 .app 的状态目录相互独立）。
+
+启动日志/菜单栏会打印两样东西：
 
 - **局域网地址**（如 `http://192.168.6.114:46521`）
-- **伴机令牌**（8 位，持久化在启动目录 `.guoying-relay/token`，重启不变）
+- **伴机令牌**（8 位，App 形态持久化在 `~/Library/Application Support/GuoyingRelay/token`）
 
 ## 电视端配置（一次性）
 
