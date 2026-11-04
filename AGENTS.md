@@ -13,7 +13,7 @@
 - Run relevant checks. Native changes normally require `:core:test :app:testDebugUnitTest :app:assembleDebug :app:lintDebug`; documentation-only changes do not need Android builds.
 - APKs, build output, account sessions, phone numbers, verification codes, passwords, and signing keys must not be committed. Credentials must not appear in logs or documentation.
 - 用户已授权将 TV 客户端更名为「果映 TV」，applicationId 从 `com.hongguotv.nativeapp` 改为 `io.github.tsukiyo_zero.guoyingtv`。新包是独立应用，旧版不能覆盖升级，本机数据与登录态不自动迁移；保留旧包历史发布记录和签名基线。后续保持新包名和原签名连续性。
-- Preserve package identity and signing continuity for updates. Increase `versionCode` for each formal release; keep versionName/versionCode unchanged during debugging and distinguish debug APKs by filename. Current TV release is 0.1.19 (versionCode 60); increase versions only for the next formal release.
+- Preserve package identity and signing continuity for updates. Increase `versionCode` for each formal release; keep versionName/versionCode unchanged during debugging and distinguish debug APKs by filename. Current TV release is 0.1.20 (versionCode 61); increase versions only for the next formal release.
 - App updates use only `tsukiyo-zero/hongguoTV` Releases. A source push or CI artifact is not a release. Follow `kotlin-tv/AUTO_UPDATES.md`; do not reintroduce the upstream cross-repository publishing workflow.
 - 用户无需每次指定 TV 版本。发布时使用统一入口 `python3 scripts/release-tv.py --publish`，自动核对两平台正式版本、实际 versionCode、已有标签和草稿；默认递增补丁版本，versionCode 超过源码及已发布包的最大值。默认无参数仅预演，只有用户明确要求正式发布时才使用 `--publish`，不为脚本内部步骤重复要求确认。
 - 功能仍先走 PR 和用户验收；统一入口会自动准备版本提交／PR、合并、一次构建检查、校验原签名与 v1、同步两平台源码标签，并调用现有上传脚本发布和验证 Latest。若有中断任务，使用 `--publish --resume <版本>` 继续，不另分配版本、不覆盖旧标签或附件。脚本创建 PR 后读取 `outputs/release-jobs/<版本>/state.json` 中的 `prUrl` 并附加到当前聊天。
