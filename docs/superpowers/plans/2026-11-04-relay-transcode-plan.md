@@ -2,6 +2,10 @@
 
 2026-11-04。前置：两轨 spec（../specs/2026-11-04-vvc-bytevc2-playback-two-track-design.md）+ 前置探针全绿（14.1x 实时转码，结论见仓库探针提交与记忆）。分支 `feature-relay-transcode`（已含探针代码：relay/ 模块、core 的 rawVideoModel 旁路与 Mp4SampleTable）。
 
+> **M1 状态（2026-11-04 深夜）：已完成并真机验证。** 关键发现两条已固化进实现与记忆：①字节家裸 VVC 流真实 30fps（dts 步进 33333µs），ffmpeg 裸 VVC 默认按 25fps 打戳导致慢放与音画错位，必须以 `-r <样本表 dts 步进>` 显式修正；②该流 stss 存在（34×5s GOP，RAP 类型为 RADL_R），带内 NAL 扫描（IDR/CRA/STSA_R）仅作 stss 缺失后备。验证：首次转码 141.165s 与音频对齐、seek(60s) 产出 81.4s、单测 10 绿、:core:test 绿。剩余见 M2/M3。
+
+> **M2 状态（2026-11-04）：TV 端接入代码完成，单测/lint/构建全绿，待实机验收。** 实现：RelayClient+RelayStore（app 模块，手动 IP 兜底；NSD/mDNS 发现延后至 M3）、`playerFailure` 面板前伴机兜底（覆盖阶梯耗尽与硬解失败两路径，`relayAttempted` 防循环）、`startRelaySource`（HlsMediaSource 复用现有进度/UI 机制）、专用 relay 监听器（ENDED 自动连播走 playEpisode 常规流）、播放设置新增「伴机代解码」项（开关+地址+连接测试）、换集/退出 `relayStopAsync` 清理会话。验收包 `outputs/debug/hongguotv-tv-0.1.19-relay-m2-debug.apk`。seek 映射 MVP 依赖 event playlist 原生增长（14x 转码追帧），`/seek` 接线视验收结果决定是否需要。依赖新增 media3-exoplayer-hls 与 mockwebserver(test)。
+
 ## 总体形态
 
 TV（bytevc2 锁定集兜底）→ 伴机服务（Mac/PC，JVM jar + ffmpeg 8）→ 局域网 HLS（H.264+AAC）→ TV 现有 ExoPlayer 硬解播放。伴机零登录态、零取源业务逻辑；TV 传 stream info（URL+密钥），密钥仅存伴机内存。
@@ -32,6 +36,8 @@ TV（bytevc2 锁定集兜底）→ 伴机服务（Mac/PC，JVM jar + ffmpeg 8）
 5. **测试**：RelayClient mock WebServer 单测；决策点单测（bytevc2+伴机在线/离线两分支）
 
 ## M3 验收与发布
+
+> **M3 进行中（2026-11-04 深夜）**：已落地——①自动发现：TV 端 RelayDiscovery（NsdManager 扫 `_guoying-relay._tcp`，串行 resolve，5s 超时），伴机侧 jmdns 广播早已就绪，伴机设置对话框新增「搜索伴机」；②扫码填地址：PhoneSearchServer 文案参数化（core，默认文案不变、既有断言不受影响），`TvTools.phoneInput` 增加 inputTitle/pageTitle/pagePrompt/inputPlaceholder 参数（submit 挪至参数末尾），伴机设置对话框新增「扫码输入」（复用二维码+手机网页表单链路）；③画质：码率档位 5M/8M（VVC→H.264 代际损失对齐）；④/health session 增 speed 实时倍率（自适应数据基础）。验收排障实录：CLEARTEXT 策略拦截（NSC base-config 已放行，症状曾伪装成「伴机不可达」）、索尼视频硬件平面冻结（弹幕正常但视频区显示波纹，screencap 证明合成器渲染正常，断电重启恢复，非应用问题）。待做：token 鉴权、性能/网络自适应（speed<1 提示与降档）、README+fat jar 发布。
 
 1. 鉴权补齐：伴机首启生成 token 存文件，TV 设置页输入一次（防局域网滥用，spec 安全项）
 2. 用户实机验收（自装 jar + TV debug 包）：播 bytevc2 锁定集、拖进度条、杀伴机进程看降级、关伴机看回退
