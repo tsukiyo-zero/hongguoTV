@@ -86,11 +86,17 @@ tasks.register("jpackageDmg") {
     dependsOn("fatJar", "bundleFfmpeg")
     doLast {
         val fatJarFile = tasks.named<Jar>("fatJar").get().archiveFile.get().asFile
-        val inputDir = jpackageInputDir.get().asFile.apply { mkdirs() }
+        val inputDir = jpackageInputDir.get().asFile
+        inputDir.deleteRecursively() // 清旧布局残留，保证输入目录可复现
+        inputDir.mkdirs()
         copy {
             from(fatJarFile)
-            from(ffmpegBundleDir.get().file("ffmpeg"))
             into(inputDir.resolve("app"))
+        }
+        // ffmpeg 以「目录/二进制」布局进包：Contents/app/ffmpeg/ffmpeg（与 RelayLocations.resolveFfmpeg 对应）。
+        copy {
+            from(ffmpegBundleDir.get().file("ffmpeg"))
+            into(inputDir.resolve("app/ffmpeg"))
         }
         val jdkHome = providers.gradleProperty("relay.jdk").orElse(providers.systemProperty("java.home")).get()
         delete(jpackageOutputDir)

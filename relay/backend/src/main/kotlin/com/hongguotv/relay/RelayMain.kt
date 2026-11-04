@@ -8,7 +8,6 @@ import okhttp3.OkHttpClient
 import java.awt.Dialog
 import java.awt.Frame
 import java.net.HttpURLConnection
-import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.URI
@@ -24,8 +23,7 @@ const val VERSION = "1.0.0"
 private const val IDLE_TIMEOUT_MS = 10 * 60_000L
 
 fun main(args: Array<String>) {
-    // 菜单栏驻留（不显示 Dock 图标）；必须在任何 AWT 初始化前设置。
-    System.setProperty("apple.awt.UIElement", "true")
+    // 注：不再隐藏 Dock 图标——非极客用户需要「看得见应用在跑」；退出/状态走菜单栏与窗口。
 
     var ffmpegExplicit: String? = System.getenv("GUOYING_FFMPEG")
     var port = 46521
@@ -42,9 +40,17 @@ fun main(args: Array<String>) {
         }
     }
 
-    // 单实例：已有伴机在跑则提示后退出（.command 脚本负责「结束旧的」，.app 双击只提示）。
+    // 单实例：已有伴机在跑则唤醒其状态窗口并提示后退出（.command 脚本负责「结束旧的」）。
     if (isAlreadyRunning(port)) {
-        val message = "果映伴机已在运行，无需重复启动。"
+        runCatching {
+            val connection = URI("http://127.0.0.1:$port/show").toURL().openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 800
+            connection.readTimeout = 800
+            connection.responseCode
+            connection.disconnect()
+        }
+        val message = "果映伴机已在菜单栏运行，已为你唤出状态窗口（屏幕上的「果映伴机」窗口）。"
         println(message)
         showMacDialog(message)
         return
@@ -55,7 +61,8 @@ fun main(args: Array<String>) {
     val (relayToken, tokenFile) =
         RelayLocations.ensureToken(home, System.getenv("APPDATA"), Paths.get("").toAbsolutePath())
 
-    val publicBase = "http://${lanIp()}:$port"
+    val addresses = RelayLocations.allLanAddresses()
+    val publicBase = "http://${addresses.firstOrNull() ?: "127.0.0.1"}:$port"
     val workRoot = Paths.get(System.getProperty("java.io.tmpdir"), "guoying-relay")
     workRoot.toFile().mkdirs()
     workRoot.toFile().listFiles()?.forEach { it.deleteRecursively() } // 清上次残留
@@ -73,12 +80,14 @@ fun main(args: Array<String>) {
             System.getProperty("jpackage.app-dir"),
             ProcessHandle.current().info().command().orElse(null),
         )
+    val window = RelayWindow.install()
     val tray =
         RelayTray.install(
             autostartHome = home,
             appContents = appContents,
-            onCopyAddress = { publicBase },
+            onCopyAddress = { addresses.joinToString("\n") },
             onCopyToken = { relayToken },
+            onShowWindow = { window?.showWindow() },
             onAutostartChanged = { enabled ->
                 println("开机自启：${if (enabled) "开" else "关"}")
             },
@@ -90,15 +99,17 @@ fun main(args: Array<String>) {
 
     // ffmpeg 解析：app 捆绑 → 显式指定/env → 系统 PATH；均无则带错误状态运行（TV 端会回落）。
     val ffmpegResolved =
-        RelayLocations.resolveFfmpeg(ffmpegExplicit, appContents) { candidate ->
+        RelayLocations.resolveFfmpeg(ffmpegExplicit, appContents, probe = { candidate ->
             runCatching {
                 ProcessBuilder(candidate, "-hide_banner", "-h", "decoder=vvc").start().waitFor() == 0
             }.getOrDefault(false)
-        }
+        })
     val encoder = ffmpegResolved?.let { detectEncoder(it) } ?: ""
     if (ffmpegResolved == null) {
         val message = "未找到带 VVC 解码器的 ffmpeg（需 7+）。已尝试捆绑目录、GUOYING_FFMPEG 与系统 PATH。"
         tray?.status("错误：缺少 ffmpeg", notify = true, error = true)
+        window?.update("错误：缺少 ffmpeg", addresses, relayToken)
+        window?.showWindow()
         println(message)
         showMacDialog(message)
         // 继续运行：/health 报 ffmpegOk=false，TV 端会自动回落；修复 ffmpeg 后重启伴机即可。
@@ -108,7 +119,13 @@ fun main(args: Array<String>) {
 
     val server =
         try {
-            RelayServer(port, manager, publicBase, VERSION, encoder, ffmpegResolved != null, ffmpegResolved ?: ffmpegExplicit ?: "ffmpeg", relayToken) { info ->
+            RelayServer(
+                port, manager, publicBase, VERSION, encoder,
+                ffmpegResolved != null,
+                ffmpegResolved ?: ffmpegExplicit ?: "ffmpeg",
+                relayToken,
+                { line -> println(line); window?.updateActivity(line) },
+            ) { info ->
                 RemoteVideoSource(http, info)
             }
         } catch (problem: java.net.BindException) {
@@ -119,6 +136,10 @@ fun main(args: Array<String>) {
             return
         }
     server.start()
+    server.setOnShow {
+        window?.showWindow()
+        println("状态窗口已唤出（/show）")
+    }
     val jmdns = runCatching { registerMdns(port) }.getOrNull()
 
     val scheduler =
@@ -150,6 +171,8 @@ fun main(args: Array<String>) {
     }
 
     tray?.status("运行中 · $publicBase", notify = true)
+    window?.update("运行中", addresses, relayToken)
+    window?.showWindow() // 每次启动自动弹出状态窗口，让驻留过程可见
     println("果映伴机 $VERSION 已启动：$publicBase（encoder=$encoder）")
     println("伴机令牌：$relayToken（TV 端播放设置需填入同一令牌；文件 $tokenFile）")
     println("mDNS：${if (jmdns != null) "_guoying-relay._tcp 已注册" else "注册失败（TV 端可手动填 IP）"}")
@@ -185,15 +208,6 @@ private fun detectEncoder(ffmpeg: String): String {
         }.getOrDefault(false)
     return if (videoToolbox) "h264_videotoolbox" else "libx264"
 }
-
-private fun lanIp(): String =
-    runCatching {
-        NetworkInterface.getNetworkInterfaces().asSequence()
-            .filter { it.isUp && !it.isLoopback }
-            .flatMap { it.inetAddresses.asSequence() }
-            .filterIsInstance<Inet4Address>()
-            .firstOrNull { it.isSiteLocalAddress }?.hostAddress
-    }.getOrNull() ?: "127.0.0.1"
 
 private fun registerMdns(port: Int): JmDNS {
     val jmdns = JmDNS.create(InetAddress.getLocalHost(), "guoying-relay")

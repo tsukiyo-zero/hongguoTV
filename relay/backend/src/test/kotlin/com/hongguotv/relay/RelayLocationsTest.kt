@@ -52,7 +52,48 @@ class RelayLocationsTest {
         assertEquals("/usr/bin/ffmpeg", RelayLocations.resolveFfmpeg("/usr/bin/ffmpeg", appContents, ok))
 
         assertEquals("ffmpeg", RelayLocations.resolveFfmpeg(null, appContents, ok))
-        assertNull(RelayLocations.resolveFfmpeg(null, appContents) { false })
+        assertNull(RelayLocations.resolveFfmpeg(null, appContents, { false }, emptyList()))
+    }
+
+    @Test
+    fun `ffmpeg 捆绑兼容平铺文件布局并自愈可执行位`() {
+        val appContents = temp.root.toPath().resolve("GuoyingRelay.app/Contents")
+        val flat = appContents.resolve("app/ffmpeg") // 平铺：ffmpeg 是文件而非目录
+        Files.createDirectories(flat.parent)
+        Files.writeString(flat, "binary")
+        flat.toFile().setExecutable(false) // 模拟 jpackage 丢失 +x
+
+        var probed: String? = null
+        val result = RelayLocations.resolveFfmpeg(null, appContents, { probed = it; true })
+        assertEquals(flat.normalize().toString(), result)
+        assertTrue(flat.toFile().canExecute()) // 探测前已自愈
+        assertEquals(flat.normalize().toString(), probed)
+    }
+
+    @Test
+    fun `PATH 找不到时回退 Homebrew 绝对位置`() {
+        val fallback = temp.root.toPath().resolve("homebrew-ffmpeg")
+        Files.writeString(fallback, "binary")
+        val result =
+            RelayLocations.resolveFfmpeg(
+                null,
+                null,
+                { it == fallback.toString() },
+                homebrewCandidates = listOf(fallback.toString()),
+            )
+        assertEquals(fallback.toString(), result)
+    }
+
+    @Test
+    fun `仅保留站点内 IPv4 地址`() {
+        val inputs = listOf(
+            java.net.InetAddress.getByName("192.168.6.114"),
+            java.net.InetAddress.getByName("127.0.0.1"),
+            java.net.InetAddress.getByName("169.254.3.4"),
+            java.net.InetAddress.getByName("fe80::1"),
+            java.net.InetAddress.getByName("192.168.6.231"),
+        )
+        assertEquals(listOf("192.168.6.114", "192.168.6.231"), RelayLocations.filterSiteLocalV4(inputs))
     }
 
     @Test

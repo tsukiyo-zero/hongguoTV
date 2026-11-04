@@ -22,10 +22,17 @@ class RelayServer(
     private val ffmpegOk: Boolean,
     private val ffmpegPath: String,
     private val relayToken: String,
+    private val activitySink: (String) -> Unit,
     private val sourceFactory: (StreamInfo) -> VideoSource,
 ) {
     private val server = HttpServer.create(InetSocketAddress(port), 16)
     private val listenPort: Int get() = server.address.port
+    private var onShow: (() -> Unit)? = null
+
+    /** 注册「唤出状态窗口」回调（重复双击时由第二实例经 /show 唤醒第一实例）。 */
+    fun setOnShow(callback: () -> Unit) {
+        onShow = callback
+    }
 
     fun start() {
         server.executor = Executors.newFixedThreadPool(8)
@@ -63,10 +70,14 @@ class RelayServer(
         try {
             val path = exchange.requestURI.path.trimEnd('/')
             val method = exchange.requestMethod
-            val mutating = path != "/health" && !path.startsWith("/hls/") && !path.startsWith("/a/")
+            val mutating = path != "/health" && !path.startsWith("/hls/") && !path.startsWith("/a/") && path != "/show"
             if (mutating && exchange.requestHeaders.getFirst("X-Relay-Token") != relayToken)
                 return json(exchange, 401, JSONObject().put("error", "伴机令牌不匹配，请核对 TV 端播放设置"))
             when {
+                method == "POST" && path == "/show" -> {
+                    onShow?.invoke()
+                    json(exchange, 200, JSONObject().put("ok", true))
+                }
                 method == "GET" && path == "/health" -> health(exchange)
                 method == "POST" && path == "/session" -> createSession(exchange)
                 method == "POST" && Regex("/session/[A-Za-z0-9-]+/seek").matches(path) -> seek(exchange, path)
@@ -137,6 +148,7 @@ class RelayServer(
                 )
             }
         session.lastAccessMs = System.currentTimeMillis()
+        activitySink("${stamp()} 电视(${clientIp(exchange)}) 创建会话 ${session.id}（$quality）")
         json(
             exchange, 200,
             JSONObject()
@@ -153,12 +165,15 @@ class RelayServer(
         require(offsetSec >= 0) { "offsetSec 无效" }
         if (!session.seek(offsetSec)) return json(exchange, 409, JSONObject().put("error", "会话已停止"))
         session.lastAccessMs = System.currentTimeMillis()
+        activitySink("${stamp()} 电视(${clientIp(exchange)}) 拖动进度 → ${offsetSec.toInt()}s")
         json(exchange, 200, JSONObject().put("ok", true))
     }
 
     private fun stopSession(exchange: HttpExchange, path: String) {
         val id = path.removePrefix("/session/")
-        json(exchange, 200, JSONObject().put("ok", manager.stop(id)))
+        val stopped = manager.stop(id)
+        if (stopped) activitySink("${stamp()} 电视(${clientIp(exchange)}) 结束会话 $id")
+        json(exchange, 200, JSONObject().put("ok", stopped))
     }
 
     private fun serveHls(exchange: HttpExchange, path: String) {
@@ -218,6 +233,12 @@ class RelayServer(
             }
         }
     }
+
+    private fun clientIp(exchange: HttpExchange): String =
+        runCatching { exchange.remoteAddress.address.hostAddress }.getOrDefault("未知设备")
+
+    private fun stamp(): String =
+        java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss"))
 
     private fun json(exchange: HttpExchange, status: Int, payload: JSONObject) {
         val bytes = payload.toString().toByteArray(Charsets.UTF_8)

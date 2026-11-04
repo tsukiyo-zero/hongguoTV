@@ -7,8 +7,27 @@ import com.hongguotv.core.ContentRepository
 import com.hongguotv.core.Mp4SampleTable
 import com.hongguotv.core.RemoteVideo
 import java.io.FileOutputStream
+import java.util.Base64
 
 fun main(args: Array<String>) {
+    // --json <集id>：仅打印最高 bytevc2 档的取流信息（url/keyB64/quality），供联调 /session 用。
+    if (args.firstOrNull() == "--json") {
+        val episode = args.getOrNull(1) ?: error("用法：ProbeMain --json <集id>")
+        val repo = ContentRepository()
+        val pick =
+            repo.rawVideoModel(episode).filter { it.codec in setOf("bytevc2", "bvc2") }
+                .maxByOrNull { it.quality } ?: error("该集没有 bytevc2 档位")
+        val keyB64 = pick.key?.let { Base64.getEncoder().encodeToString(it) }
+        println(
+            org.json.JSONObject()
+                .put("url", pick.url)
+                .put("keyB64", keyB64 ?: "")
+                .put("quality", if (pick.quality > 0) "${pick.quality}P" else "自动")
+                .put("width", pick.width ?: 0)
+                .put("height", pick.height ?: 0),
+        )
+        return
+    }
     val episode = args.firstOrNull() ?: error("用法：ProbeMain <集id> [输出文件] [档位]")
     val output = args.getOrNull(1) ?: "/tmp/relay-smoke/probe-es.annexb.vvc"
     val wantQuality = args.getOrNull(2)?.removeSuffix("P")?.toIntOrNull()

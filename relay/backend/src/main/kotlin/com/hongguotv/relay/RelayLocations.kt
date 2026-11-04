@@ -33,6 +33,24 @@ internal object RelayLocations {
         return legacy.takeIf { Files.exists(it) && legacy.startsWith(cwd.normalize()) }
     }
 
+    /** 仅保留站点内 IPv4（排除回环/链路本地/IPv6），供多网卡地址展示。 */
+    fun filterSiteLocalV4(addresses: List<java.net.InetAddress>): List<String> =
+        addresses
+            .filterIsInstance<java.net.Inet4Address>()
+            .filter { it.isSiteLocalAddress && !it.isLoopbackAddress && !it.isLinkLocalAddress }
+            .map { it.hostAddress }
+            .distinct()
+
+    /** 本机全部可用局域网地址（多网卡场景全部列出，如 231 与 114）。 */
+    fun allLanAddresses(): List<String> =
+        runCatching {
+            java.net.NetworkInterface.getNetworkInterfaces().asSequence()
+                .filter { it.isUp && !it.isLoopback }
+                .flatMap { it.inetAddresses.asSequence() }
+                .toList()
+        }.getOrDefault(emptyList())
+            .let(::filterSiteLocalV4)
+
     /**
      * jpackage app 根目录（…/果映伴机.app/Contents）：
      * 优先 jpackage.app-dir 系统属性，回退从当前进程可执行路径向上找 *.app/Contents。
@@ -49,16 +67,31 @@ internal object RelayLocations {
     }
 
     /**
-     * ffmpeg 路径解析：捆绑（app 根下 app/ffmpeg/）→ 显式指定（env/参数）→ 系统 PATH。
-     * 返回 null 表示三处皆无，调用方进入错误状态。
+     * ffmpeg 路径解析：捆绑（app 根下 app/ffmpeg/ffmpeg 或 app/ffmpeg 平铺文件，兼容两种
+     * 打包布局；jpackage 拷贝可能丢失可执行位，探测前自愈）→ 显式指定（env/参数）→ 系统 PATH
+     * → Homebrew 常见绝对位置（双击启动的 PATH 极简，bare name 会找不到）。全无返回 null。
      */
-    fun resolveFfmpeg(explicit: String?, appContents: Path?, probe: (String) -> Boolean): String? {
+    fun resolveFfmpeg(
+        explicit: String?,
+        appContents: Path?,
+        probe: (String) -> Boolean,
+        homebrewCandidates: List<String> = listOf("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"),
+    ): String? {
         if (appContents != null) {
-            val bundled = appContents.resolve("app").resolve("ffmpeg").resolve("ffmpeg").normalize()
-            if (bundled.startsWith(appContents) && Files.exists(bundled)) return bundled.toString()
+            val appDir = appContents.resolve("app")
+            for (candidate in listOf(appDir.resolve("ffmpeg/ffmpeg"), appDir.resolve("ffmpeg"))) {
+                val normalized = candidate.normalize()
+                if (normalized.startsWith(appContents) && Files.isRegularFile(normalized)) {
+                    normalized.toFile().setExecutable(true) // 自愈：打包拷贝可能丢失 +x
+                    if (probe(normalized.toString())) return normalized.toString()
+                }
+            }
         }
         if (!explicit.isNullOrBlank() && probe(explicit)) return explicit
         if (probe("ffmpeg")) return "ffmpeg"
+        for (fallback in homebrewCandidates) {
+            if (Files.exists(Path.of(fallback)) && probe(fallback)) return fallback
+        }
         return null
     }
 

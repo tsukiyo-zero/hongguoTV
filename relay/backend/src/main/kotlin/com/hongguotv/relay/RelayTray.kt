@@ -12,11 +12,12 @@ import java.awt.datatransfer.StringSelection
 import java.awt.image.BufferedImage
 import java.nio.file.Path
 
-/** 菜单栏壳（AWT SystemTray）：状态行、复制地址/令牌、开机自启开关、退出。 */
+/** 菜单栏壳（AWT SystemTray）：状态行、状态窗口、复制地址/令牌、开机自启开关、退出。 */
 internal class RelayTray private constructor(
     private val trayIcon: TrayIcon,
     private val onCopyAddress: () -> String,
     private val onCopyToken: () -> String,
+    private val onShowWindow: () -> Unit,
     autostartHome: Path,
     appContents: Path?,
     private val onAutostartChanged: (Boolean) -> Unit,
@@ -45,6 +46,7 @@ internal class RelayTray private constructor(
         val popup = PopupMenu()
         popup.add(statusItem)
         popup.addSeparator()
+        popup.add(action("打开状态窗口") { onShowWindow() })
         popup.add(action("复制地址") { copyToClipboard(onCopyAddress()) })
         popup.add(action("复制令牌") { copyToClipboard(onCopyToken()) })
         autostartItem?.let {
@@ -86,6 +88,7 @@ internal class RelayTray private constructor(
             appContents: Path?,
             onCopyAddress: () -> String,
             onCopyToken: () -> String,
+            onShowWindow: () -> Unit,
             onAutostartChanged: (Boolean) -> Unit,
             onExit: () -> Unit,
         ): RelayTray? =
@@ -93,7 +96,10 @@ internal class RelayTray private constructor(
                 if (!SystemTray.isSupported()) return null
                 val trayIcon = TrayIcon(iconImage(), "果映伴机")
                 trayIcon.isImageAutoSize = true
-                RelayTray(trayIcon, onCopyAddress, onCopyToken, autostartHome, appContents, onAutostartChanged, onExit)
+                RelayTray(
+                    trayIcon, onCopyAddress, onCopyToken, onShowWindow,
+                    autostartHome, appContents, onAutostartChanged, onExit,
+                )
             }.getOrNull()
 
         /** 程序化生成菜单栏图标（深色圆底 + 白色播放三角），免去图片资源依赖。 */
