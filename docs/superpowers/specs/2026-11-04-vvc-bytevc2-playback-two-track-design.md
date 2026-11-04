@@ -1,5 +1,7 @@
 # VVC（bytevc2）播放两轨决策设计
 
+> **状态回填（2026-11-05）**：伴机路线已全部实施并实机验收——M1 伴机服务（占用自愈/令牌鉴权/活动反馈）、M2 TV 端接入（兜底触发/自动发现/扫码填地址令牌/性能提示）、M3+产品化（macOS GuoyingRelay-1.0.0.dmg：jpackage 全自包含、菜单栏壳、ffmpeg 捆绑 sha256 校验）。软解直读路线按验收结论封存（feature-vvc-softdecode-bench 分支保留）。Windows 阶段二待有验证环境后启动。实施与排障全程记录见 2026-11-04-relay-transcode-plan.md。
+
 2026-11-04。目标：bytevc2 锁定集在电视上可看，行为符合既有兜底 UX（PR #48 语义）。
 
 ## 背景

@@ -1,5 +1,7 @@
 # 果映伴机产品化（macOS 菜单栏 App 与分发）设计
 
+> **状态（2026-11-05）**：macOS 部分已实施完成并实机验收——GuoyingRelay-1.0.0.dmg（jpackage 全自包含：JRE+fatJar+捆绑 ffmpeg sha256 校验；菜单栏壳：状态窗口/多地址显示/复制/开机自启/退出；活动反馈：电视接入实时可见）。Windows 阶段二未启动（无验证环境，用户明确暂缓）。实施与排障记录见 2026-11-04-relay-transcode-plan.md。
+
 2026-11-04。前置：伴机链路已全部验收（relay/ 模块 fat jar、令牌鉴权、mDNS 自动发现、扫码填地址令牌，见 2026-11-04-relay-transcode-plan.md）。本设计把「需要 JDK/ffmpeg/终端知识」的伴机变成**非极客可直接安装使用**的 macOS 制品；Windows 为阶段二（同管线换参数，另行细化）。
 
 ## 目标用户旅程（验收标准）
