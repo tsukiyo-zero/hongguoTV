@@ -21,7 +21,8 @@ internal object RelayDiscovery {
     fun discover(context: Context, timeoutMs: Long = 5_000, onResult: (List<String>) -> Unit): Boolean {
         val nsd = context.getSystemService(NsdManager::class.java) ?: return false
         val main = Handler(Looper.getMainLooper())
-        val found = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val found: MutableSet<String> =
+            java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())
         val finished = AtomicBoolean(false)
         val resolving = AtomicBoolean(false)
         val queue: Queue<NsdServiceInfo> = ConcurrentLinkedQueue()
