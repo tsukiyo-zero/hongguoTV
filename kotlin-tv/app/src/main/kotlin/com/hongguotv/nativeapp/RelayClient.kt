@@ -12,6 +12,9 @@ import java.util.concurrent.TimeUnit
 /** 伴机交互失败：message 为用户可读文案，经 playbackFailureSummary 原样透出。 */
 internal class RelayException(message: String) : java.io.IOException(message)
 
+/** 一次伴机转码会话的接入信息：sessionId/hlsUrl + 用户可见的分辨率标签。 */
+internal data class RelayPlayback(val sessionId: String, val hlsUrl: String, val qualityLabel: String)
+
 /** 伴机设置持久化（独立 SharedPreferences，不与观看偏好混存）。 */
 internal class RelayStore(context: Context) {
     private val prefs = context.getSharedPreferences("relay", Context.MODE_PRIVATE)
@@ -60,13 +63,23 @@ internal class RelayClient(private val http: OkHttpClient, private val host: Str
     }
 
     private fun send(path: String, method: String = "GET", body: JSONObject? = null): JSONObject? =
-        runCatching {
+        try {
             http.newCall(request(path, method, body)).execute().use { response ->
-                if (!response.isSuccessful) return null
+                if (!response.isSuccessful) {
+                    android.util.Log.w(
+                        "HongguoTV",
+                        "relay $method $path → HTTP ${response.code}",
+                    )
+                    return null
+                }
                 val text = response.body?.string() ?: return null
                 if (text.isBlank()) null else JSONObject(text)
             }
-        }.getOrNull()
+        } catch (problem: Exception) {
+            // 伴机探测失败原因必须可诊断：超时/拒绝/网段问题在日志里一眼可分。
+            android.util.Log.w("HongguoTV", "relay $method $path → ${problem.javaClass.simpleName}: ${problem.message?.take(120)}")
+            null
+        }
 
     /** GET /health：null = 不可达。 */
     fun health(): JSONObject? = send("/health")
@@ -81,12 +94,21 @@ internal class RelayClient(private val http: OkHttpClient, private val host: Str
         if (keyB64 != null) payload.put("keyB64", keyB64)
         val longCall = http.newBuilder().callTimeout(20, TimeUnit.SECONDS).build()
         val result =
-            runCatching {
+            try {
                 longCall.newCall(request("/session", body = payload)).execute().use { response ->
-                    if (!response.isSuccessful) return null
+                    if (!response.isSuccessful) {
+                        android.util.Log.w("HongguoTV", "relay POST /session → HTTP ${response.code}")
+                        return null
+                    }
                     JSONObject(response.body?.string() ?: return null)
                 }
-            }.getOrNull() ?: return null
+            } catch (problem: Exception) {
+                android.util.Log.w(
+                    "HongguoTV",
+                    "relay POST /session → ${problem.javaClass.simpleName}: ${problem.message?.take(120)}",
+                )
+                return null
+            } ?: return null
         val sessionId = result.optString("sessionId")
         val hlsUrl = result.optString("hlsUrl")
         return if (sessionId.isNotBlank() && hlsUrl.isNotBlank()) sessionId to hlsUrl else null

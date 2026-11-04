@@ -3499,8 +3499,8 @@ class MainActivity : Activity() {
                 }
             }
 
-    /** 解析 bytevc2 档并让伴机起转码会话，返回 sessionId to hlsUrl；失败抛 RelayException。 */
-    private fun relayOpen(episodeId: String): Pair<String, String> {
+    /** 解析 bytevc2 档并让伴机起转码会话；失败抛 RelayException。 */
+    private fun relayOpen(episodeId: String): RelayPlayback {
         val host = relayStore.host
         if (host.isBlank()) throw RelayException("伴机地址未配置，请在播放设置里填写")
         val client = RelayClient(relayHttp, host)
@@ -3516,21 +3516,35 @@ class MainActivity : Activity() {
                 ?: throw RelayException("本集没有 bytevc2 档位，伴机无用武之地")
         val keyB64 =
             pick.key?.let { android.util.Base64.encodeToString(it, android.util.Base64.NO_WRAP) }
-        return client.createSession(
-            pick.url,
-            keyB64,
-            if (pick.quality > 0) "${pick.quality}P" else "自动",
-        ) ?: throw RelayException("伴机会话创建失败（可能正被占用）")
+        val (sessionId, hlsUrl) =
+            client.createSession(
+                pick.url,
+                keyB64,
+                if (pick.quality > 0) "${pick.quality}P" else "自动",
+            ) ?: throw RelayException("伴机会话创建失败（可能正被占用）")
+        val label =
+            buildString {
+                append(if (pick.quality > 0) "${pick.quality}P" else "自动")
+                if ((pick.width ?: 0) > 0 && (pick.height ?: 0) > 0)
+                    append(" · ${pick.width}×${pick.height}")
+            }
+        return RelayPlayback(sessionId, hlsUrl, label)
     }
 
     /** 把当前播放器切到伴机 HLS（复用既有进度/界面机制）；须在主线程调用。 */
-    private fun startRelaySource(p: ExoPlayer, hlsUrl: String, id: String, position: Long) {
+    private fun startRelaySource(
+        p: ExoPlayer,
+        hlsUrl: String,
+        id: String,
+        position: Long,
+        qualityLabel: String,
+    ) {
         p.stop()
         p.clearMediaItems()
         playbackReady = false
         playError = false
         panel = false
-        quality = "伴机转码"
+        quality = "伴机转码 $qualityLabel"
         progressBar.visibility = View.VISIBLE
         playbackText.text = "正在由伴机转码…"
         controls.removeAllViews()
@@ -3566,8 +3580,7 @@ class MainActivity : Activity() {
         work(
             { relayOpen(requestedId) },
             { result ->
-                val (sessionId, hlsUrl) = result
-                relaySessionId = sessionId
+                relaySessionId = result.sessionId
                 // 正式路径监听器可能仍挂着（硬解失败路径），换上伴机专用监听避免双重处理。
                 playerListener?.let { player?.removeListener(it) }
                 playerListener = null
@@ -3606,10 +3619,10 @@ class MainActivity : Activity() {
                     }
                 playerListener = relayListener
                 p.addListener(relayListener)
-                startRelaySource(p, hlsUrl, requestedId, position)
+                startRelaySource(p, result.hlsUrl, requestedId, position, result.qualityLabel)
                 android.util.Log.i(
                     "HongguoTV",
-                    "Relay playback started episode=${episodeIndex + 1} position=$position",
+                    "Relay playback started episode=${episodeIndex + 1} position=$position quality=${result.qualityLabel}",
                 )
             },
             { problem ->
