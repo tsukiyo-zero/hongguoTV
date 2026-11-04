@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit
 import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -933,10 +934,25 @@ constructor(
                         .getOrDefault(raw.toString())
             }
         if (!fallback.startsWith("https://")) throw IOException("播放地址格式异常")
-        val info =
+        var info =
             JSONObject(text(fallback)).optJSONObject("video_info")?.optJSONObject("data")
                 ?: throw IOException("没有播放资源")
-        val videoList = info.optJSONObject("video_list") ?: throw IOException("没有可用清晰度")
+        var videoList = info.optJSONObject("video_list") ?: throw IOException("没有可用清晰度")
+        val offered = videoList.keys().asSequence().mapNotNull(videoList::optJSONObject).toList()
+        if (offered.isNotEmpty() && offered.all {
+                it.str("main_url").isNotBlank() &&
+                    it.str("codec_type").lowercase() in setOf("bytevc2", "bvc2")
+            }) {
+            // 官方播放器有 force_codec 和 codec_type=0 的兼容路径。仅全档 bytevc2 时
+            // 额外读取一次；参数名不保证返回 h264，必须继续按实际模型与视频轨道选档。
+            val compatible = fallback.toHttpUrl().newBuilder()
+                .setQueryParameter("codec_type", "0")
+                .setQueryParameter("force_codec", "h264")
+                .build().toString()
+            info = JSONObject(text(compatible)).optJSONObject("video_info")?.optJSONObject("data")
+                ?: throw IOException("没有播放资源")
+            videoList = info.optJSONObject("video_list") ?: throw IOException("没有可用清晰度")
+        }
         // ByteVC2 resources can expose playable audio but no video track in Android's MP4
         // extractor.
         // Keep missing legacy codec labels usable, but never select a known incompatible variant.

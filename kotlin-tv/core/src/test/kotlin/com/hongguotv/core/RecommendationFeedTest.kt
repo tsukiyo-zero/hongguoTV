@@ -10,6 +10,40 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RecommendationFeedTest {
+    @Test
+    fun displayedSnapshotDoesNotWaitForThePaginationNetworkLock() {
+        val cursor = RecommendationCursor()
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val network = pool.submit {
+                synchronized(cursor) {
+                    entered.countDown()
+                    check(release.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                }
+            }
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val display = pool.submit<String> { cursor.markSeen("101"); cursor.snapshot() }
+            val saved = display.get(2, java.util.concurrent.TimeUnit.SECONDS)
+            assertTrue(saved.contains("101"))
+            assertFalse(network.isDone)
+        } finally { release.countDown(); pool.shutdownNow() }
+    }
+
+    @Test
+    fun concurrentDisplayedAndFetchedIdsKeepSnapshotsBoundedAndReadable() {
+        val cursor = RecommendationCursor()
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val display = pool.submit { repeat(1000) { cursor.markSeen(it.toString()); cursor.snapshot() } }
+            val fetched = pool.submit { repeat(1000) { cursor.remember(listOf((1000 + it).toString())); cursor.seenIds() } }
+            display.get(10, java.util.concurrent.TimeUnit.SECONDS)
+            fetched.get(10, java.util.concurrent.TimeUnit.SECONDS)
+            assertTrue(JSONObject(cursor.snapshot()).getJSONArray("seen").length() <= 540)
+            assertTrue(RecommendationCursor().restore(cursor.snapshot()))
+        } finally { pool.shutdownNow() }
+    }
     private fun response(id: String = "101", tab: Int = 16, wrapped: Boolean = false): String {
         val row =
             JSONObject()
@@ -112,7 +146,9 @@ class RecommendationFeedTest {
         assertSame(second, RecommendationFeed(http, cursor = cursor).page(2))
         assertEquals(2, requests.size)
         RecommendationFeed(http, cursor = cursor.nextBatch()).page(1)
-        assertEquals(listOf("0", "1", "2"), requests.map { it.url.queryParameter("offset") })
+        // offset 按「一条响应实际下发的条数」前进（fixture 每轮 2 条），而不是固定 +1，
+        // 否则会与上一页大面积重叠。
+        assertEquals(listOf("0", "2", "4"), requests.map { it.url.queryParameter("offset") })
         assertNull(requests[0].header("Cookie"))
         assertNull(requests[0].url.queryParameter("device_id"))
         assertEquals("test-page-session", requests[1].url.queryParameter("session_id"))
@@ -345,5 +381,24 @@ class RecommendationFeedTest {
         assertNull(requests[1].url.queryParameter("session_id"))
         assertEquals("0", requests[1].url.queryParameter("offset"))
         assertEquals("1", requests[1].url.queryParameter("client_req_type"))
+    }
+
+    /** 冷启动续刷依赖快照往返；异常输入必须被拒绝而不是污染游标。 */
+    @Test
+    fun cursorSnapshotRoundTripsAndRejectsGarbage() {
+        val cursor = RecommendationCursor()
+        cursor.session = "sess-1"
+        cursor.offset = 18
+        cursor.seen.addAll(listOf("a", "b", "c"))
+        val saved = cursor.snapshot()
+        val restored = RecommendationCursor()
+        assertTrue(restored.restore(saved))
+        assertEquals("sess-1", restored.session)
+        assertEquals(18, restored.offset)
+        assertTrue(restored.seen.containsAll(listOf("a", "b", "c")))
+        assertFalse(RecommendationCursor().restore("not-json"))
+        assertFalse(RecommendationCursor().restore("""{"session":"","offset":-5}"""))
+        val tooLong = """{"session":"${"x".repeat(5000)}","offset":0}"""
+        assertFalse(RecommendationCursor().restore(tooLong))
     }
 }

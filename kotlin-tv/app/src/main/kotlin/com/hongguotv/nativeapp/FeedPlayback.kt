@@ -52,6 +52,13 @@ internal interface FeedBackend : Closeable {
     fun trial(series: Series): TrialClip = prepare(detail(series))
 
     fun preload(series: Series): TrialClip = prefetch(detail(series))
+
+    /** 首页展示过一部作品时通知后端，供下次冷启动跳过重复内容。 */
+    fun noteDisplayed(
+        series: Series,
+        cursor: RecommendationCursor,
+        category: DramaCategory? = null,
+    ) = Unit
 }
 
 internal class PublicFeedBackend(
@@ -111,19 +118,33 @@ internal class PublicFeedBackend(
         cursor: RecommendationCursor,
         fetch: () -> CatalogPage,
     ): CatalogPage {
-        if (page == 1)
-            startupCache?.load(cacheIdentity, source)?.let { cached ->
-                if (cursor.restoreStarter(cached)) {
-                    synchronized(trialHints) { startupPages[source] = cached }
-                    android.util.Log.i("HongguoTV", "Home starter-cache hit")
-                    return rememberHints(cached)
+        if (page == 1) {
+            // 冷启动先接上次的分页游标：服务端在没有 session_id 时永远返回同一批冷启动内容，
+            // 只有把会话和 offset 带过去才能「下次进来接着刷」。
+            if (!cursor.hasProgress) {
+                startupCache?.loadCursor(cacheIdentity, source)?.let { saved ->
+                    val ok = cursor.restore(saved)
+                    android.util.Log.i("HongguoTV", "Home cursor-restore ok=$ok snapshotChars=${saved.length}")
                 }
             }
+            val resumed = cursor.hasProgress
+            android.util.Log.i("HongguoTV", "Home cursor resumed=$resumed")
+            if (!resumed)
+                startupCache?.load(cacheIdentity, source)?.let { cached ->
+                    if (cursor.restoreStarter(cached)) {
+                        synchronized(trialHints) { startupPages[source] = cached }
+                        android.util.Log.i("HongguoTV", "Home starter-cache hit")
+                        return rememberHints(cached)
+                    }
+                }
+        }
         val result = rememberHints(fetch())
         if (page == 1) {
             synchronized(trialHints) { startupPages[source] = result }
             startupCache?.save(cacheIdentity, source, result)
         }
+        startupCache?.saveCursor(cacheIdentity, source, cursor.snapshot())
+        android.util.Log.i("HongguoTV", "Home cursor-save bytes=${cursor.snapshot().length}")
         return result
     }
 
@@ -147,6 +168,18 @@ internal class PublicFeedBackend(
 
     override fun catalog(category: DramaCategory, page: Int) =
         repository.discover(category, page = page)
+
+    override fun noteDisplayed(
+        series: Series,
+        cursor: RecommendationCursor,
+        category: DramaCategory?,
+    ) {
+        if (closed.get()) return
+        cursor.markSeen(series.id)
+        // 同步落盘：这一条是「下次进来别再看到它」的唯一依据，异步写会和退出时的 close()
+        // 抢跑，导致快照丢失。快照受 64 KiB 与最近 540 条去重记录限制。
+        startupCache?.saveCursor(cacheIdentity, category?.route ?: "recommend", cursor.snapshot())
+    }
 
     override fun detail(series: Series) = timed("detail") { repository.detail(series.id) }
 

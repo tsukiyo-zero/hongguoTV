@@ -28,6 +28,7 @@ class HomeFeedScreenTest {
             get() = prepareCount.get()
 
         val preparedIds = java.util.concurrent.ConcurrentLinkedQueue<String>()
+        val displayedIds = java.util.concurrent.ConcurrentLinkedQueue<String>()
         var closed = false
         var recommendationReads = 0
 
@@ -53,6 +54,10 @@ class HomeFeedScreenTest {
 
         override fun close() {
             closed = true
+        }
+
+        override fun noteDisplayed(series: Series, cursor: RecommendationCursor, category: DramaCategory?) {
+            displayedIds += series.id
         }
     }
 
@@ -255,6 +260,7 @@ class HomeFeedScreenTest {
             assertEquals(clears, player.clears)
             assertEquals(loads, player.loads)
             assertEquals(1, player.selections)
+            assertTrue("预加载直切也必须记录当前展示作品", "2" in backend.displayedIds)
             stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_UP))
             pump(screen)
             assertEquals("1", player.loaded)
