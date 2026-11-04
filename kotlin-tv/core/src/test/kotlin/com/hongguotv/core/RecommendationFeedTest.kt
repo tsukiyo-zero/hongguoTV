@@ -112,7 +112,9 @@ class RecommendationFeedTest {
         assertSame(second, RecommendationFeed(http, cursor = cursor).page(2))
         assertEquals(2, requests.size)
         RecommendationFeed(http, cursor = cursor.nextBatch()).page(1)
-        assertEquals(listOf("0", "1", "2"), requests.map { it.url.queryParameter("offset") })
+        // offset 按「一条响应实际下发的条数」前进（fixture 每轮 2 条），而不是固定 +1，
+        // 否则会与上一页大面积重叠。
+        assertEquals(listOf("0", "2", "4"), requests.map { it.url.queryParameter("offset") })
         assertNull(requests[0].header("Cookie"))
         assertNull(requests[0].url.queryParameter("device_id"))
         assertEquals("test-page-session", requests[1].url.queryParameter("session_id"))

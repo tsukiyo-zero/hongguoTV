@@ -209,7 +209,11 @@ class RecommendationFeed(
                         }
                 cursor.session = parsed.second.ifBlank { cursor.session }
                 cursor.offset =
-                    if (category == null) cursor.offset + 1
+                    if (category == null) {
+                        // 服务端 offset 的单位是「条」：一次返回 6 条时只前进 1 会与上一页重叠
+                        // 5 条，导致首页反复看到同样内容。按本次实际下发的条数前进。
+                        cursor.offset + maxOf(1, rawVideoCount(result))
+                    }
                     else
                         result
                             .getJSONObject("data")
@@ -289,6 +293,21 @@ class RecommendationFeed(
                     .put("data", JSONObject().put("tab_item", JSONArray().put(tab)))
             val parsed = parse(normalized)
             return parsed.first.copy(hasMore = data.optBoolean("has_more", true)) to parsed.second
+        }
+
+        /** 一次响应里实际下发的视频条数，用于推进服务端的按条 offset。 */
+        internal fun rawVideoCount(result: JSONObject): Int {
+            val tab =
+                result.optJSONObject("data")?.optJSONArray("tab_item")?.optJSONObject(0) ?: return 0
+            val cells = tab.optJSONArray("cell_data") ?: return 0
+            var count = 0
+            for (i in 0 until cells.length()) {
+                val inner = cells.optJSONObject(i)?.optJSONArray("cell_data") ?: continue
+                for (k in 0 until inner.length()) {
+                    count += inner.optJSONObject(k)?.optJSONArray("video_data")?.length() ?: 0
+                }
+            }
+            return count
         }
 
         internal fun parse(result: JSONObject): Pair<CatalogPage, String> {
