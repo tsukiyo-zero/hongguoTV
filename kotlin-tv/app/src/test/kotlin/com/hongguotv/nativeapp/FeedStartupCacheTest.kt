@@ -17,6 +17,109 @@ import org.robolectric.annotation.Config
 class FeedStartupCacheTest {
     private val page = CatalogPage(listOf(Series("101", "缓存作品")), true)
 
+    private fun feedResponse(ids: List<String>): String {
+        val rows = org.json.JSONArray()
+        ids.forEach {
+            rows.put(org.json.JSONObject().put("series_id", it).put("series_title", "推荐$it"))
+        }
+        val card = org.json.JSONObject().put("video_data", rows)
+        val cell = org.json.JSONObject().put("cell_data", org.json.JSONArray().put(card))
+        val tab = org.json.JSONObject()
+            .put("tab_type", 16)
+            .put("session_id", "test-session")
+            .put("cell_data", org.json.JSONArray().put(cell))
+        return org.json.JSONObject()
+            .put("code", 0)
+            .put("data", org.json.JSONObject().put("tab_item", org.json.JSONArray().put(tab)))
+            .toString()
+    }
+
+    @Test
+    fun cacheDisplayAndImmediateCloseDoNotReplayTheSameFirstWorkOnRestart() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val cache = FeedStartupCache(controller.get()) { 1000L }
+        cache.save("guest", "recommend", page)
+        var requests = 0
+        fun transport() = OkHttpClient.Builder().addInterceptor { chain ->
+            requests++
+            val offset = chain.request().url.queryParameter("offset")?.toInt() ?: 0
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200)
+                .message("fixture").body(feedResponse(if(offset == 0) listOf("101", "202") else listOf("303")).toResponseBody()).build()
+        }.build()
+        try {
+            val displayed = mutableListOf<String>()
+            repeat(3) {
+                val backend = PublicFeedBackend(720, http = transport(), startupCache = cache)
+                try {
+                    val cursor = DramaFeedState().recommendationCursor
+                    val current = backend.recommendations(1, cursor).items.first()
+                    displayed += current.id
+                    backend.noteDisplayed(current, cursor)
+                } finally {
+                    backend.close()
+                }
+            }
+            assertEquals(listOf("101", "202", "303"), displayed)
+            assertEquals(2, requests) // 首次仍可立即使用旧首屏；后两次均继续取新内容。
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun displayedWorkIsSavedToItsOwnCursorAndSourceEvenAfterSwitchingBack() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val cache = FeedStartupCache(controller.get()) { 1000L }
+        val http = OkHttpClient.Builder().addInterceptor { error("仅保存本地展示记录") }.build()
+        val backend = PublicFeedBackend(720, http = http, startupCache = cache)
+        try {
+            val state = DramaFeedState()
+            val recommend = state.recommendationCursor
+            state.append(CatalogPage(listOf(Series("101", "推荐")), true), 1)
+            backend.noteDisplayed(Series("101", "推荐"), recommend)
+            val savedRecommend = cache.loadCursor("guest", "recommend")
+            state.select(DramaCategory.COMIC)
+            val comic = state.recommendationCursor
+            state.append(CatalogPage(listOf(Series("202", "漫剧")), true), 1)
+            backend.noteDisplayed(Series("202", "漫剧"), comic, DramaCategory.COMIC)
+            assertEquals(savedRecommend, cache.loadCursor("guest", "recommend"))
+            val savedComic = cache.loadCursor("guest", DramaCategory.COMIC.route)
+            assertTrue(org.json.JSONObject(savedComic!!).getJSONArray("seen").toString().contains("202"))
+            state.recommend()
+            assertSame(recommend, state.recommendationCursor)
+            backend.noteDisplayed(Series("303", "返回推荐"), state.recommendationCursor)
+            assertEquals(savedComic, cache.loadCursor("guest", DramaCategory.COMIC.route))
+            val saved = org.json.JSONObject(cache.loadCursor("guest", "recommend")!!).getJSONArray("seen").toString()
+            assertTrue(saved.contains("101") && saved.contains("303"))
+            assertFalse(saved.contains("202"))
+            assertNull(cache.loadCursor("different-account", "recommend"))
+        } finally {
+            backend.close()
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun starterCacheHitStillPersistsDisplayedWorkBeforeBackendCloses() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val cache = FeedStartupCache(controller.get()) { 1000L }
+        cache.save("guest", "recommend", page)
+        val http = OkHttpClient.Builder().addInterceptor { error("缓存命中不应请求网络") }.build()
+        val backend = PublicFeedBackend(720, http = http, startupCache = cache)
+        try {
+            val cursor = DramaFeedState().recommendationCursor
+            val result = backend.recommendations(1, cursor)
+            backend.noteDisplayed(result.items.single(), cursor)
+            backend.close()
+            val saved = cache.loadCursor("guest", "recommend")
+            assertNotNull("缓存首屏展示记录也必须能跨进程恢复", saved)
+            assertTrue(org.json.JSONObject(saved!!).getJSONArray("seen").toString().contains("101"))
+        } finally {
+            backend.close()
+            controller.pause().stop().destroy()
+        }
+    }
+
     @Test
     fun sourcesAreSeparateAndAccountChangeOrExpiryCannotReuseOldStarter() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()

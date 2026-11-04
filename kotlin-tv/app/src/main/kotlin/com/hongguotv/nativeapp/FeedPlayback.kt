@@ -54,7 +54,11 @@ internal interface FeedBackend : Closeable {
     fun preload(series: Series): TrialClip = prefetch(detail(series))
 
     /** 首页展示过一部作品时通知后端，供下次冷启动跳过重复内容。 */
-    fun noteDisplayed(series: Series) = Unit
+    fun noteDisplayed(
+        series: Series,
+        cursor: RecommendationCursor,
+        category: DramaCategory? = null,
+    ) = Unit
 }
 
 internal class PublicFeedBackend(
@@ -86,8 +90,6 @@ internal class PublicFeedBackend(
                 .joinToString("") { b -> "%02x".format(b.toInt() and 255) }
         } ?: "guest"
     private val trialHints = linkedMapOf<String, TrialHint>()
-    private val displayWriter = java.util.concurrent.Executors.newSingleThreadExecutor()
-    private var lastCursor: RecommendationCursor? = null
     private val startupPages = mutableMapOf<String, CatalogPage>()
 
     private fun rememberHints(page: CatalogPage): CatalogPage {
@@ -122,7 +124,7 @@ internal class PublicFeedBackend(
             if (!cursor.hasProgress) {
                 startupCache?.loadCursor(cacheIdentity, source)?.let { saved ->
                     val ok = cursor.restore(saved)
-                    android.util.Log.i("HongguoTV", "Home cursor-restore ok=$ok offset=${cursor.snapshot().length}")
+                    android.util.Log.i("HongguoTV", "Home cursor-restore ok=$ok snapshotChars=${saved.length}")
                 }
             }
             val resumed = cursor.hasProgress
@@ -136,7 +138,6 @@ internal class PublicFeedBackend(
                     }
                 }
         }
-        lastCursor = cursor
         val result = rememberHints(fetch())
         if (page == 1) {
             synchronized(trialHints) { startupPages[source] = result }
@@ -168,15 +169,16 @@ internal class PublicFeedBackend(
     override fun catalog(category: DramaCategory, page: Int) =
         repository.discover(category, page = page)
 
-    override fun noteDisplayed(series: Series) {
-        val cursor = lastCursor ?: return
-        cursor.markSeen(series.id)
-        val snapshot = cursor.snapshot()
+    override fun noteDisplayed(
+        series: Series,
+        cursor: RecommendationCursor,
+        category: DramaCategory?,
+    ) {
         if (closed.get()) return
-        // 落盘放到单线程里，避免在 UI 线程做同步写；下次冷启动用它跳过已看内容。
-        displayWriter.execute {
-            if (!closed.get()) startupCache?.saveCursor(cacheIdentity, "recommend", snapshot)
-        }
+        cursor.markSeen(series.id)
+        // 同步落盘：这一条是「下次进来别再看到它」的唯一依据，异步写会和退出时的 close()
+        // 抢跑，导致快照丢失。快照受 64 KiB 与最近 540 条去重记录限制。
+        startupCache?.saveCursor(cacheIdentity, category?.route ?: "recommend", cursor.snapshot())
     }
 
     override fun detail(series: Series) = timed("detail") { repository.detail(series.id) }
@@ -276,7 +278,6 @@ internal class PublicFeedBackend(
                     http.dispatcher.cancelAll()
                     if (http.connectionPool !== feedPool) http.connectionPool.evictAll()
                     http.dispatcher.executorService.shutdown()
-                    displayWriter.shutdown()
                 },
                 "hongguotv-feed-cleanup",
             )

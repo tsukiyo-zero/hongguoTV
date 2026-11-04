@@ -10,6 +10,40 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RecommendationFeedTest {
+    @Test
+    fun displayedSnapshotDoesNotWaitForThePaginationNetworkLock() {
+        val cursor = RecommendationCursor()
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val network = pool.submit {
+                synchronized(cursor) {
+                    entered.countDown()
+                    check(release.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                }
+            }
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val display = pool.submit<String> { cursor.markSeen("101"); cursor.snapshot() }
+            val saved = display.get(2, java.util.concurrent.TimeUnit.SECONDS)
+            assertTrue(saved.contains("101"))
+            assertFalse(network.isDone)
+        } finally { release.countDown(); pool.shutdownNow() }
+    }
+
+    @Test
+    fun concurrentDisplayedAndFetchedIdsKeepSnapshotsBoundedAndReadable() {
+        val cursor = RecommendationCursor()
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val display = pool.submit { repeat(1000) { cursor.markSeen(it.toString()); cursor.snapshot() } }
+            val fetched = pool.submit { repeat(1000) { cursor.remember(listOf((1000 + it).toString())); cursor.seenIds() } }
+            display.get(10, java.util.concurrent.TimeUnit.SECONDS)
+            fetched.get(10, java.util.concurrent.TimeUnit.SECONDS)
+            assertTrue(JSONObject(cursor.snapshot()).getJSONArray("seen").length() <= 540)
+            assertTrue(RecommendationCursor().restore(cursor.snapshot()))
+        } finally { pool.shutdownNow() }
+    }
     private fun response(id: String = "101", tab: Int = 16, wrapped: Boolean = false): String {
         val row =
             JSONObject()

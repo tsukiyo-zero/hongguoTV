@@ -5,7 +5,7 @@ import android.content.Context
 import com.hongguotv.core.CatalogPage
 import com.hongguotv.core.FeedStartupSnapshot
 
-/** One account scope, three sources; accessed by feed workers, never the UI thread. */
+/** One account scope, three sources; feed workers read pages, selected-work snapshots commit on UI. */
 internal class FeedStartupCache(
     context: Context,
     private val clock: () -> Long = System::currentTimeMillis,

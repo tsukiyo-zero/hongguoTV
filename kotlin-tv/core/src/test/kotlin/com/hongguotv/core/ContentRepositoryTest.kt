@@ -586,6 +586,44 @@ class ContentRepositoryTest {
     }
 
     @Test
+    fun byteVc2OnlyFallbackRequestsOneCompatibleModelAndPreservesOtherParameters() {
+        val fallbackRequests = mutableListOf<Request>()
+        val repo = repository { request ->
+            if (request.url.host != "example.com")
+                """{"data":{"123":{"video_model":{"fallback_api":"https://example.com/stream?codec_type=4&token=fixture"}}}}"""
+            else {
+                fallbackRequests += request
+                val compatible = request.url.queryParameter("codec_type") == "0" &&
+                    request.url.queryParameter("force_codec") == "h264"
+                val codec = if (compatible) "h265" else "bytevc2"
+                """{"video_info":{"data":{"video_list":{"video_1":{"vwidth":1254,"vheight":720,"codec_type":"$codec","main_url":"https://example.com/video"}}}}}"""
+            }
+        }
+        val tier = repo.streamLadder("123").renditions.single()
+        assertEquals("h265", tier.codec)
+        assertEquals(2, fallbackRequests.size)
+        assertEquals("fixture", fallbackRequests.last().url.queryParameter("token"))
+    }
+
+    @Test
+    fun compatibleModelRequestIsBoundedAndDoesNotRetryUnknownOrPlayableCodecs() {
+        for ((codec, expectedCalls) in listOf("bytevc2" to 2, "bvc2" to 2, "unknown" to 1, "h265" to 1)) {
+            var calls = 0
+            val repo = repository { request ->
+                if (request.url.host != "example.com")
+                    """{"data":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}"""
+                else {
+                    calls++
+                    """{"video_info":{"data":{"video_list":{"video_1":{"vheight":720,"codec_type":"$codec","main_url":"https://example.com/video"}}}}}"""
+                }
+            }
+            if (expectedCalls == 2) assertThrows(IOException::class.java) { repo.streamLadder("123") }
+            else assertEquals(codec, repo.streamLadder("123").renditions.single().codec)
+            assertEquals(expectedCalls, calls)
+        }
+    }
+
+    @Test
     fun entirelyIncompatibleSourceFailsBeforeStartingAudio() {
         val repo =
             streamRepository(
