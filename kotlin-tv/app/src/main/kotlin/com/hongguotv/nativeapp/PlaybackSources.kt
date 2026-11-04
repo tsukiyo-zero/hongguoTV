@@ -41,6 +41,9 @@ internal fun playbackFailureSummary(problem: Throwable): String {
             // 前缀匹配：这两类消息带变量后缀（清晰度建议语、HTTP 码），完整文案原样透出。
             "没有电视可播放的清晰度",
             "视频服务器不支持分段读取",
+            // 伴机交互文案原样透出（RelayException 的全部消息以「伴机」开头）。
+            "伴机",
+            "本集没有 bytevc2 档位",
         )
     causes
         .mapNotNull { it.message }
