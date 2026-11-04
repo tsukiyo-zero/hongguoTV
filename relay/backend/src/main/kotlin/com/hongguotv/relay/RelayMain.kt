@@ -51,8 +51,14 @@ fun main(args: Array<String>) {
     val publicBase = "http://${lanIp()}:$port"
     val manager = SessionManager(workRoot)
     val server =
-        RelayServer(port, manager, publicBase, VERSION, encoder, ffmpegOk, ffmpegPath) { info ->
-            RemoteVideoSource(http, info)
+        try {
+            RelayServer(port, manager, publicBase, VERSION, encoder, ffmpegOk, ffmpegPath) { info ->
+                RemoteVideoSource(http, info)
+            }
+        } catch (problem: java.net.BindException) {
+            error(
+                "端口 $port 已被占用：很可能已有一个伴机实例在运行（浏览器打开 http://127.0.0.1:$port/health 可确认），无需重复启动",
+            )
         }
     server.start()
     val jmdns = runCatching { registerMdns(port) }.getOrNull()

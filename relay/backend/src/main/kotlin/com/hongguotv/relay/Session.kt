@@ -38,6 +38,8 @@ class Session(
         private set
     @Volatile var startIdx = 0
         private set
+    @Volatile var startedAtMs = 0L
+        private set
     @Volatile var lastAccessMs = System.currentTimeMillis()
 
     private val generation = AtomicLong(0)
@@ -61,6 +63,7 @@ class Session(
         val idx = TranscodeFeed.startIndex(table, (offsetSec * 1_000_000).toLong(), rapIndices)
         startIdx = idx
         positionUs = table.samples.getOrNull(idx)?.dts ?: 0L
+        startedAtMs = System.currentTimeMillis()
         val index = indexFile.toString()
         val command =
             listOf(

@@ -94,11 +94,11 @@ object TranscodeFeed {
         return best
     }
 
-    /** 分辨率 → H.264 目标码率（竖屏短剧经验档）。 */
+    /** 分辨率 → H.264 目标码率：局域网带宽富余，按「VVC 源 ×2 以上」给足，转码画质尽量无损感。 */
     fun videoBitrate(table: Mp4SampleTable.Table): String = when {
-        maxOf(table.width, table.height) >= 1900 -> "6M"
-        maxOf(table.width, table.height) >= 1200 -> "3M"
-        maxOf(table.width, table.height) >= 1000 -> "2M"
-        else -> "1M"
+        maxOf(table.width, table.height) >= 1900 -> "8M"
+        maxOf(table.width, table.height) >= 1200 -> "5M"
+        maxOf(table.width, table.height) >= 1000 -> "3M"
+        else -> "1500k"
     }
 }

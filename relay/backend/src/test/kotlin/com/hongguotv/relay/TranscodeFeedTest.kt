@@ -53,11 +53,11 @@ class TranscodeFeedTest {
 
     @Test
     fun `码率档位随分辨率`() {
-        assertEquals("1M", TranscodeFeed.videoBitrate(table(emptyList()).let {
+        assertEquals("1500k", TranscodeFeed.videoBitrate(table(emptyList()).let {
             Mp4SampleTable.Table(it.fourcc, 360, 640, it.timescale, it.samples, it.syncSamples)
         }))
-        assertEquals("3M", TranscodeFeed.videoBitrate(table(emptyList())))
-        assertEquals("6M", TranscodeFeed.videoBitrate(table(emptyList()).let {
+        assertEquals("5M", TranscodeFeed.videoBitrate(table(emptyList())))
+        assertEquals("8M", TranscodeFeed.videoBitrate(table(emptyList()).let {
             Mp4SampleTable.Table(it.fourcc, 1080, 1920, it.timescale, it.samples, it.syncSamples)
         }))
     }

@@ -94,10 +94,18 @@ class RelayServer(
                 .put(
                     "session",
                     current?.let {
+                        val elapsedSec = (System.currentTimeMillis() - it.startedAtMs) / 1000.0
                         JSONObject()
                             .put("id", it.id)
                             .put("state", it.state.name)
                             .put("positionSec", it.positionUs / 1_000_000.0)
+                            // 实时转码速度（实时倍率）：M3 性能自适应的依据，<1 即带不动。
+                            .put(
+                                "speed",
+                                if (elapsedSec > 1.0)
+                                    Math.round(it.positionUs / 1_000_000.0 / elapsedSec * 10) / 10.0
+                                else null,
+                            )
                     },
                 )
         json(exchange, 200, payload)
