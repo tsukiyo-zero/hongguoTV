@@ -38,6 +38,13 @@ internal constructor(
             .put("seen", JSONArray(seen.toList()))
             .toString()
 
+    /** 记录一部已在首页展示过的作品；冷启动时用它跳过重复内容。 */
+    fun markSeen(id: String) {
+        if (id.isBlank() || id.length > 32) return
+        seen += id
+        while (seen.size > 540) seen.remove(seen.first())
+    }
+
     /** 是否已经刷出进度（有服务端会话或非零 offset）；用于判断要不要接着上次继续。 */
     val hasProgress: Boolean
         get() = session.isNotEmpty() || offset > 0
@@ -256,6 +263,7 @@ class RecommendationFeed(
                     parsed.first.copy(items = parsed.first.items.filter { it.id !in cursor.seen })
                 cursor.seen.addAll(parsed.first.items.map { it.id })
                 while (cursor.seen.size > 540) cursor.seen.remove(cursor.seen.first())
+                // offset 上面已按本次下发的条数推进，整页都被 seen 过滤掉时重试会自动落到下一批。
                 if (fresh.items.isEmpty()) return@repeat
                 cursor.expectedPage = page + 1
                 cursor.lastPage = page

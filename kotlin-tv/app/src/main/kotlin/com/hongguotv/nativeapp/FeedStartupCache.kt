@@ -50,7 +50,9 @@ internal class FeedStartupCache(
         runCatching {
             synchronized(lock) {
                 owner(identity)
-                if (snapshot.length <= 64_000) prefs.edit().putString("cursor:$source", snapshot).apply()
+                // 用同步落盘：用户刷几部就强制退出时，apply 的异步写入可能还没落地就被杀掉了。
+                if (snapshot.length <= 64_000)
+                    prefs.edit().putString("cursor:$source", snapshot).commit()
             }
         }
     }

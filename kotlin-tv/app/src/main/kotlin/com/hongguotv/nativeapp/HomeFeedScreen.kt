@@ -542,6 +542,8 @@ internal class HomeFeedScreen(
     private fun loadCurrent(statusHint: String? = null) {
         val series = state.current ?: return
         if (!active || closed) return
+        // 记下展示过的作品：冷启动时用它跳过重复内容，而不是每次都从同一部开始。
+        backend.noteDisplayed(series)
         clearCurrent(keepPrefetch = prefetchTarget == series.id)
         failed = false
         describe()
