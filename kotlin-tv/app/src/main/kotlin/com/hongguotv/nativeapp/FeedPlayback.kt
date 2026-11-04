@@ -111,19 +111,28 @@ internal class PublicFeedBackend(
         cursor: RecommendationCursor,
         fetch: () -> CatalogPage,
     ): CatalogPage {
-        if (page == 1)
-            startupCache?.load(cacheIdentity, source)?.let { cached ->
-                if (cursor.restoreStarter(cached)) {
-                    synchronized(trialHints) { startupPages[source] = cached }
-                    android.util.Log.i("HongguoTV", "Home starter-cache hit")
-                    return rememberHints(cached)
-                }
+        if (page == 1) {
+            // 冷启动先接上次的分页游标：服务端在没有 session_id 时永远返回同一批冷启动内容，
+            // 只有把会话和 offset 带过去才能「下次进来接着刷」。
+            if (!cursor.hasProgress) {
+                startupCache?.loadCursor(cacheIdentity, source)?.let { cursor.restore(it) }
             }
+            val resumed = cursor.hasProgress
+            if (!resumed)
+                startupCache?.load(cacheIdentity, source)?.let { cached ->
+                    if (cursor.restoreStarter(cached)) {
+                        synchronized(trialHints) { startupPages[source] = cached }
+                        android.util.Log.i("HongguoTV", "Home starter-cache hit")
+                        return rememberHints(cached)
+                    }
+                }
+        }
         val result = rememberHints(fetch())
         if (page == 1) {
             synchronized(trialHints) { startupPages[source] = result }
             startupCache?.save(cacheIdentity, source, result)
         }
+        startupCache?.saveCursor(cacheIdentity, source, cursor.snapshot())
         return result
     }
 

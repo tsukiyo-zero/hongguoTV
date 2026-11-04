@@ -348,4 +348,23 @@ class RecommendationFeedTest {
         assertEquals("0", requests[1].url.queryParameter("offset"))
         assertEquals("1", requests[1].url.queryParameter("client_req_type"))
     }
+
+    /** 冷启动续刷依赖快照往返；异常输入必须被拒绝而不是污染游标。 */
+    @Test
+    fun cursorSnapshotRoundTripsAndRejectsGarbage() {
+        val cursor = RecommendationCursor()
+        cursor.session = "sess-1"
+        cursor.offset = 18
+        cursor.seen.addAll(listOf("a", "b", "c"))
+        val saved = cursor.snapshot()
+        val restored = RecommendationCursor()
+        assertTrue(restored.restore(saved))
+        assertEquals("sess-1", restored.session)
+        assertEquals(18, restored.offset)
+        assertTrue(restored.seen.containsAll(listOf("a", "b", "c")))
+        assertFalse(RecommendationCursor().restore("not-json"))
+        assertFalse(RecommendationCursor().restore("""{"session":"","offset":-5}"""))
+        val tooLong = """{"session":"${"x".repeat(5000)}","offset":0}"""
+        assertFalse(RecommendationCursor().restore(tooLong))
+    }
 }

@@ -26,6 +26,40 @@ internal constructor(
     fun nextBatch() = RecommendationCursor(session, offset).also { it.seen.addAll(seen) }
 
     /**
+     * 冷启动续刷用的最小快照：分页会话、offset 与最近看过的 ID。不含任何凭据。
+     *
+     * 服务端在无 `session_id` 时总是返回同一批冷启动内容（实测 offset 也会被忽略），
+     * 所以想「下次进来接着刷」只能把会话和 offset 带过去。
+     */
+    fun snapshot(): String =
+        JSONObject()
+            .put("session", session)
+            .put("offset", offset)
+            .put("seen", JSONArray(seen.toList()))
+            .toString()
+
+    /** 是否已经刷出进度（有服务端会话或非零 offset）；用于判断要不要接着上次继续。 */
+    val hasProgress: Boolean
+        get() = session.isNotEmpty() || offset > 0
+
+    /** 恢复 [snapshot]；格式不合法或数值越界时返回 false，调用方按新会话处理。 */
+    fun restore(value: String): Boolean {
+        val saved = runCatching { JSONObject(value) }.getOrNull() ?: return false
+        val savedSession = saved.optString("session")
+        val savedOffset = saved.optInt("offset", 0)
+        if (savedSession.length > 4096 || savedOffset !in 0..1_000_000) return false
+        session = savedSession
+        offset = savedOffset
+        seen.clear()
+        saved.optJSONArray("seen")?.let { rows ->
+            for (i in 0 until minOf(rows.length(), 540)) {
+                rows.optString(i).takeIf(String::isNotBlank)?.let { seen += it }
+            }
+        }
+        return true
+    }
+
+    /**
      * A local starter page, with no persisted server session. The next read starts a new server
      * session at offset zero and filters these already-displayed IDs as usual.
      */

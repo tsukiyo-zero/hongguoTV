@@ -36,6 +36,25 @@ internal class FeedStartupCache(
             }
             .getOrNull()
 
+    /** 首页「接着上次刷」的游标快照；与首屏缓存共用同一份身份隔离。 */
+    fun loadCursor(identity: String, source: String): String? =
+        runCatching {
+                synchronized(lock) {
+                    owner(identity)
+                    prefs.getString("cursor:$source", null)?.takeIf { it.length <= 64_000 }
+                }
+            }
+            .getOrNull()
+
+    fun saveCursor(identity: String, source: String, snapshot: String) {
+        runCatching {
+            synchronized(lock) {
+                owner(identity)
+                if (snapshot.length <= 64_000) prefs.edit().putString("cursor:$source", snapshot).apply()
+            }
+        }
+    }
+
     fun save(identity: String, source: String, page: CatalogPage) {
         runCatching {
             synchronized(lock) {
