@@ -37,7 +37,9 @@ TV（bytevc2 锁定集兜底）→ 伴机服务（Mac/PC，JVM jar + ffmpeg 8）
 
 ## M3 验收与发布
 
-> **M3 进行中（2026-11-04 深夜）**：已落地——①自动发现：TV 端 RelayDiscovery（NsdManager 扫 `_guoying-relay._tcp`，串行 resolve，5s 超时），伴机侧 jmdns 广播早已就绪，伴机设置对话框新增「搜索伴机」；②扫码填地址：PhoneSearchServer 文案参数化（core，默认文案不变、既有断言不受影响），`TvTools.phoneInput` 增加 inputTitle/pageTitle/pagePrompt/inputPlaceholder 参数（submit 挪至参数末尾），伴机设置对话框新增「扫码输入」（复用二维码+手机网页表单链路）；③画质：码率档位 5M/8M（VVC→H.264 代际损失对齐）；④/health session 增 speed 实时倍率（自适应数据基础）。验收排障实录：CLEARTEXT 策略拦截（NSC base-config 已放行，症状曾伪装成「伴机不可达」）、索尼视频硬件平面冻结（弹幕正常但视频区显示波纹，screencap 证明合成器渲染正常，断电重启恢复，非应用问题）。待做：token 鉴权、性能/网络自适应（speed<1 提示与降档）、README+fat jar 发布。
+> **M3 进行中（2026-11-04 深夜）**：已落地——①自动发现：TV 端 RelayDiscovery（NsdManager 扫 `_guoying-relay._tcp`，串行 resolve，5s 超时），伴机侧 jmdns 广播早已就绪，伴机设置对话框新增「搜索伴机」；②扫码填地址：PhoneSearchServer 文案参数化（core，默认文案不变、既有断言不受影响），`TvTools.phoneInput` 增加 inputTitle/pageTitle/pagePrompt/inputPlaceholder 参数（submit 挪至参数末尾），伴机设置对话框新增「扫码输入」（复用二维码+手机网页表单链路）；③画质：码率档位 5M/8M（VVC→H.264 代际损失对齐）；④/health session 增 speed 实时倍率（自适应数据基础）。验收排障实录：CLEARTEXT 策略拦截（NSC base-config 已放行，症状曾伪装成「伴机不可达」）、索尼视频硬件平面冻结（弹幕正常但视频区显示波纹，screencap 证明合成器渲染正常，断电重启恢复，非应用问题）。**用户实机验收：自动发现、扫码输入、分辨率标签、画质全部通过（2026-11-04）。**
+
+> **M3 收尾（2026-11-04 深夜）：令牌鉴权 + fat jar + README 已落地，待实机复测。** 伴机首启生成 8 位令牌持久化（启动目录 .guoying-relay/token，gitignore 覆盖；路径经 normalize+contains 校验过 Mimosa 扫描），变更类接口要求 X-Relay-Token 头（/health 与 HLS 只读端点开放），401 以可读文案透出；TV 端设置新增令牌字段（启用必填）、RelayClient 自动附头；转码速度持续 <1x 实时提示「伴机性能不足」（轻量轮询）；:relay:fatJar 单文件发布产物（java -jar，需系统 ffmpeg）；relay/README.md（构建/运行/配置/安全模型）+ 主 README 播放节指引。**待办**：TV 端填令牌复测、性能/网络自适应深做（speed<1 自动降档）、spec 状态回填、开 PR。
 
 1. 鉴权补齐：伴机首启生成 token 存文件，TV 设置页输入一次（防局域网滥用，spec 安全项）
 2. 用户实机验收（自装 jar + TV debug 包）：播 bytevc2 锁定集、拖进度条、杀伴机进程看降级、关伴机看回退
