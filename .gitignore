@@ -23,6 +23,8 @@ __pycache__/
 *.jks
 *.keystore
 keystore.properties
+# 果映伴机运行状态（含令牌），禁止入库
+.guoying-relay/
 
 # Local captures and downloaded media
 /captures/

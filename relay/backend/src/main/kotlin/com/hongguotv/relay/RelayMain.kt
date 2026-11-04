@@ -38,6 +38,27 @@ fun main(args: Array<String>) {
     val encoder = detectEncoder(ffmpegPath)
     require(ffmpegOk) { "ffmpeg 缺少 VVC 解码器（需 ffmpeg 7+，本机检查 -h decoder=vvc 失败）" }
 
+    // 伴机令牌：首启生成并持久化到启动目录下 .guoying-relay/token（防局域网滥用）。
+    val stateDir = java.nio.file.Paths.get(".guoying-relay").toAbsolutePath().normalize()
+    require(!stateDir.toString().contains("..")) { "令牌目录路径异常" }
+    val tokenFile = stateDir.resolve("token")
+    val relayToken =
+        if (java.nio.file.Files.exists(tokenFile)) {
+            java.nio.file.Files.readString(tokenFile).trim()
+                .also { require(it.isNotEmpty()) { "令牌文件为空，请删除 $tokenFile 后重启伴机" } }
+        } else {
+            val generated =
+                java.security.SecureRandom()
+                    .run {
+                        val bytes = ByteArray(4)
+                        nextBytes(bytes)
+                        bytes.joinToString("") { "%02x".format(it.toInt() and 255) }
+                    }
+            java.nio.file.Files.createDirectories(stateDir)
+            java.nio.file.Files.writeString(tokenFile, generated)
+            generated
+        }
+
     val workRoot = Paths.get(System.getProperty("java.io.tmpdir"), "guoying-relay")
     workRoot.toFile().mkdirs()
     workRoot.toFile().listFiles()?.forEach { it.deleteRecursively() } // 清上次残留
@@ -52,7 +73,7 @@ fun main(args: Array<String>) {
     val manager = SessionManager(workRoot)
     val server =
         try {
-            RelayServer(port, manager, publicBase, VERSION, encoder, ffmpegOk, ffmpegPath) { info ->
+            RelayServer(port, manager, publicBase, VERSION, encoder, ffmpegOk, ffmpegPath, relayToken) { info ->
                 RemoteVideoSource(http, info)
             }
         } catch (problem: java.net.BindException) {
@@ -92,6 +113,7 @@ fun main(args: Array<String>) {
     }
 
     println("果映伴机 $VERSION 已启动：$publicBase（encoder=$encoder）")
+    println("伴机令牌：$relayToken（TV 端播放设置需填入同一令牌；文件 $tokenFile）")
     println("mDNS：${if (jmdns != null) "_guoying-relay._tcp 已注册" else "注册失败（TV 端可手动填 IP）"}")
     println("Ctrl-C 退出并清理会话")
     Thread.currentThread().join()

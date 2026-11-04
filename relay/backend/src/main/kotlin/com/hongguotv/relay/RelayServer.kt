@@ -21,6 +21,7 @@ class RelayServer(
     private val encoder: String,
     private val ffmpegOk: Boolean,
     private val ffmpegPath: String,
+    private val relayToken: String,
     private val sourceFactory: (StreamInfo) -> VideoSource,
 ) {
     private val server = HttpServer.create(InetSocketAddress(port), 16)
@@ -62,6 +63,9 @@ class RelayServer(
         try {
             val path = exchange.requestURI.path.trimEnd('/')
             val method = exchange.requestMethod
+            val mutating = path != "/health" && !path.startsWith("/hls/") && !path.startsWith("/a/")
+            if (mutating && exchange.requestHeaders.getFirst("X-Relay-Token") != relayToken)
+                return json(exchange, 401, JSONObject().put("error", "伴机令牌不匹配，请核对 TV 端播放设置"))
             when {
                 method == "GET" && path == "/health" -> health(exchange)
                 method == "POST" && path == "/session" -> createSession(exchange)
@@ -119,7 +123,19 @@ class RelayServer(
             body.optString("keyB64").takeIf(String::isNotBlank)
                 ?.let { Base64.getDecoder().decode(it) }
         val quality = body.optString("quality").takeIf(String::isNotBlank) ?: "自动"
-        val session = buildSession(StreamInfo(url, key, quality))
+        val session =
+            try {
+                buildSession(StreamInfo(url, key, quality))
+            } catch (busy: SessionManager.BusyException) {
+                // 409 带上占用会话 id，TV 端可自行 DELETE 后重试。
+                return json(
+                    exchange,
+                    409,
+                    JSONObject()
+                        .put("error", "伴机正被其他播放占用")
+                        .put("sessionId", busy.sessionId),
+                )
+            }
         session.lastAccessMs = System.currentTimeMillis()
         json(
             exchange, 200,

@@ -15,3 +15,15 @@ tasks.register<JavaExec>("probe") {
     mainClass.set("com.hongguotv.relay.ProbeMainKt")
     classpath = sourceSets["main"].runtimeClasspath
 }
+
+// 发布形态：单文件 fat jar（java -jar guoying-relay-<版本>-all.jar，需系统 ffmpeg 7+）。
+tasks.register<Jar>("fatJar") {
+    archiveBaseName.set("guoying-relay")
+    archiveClassifier.set("all")
+    manifest { attributes["Main-Class"] = "com.hongguotv.relay.RelayMainKt" }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from(sourceSets.main.get().output)
+    from({ configurations.runtimeClasspath.get().filter { it.name.endsWith("jar") }.map { zipTree(it) } })
+    exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA")
+    exclude("META-INF/versions/*/module-info.class", "module-info.class")
+}
