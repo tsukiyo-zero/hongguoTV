@@ -50,6 +50,9 @@ class MainActivity : Activity() {
     // 伴机兜底（bytevc2 锁定集）：会话与尝试标记随每次 playEpisode 重置。
     private var relayAttempted = false
     private var relaySessionId: String? = null
+    private var relaySlowCount = 0
+    private var relaySlowHintShown = false
+    private var relaySpeedWatch: Runnable? = null
     private val relayStore by lazy { RelayStore(this) }
     private val relayHttp: okhttp3.OkHttpClient by lazy {
         okhttp3.OkHttpClient.Builder()
@@ -986,7 +989,7 @@ class MainActivity : Activity() {
                         nav[tab],
                         repository::searchSuggestions,
                         ::runSearch,
-                        { anchor -> tvTools.phoneInput(anchor, submit = ::runSearch) },
+                        { anchor -> tvTools.phoneInput(anchor) { query, _ -> query?.let { runSearch(it) } } },
                         ::returnToDiscovery,
                     )
                 tvSearchPanel = panel
@@ -1043,7 +1046,7 @@ class MainActivity : Activity() {
                     addButton(searchRow, "手机输入") {
                         (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
                             .hideSoftInputFromWindow(input.windowToken, 0)
-                        tvTools.phoneInput(phone) { runSearch(it) }
+                        tvTools.phoneInput(phone) { query, _ -> query?.let { runSearch(it) } }
                     }
                 phone.nextFocusUpId = input.nextFocusUpId
                 val keyboard =
@@ -2831,6 +2834,8 @@ class MainActivity : Activity() {
         panel = false
         playError = false
         relayAttempted = false
+        relaySlowHintShown = false
+        stopRelaySpeedWatch()
         playbackReady = false
         episodeDuration = 0
         quality = ""
@@ -3503,7 +3508,7 @@ class MainActivity : Activity() {
     private fun relayOpen(episodeId: String): RelayPlayback {
         val host = relayStore.host
         if (host.isBlank()) throw RelayException("伴机地址未配置，请在播放设置里填写")
-        val client = RelayClient(relayHttp, host)
+        val client = RelayClient(relayHttp, host, relayStore.token)
         val health = client.health() ?: throw RelayException("伴机不可达（$host），请确认其电脑已启动伴机")
         if (!health.optBoolean("ffmpegOk", false))
             throw RelayException("伴机缺少 VVC 解码器，请在其电脑上安装 ffmpeg 7+")
@@ -3620,6 +3625,7 @@ class MainActivity : Activity() {
                 playerListener = relayListener
                 p.addListener(relayListener)
                 startRelaySource(p, result.hlsUrl, requestedId, position, result.qualityLabel)
+                startRelaySpeedWatch(ticket)
                 android.util.Log.i(
                     "HongguoTV",
                     "Relay playback started episode=${episodeIndex + 1} position=$position quality=${result.qualityLabel}",
@@ -3639,8 +3645,51 @@ class MainActivity : Activity() {
         val host = relayStore.host
         if (host.isBlank()) return
         Thread {
-            runCatching { RelayClient(relayHttp, host).stop(sessionId) }
+            runCatching { RelayClient(relayHttp, host, relayStore.token).stop(sessionId) }
         }.apply { isDaemon = true }.start()
+    }
+
+    /** 轻量性能监控：转码速度持续 <1x 实时提示一次（伴机 /health 的 speed 字段）。 */
+    private fun startRelaySpeedWatch(ticket: Int) {
+        stopRelaySpeedWatch()
+        val poll =
+            object : Runnable {
+                override fun run() {
+                    if (generation != ticket || relaySessionId == null) return
+                    val host = relayStore.host
+                    Thread {
+                            val speed =
+                                runCatching {
+                                        RelayClient(relayHttp, host, relayStore.token)
+                                            .health()
+                                            ?.optJSONObject("session")
+                                            ?.optDouble("speed")
+                                            ?: Double.NaN
+                                    }
+                                    .getOrDefault(Double.NaN)
+                            main.post {
+                                if (generation != ticket || relaySessionId == null) return@post
+                                if (!speed.isNaN() && speed < 1.0) {
+                                    relaySlowCount++
+                                    if (relaySlowCount >= 2 && !relaySlowHintShown) {
+                                        relaySlowHintShown = true
+                                        playbackText.text =
+                                            "伴机性能不足（转码 ${"%.1f".format(speed)}x 实时），建议降低清晰度或稍后重试"
+                                    }
+                                } else relaySlowCount = 0
+                                main.postDelayed(this, 10_000)
+                            }
+                        }.apply { isDaemon = true }.start()
+                }
+            }
+        relaySpeedWatch = poll
+        main.postDelayed(poll, 8_000)
+    }
+
+    private fun stopRelaySpeedWatch() {
+        relaySpeedWatch?.let { main.removeCallbacks(it) }
+        relaySpeedWatch = null
+        relaySlowCount = 0
     }
 
     /** 伴机设置：开关 + 局域网地址 + 连接测试。 */
@@ -3662,8 +3711,15 @@ class MainActivity : Activity() {
                 setText(relayStore.host)
                 setSingleLine(true)
             }
+        val tokenInput =
+            EditText(this).apply {
+                hint = "伴机令牌（伴机电脑启动日志可查）"
+                setText(relayStore.token)
+                setSingleLine(true)
+            }
         container.addView(toggle)
         container.addView(hostInput)
+        container.addView(tokenInput)
         val searchStatus =
             TextView(this).apply {
                 setTextColor(muted)
@@ -3708,15 +3764,24 @@ class MainActivity : Activity() {
                 anchor,
                 inputTitle = "手机输入伴机地址",
                 pageTitle = "在电视上输入",
-                pagePrompt = "输入伴机的局域网地址（示例 192.168.1.100:46521）。",
+                pagePrompt = "输入伴机的局域网地址与令牌（示例 192.168.1.100:46521）。",
                 inputPlaceholder = "伴机地址",
-            ) { raw ->
-                val normalized = RelayClient.normalizeHost(raw)
-                if (normalized == null) {
-                    Toast.makeText(this@MainActivity, "手机提交的地址格式不对", Toast.LENGTH_SHORT).show()
-                } else {
-                    hostInput.setText(normalized)
-                    searchStatus.text = "已填入 $normalized"
+                extraFieldLabel = "伴机令牌",
+                extraFieldPlaceholder = "8 位，伴机电脑启动日志可查",
+            ) { host, token ->
+                // 手机上留空的字段保持电视上原值（地址已配置时只需补令牌，反之亦然）。
+                val normalized = RelayClient.normalizeHost(host ?: hostInput.text.toString())
+                val trimmedToken = token?.trim().takeUnless { it.isNullOrEmpty() } ?: tokenInput.text.toString()
+                when {
+                    normalized == null ->
+                        Toast.makeText(this@MainActivity, "无法确定伴机地址，请检查手机输入或地址栏", Toast.LENGTH_SHORT).show()
+                    trimmedToken.isBlank() ->
+                        Toast.makeText(this@MainActivity, "令牌不能为空（伴机电脑启动日志可查）", Toast.LENGTH_SHORT).show()
+                    else -> {
+                        hostInput.setText(normalized)
+                        tokenInput.setText(trimmedToken)
+                        searchStatus.text = "已填入 $normalized"
+                    }
                 }
             }
         }
@@ -3735,12 +3800,14 @@ class MainActivity : Activity() {
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val normalized = RelayClient.normalizeHost(hostInput.text.toString())
-                if (toggle.isChecked && normalized == null) {
-                    Toast.makeText(this, "地址格式不对（示例 192.168.1.100:46521）", Toast.LENGTH_SHORT).show()
+                if (toggle.isChecked && (normalized == null || tokenInput.text.toString().isBlank())) {
+                    val reason = if (normalized == null) "地址格式不对（示例 192.168.1.100:46521）" else "启用伴机需填写令牌（见伴机电脑启动日志）"
+                    Toast.makeText(this, reason, Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
                 relayStore.enabled = toggle.isChecked
                 if (normalized != null) relayStore.host = normalized
+                relayStore.token = tokenInput.text.toString().trim()
                 relayDialog?.dismiss()
             }
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
@@ -3750,8 +3817,9 @@ class MainActivity : Activity() {
                     return@setOnClickListener
                 }
                 Toast.makeText(this, "正在连接 $normalized …", Toast.LENGTH_SHORT).show()
+                val token = tokenInput.text.toString().trim()
                 Thread {
-                    val health = RelayClient(relayHttp, normalized).health()
+                    val health = RelayClient(relayHttp, normalized, token).health()
                     val message =
                         when {
                             health == null -> "伴机不可达，请确认其电脑已启动伴机"

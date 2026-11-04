@@ -26,13 +26,22 @@ internal class RelayStore(context: Context) {
     var host: String
         get() = prefs.getString("host", "") ?: ""
         set(value) = prefs.edit().putString("host", value).apply()
+
+    var token: String
+        get() = prefs.getString("token", "") ?: ""
+        set(value) = prefs.edit().putString("token", value).apply()
 }
 
 /**
  * 果映伴机客户端：健康检查、会话创建/seek/停止。短超时，任何网络异常转 null/false 由调用方
  * 降级回现有兜底 UX；伴机端协议见 relay/ 模块（零登录态，TV 传 stream info）。
+ * 令牌非空时自动附加 X-Relay-Token 头；伴机 401 以 RelayException 透出（文案可读）。
  */
-internal class RelayClient(private val http: OkHttpClient, private val host: String) {
+internal class RelayClient(
+    private val http: OkHttpClient,
+    private val host: String,
+    private val token: String = "",
+) {
     private val json = "application/json; charset=utf-8".toMediaType()
 
     /** 带默认端口补全的规范化地址；不合法返回 null（交由调用方提示）。 */
@@ -55,6 +64,7 @@ internal class RelayClient(private val http: OkHttpClient, private val host: Str
 
     private fun request(path: String, method: String = "GET", body: JSONObject? = null): Request {
         val builder = Request.Builder().url("http://$host$path")
+        if (token.isNotBlank()) builder.header("X-Relay-Token", token)
         when {
             body != null -> builder.post(body.toString().toRequestBody(json))
             method == "DELETE" -> builder.delete()
@@ -93,25 +103,47 @@ internal class RelayClient(private val http: OkHttpClient, private val host: Str
         val payload = JSONObject().put("url", videoUrl).put("quality", quality)
         if (keyB64 != null) payload.put("keyB64", keyB64)
         val longCall = http.newBuilder().callTimeout(20, TimeUnit.SECONDS).build()
-        val result =
+
+        fun post(): Pair<Int, JSONObject?> =
             try {
                 longCall.newCall(request("/session", body = payload)).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        android.util.Log.w("HongguoTV", "relay POST /session → HTTP ${response.code}")
-                        return null
-                    }
-                    JSONObject(response.body?.string() ?: return null)
+                    val text = response.body?.string()
+                    val parsed =
+                        text?.takeIf { it.isNotBlank() }?.let { runCatching { JSONObject(it) }.getOrNull() }
+                    response.code to parsed
                 }
             } catch (problem: Exception) {
                 android.util.Log.w(
                     "HongguoTV",
                     "relay POST /session → ${problem.javaClass.simpleName}: ${problem.message?.take(120)}",
                 )
+                0 to null
+            }
+
+        fun materialize(code: Int, body: JSONObject?): Pair<String, String>? {
+            if (code == 401) throw RelayException("伴机令牌不匹配，请在播放设置核对令牌")
+            if (code != 200 || body == null) {
+                android.util.Log.w("HongguoTV", "relay POST /session → HTTP $code")
                 return null
-            } ?: return null
-        val sessionId = result.optString("sessionId")
-        val hlsUrl = result.optString("hlsUrl")
-        return if (sessionId.isNotBlank() && hlsUrl.isNotBlank()) sessionId to hlsUrl else null
+            }
+            val sessionId = body.optString("sessionId")
+            val hlsUrl = body.optString("hlsUrl")
+            return if (sessionId.isNotBlank() && hlsUrl.isNotBlank()) sessionId to hlsUrl else null
+        }
+
+        var (code, body) = post()
+        if (code == 409) {
+            // 快速重进场景：旧会话的异步 DELETE 可能尚未生效，主动停掉占用会话后重试一次。
+            val busyId = body?.optString("sessionId").orEmpty()
+            if (busyId.isNotBlank()) {
+                android.util.Log.w("HongguoTV", "relay session busy ($busyId), stopping and retrying")
+                stop(busyId)
+                val retry = post()
+                code = retry.first
+                body = retry.second
+            }
+        }
+        return materialize(code, body)
     }
 
     fun seek(sessionId: String, offsetSec: Double): Boolean =

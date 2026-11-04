@@ -323,7 +323,9 @@ class TvTools(private val activity: Activity) {
         pageTitle: String = "在电视上搜索",
         pagePrompt: String = "输入剧名，电视会搜索全部短剧和漫剧。",
         inputPlaceholder: String = "输入剧名或关键词",
-        submit: (String) -> Unit,
+        extraFieldLabel: String? = null,
+        extraFieldPlaceholder: String? = null,
+        submit: (String?, String?) -> Unit,
     ) {
         val addresses =
             runCatching {
@@ -336,7 +338,11 @@ class TvTools(private val activity: Activity) {
             info("手机输入", "未找到可用的 Wi-Fi 或网线局域网地址。请检查电视网络；手机和电视需要在可互通的局域网内。", anchor)
             return
         }
-        showPhoneInput(anchor, addresses, 0, inputTitle, pageTitle, pagePrompt, inputPlaceholder, submit)
+        showPhoneInput(
+            anchor, addresses, 0,
+            inputTitle, pageTitle, pagePrompt, inputPlaceholder,
+            extraFieldLabel, extraFieldPlaceholder, submit,
+        )
     }
 
     private fun showPhoneInput(
@@ -347,7 +353,9 @@ class TvTools(private val activity: Activity) {
         pageTitle: String,
         pagePrompt: String,
         inputPlaceholder: String,
-        submit: (String) -> Unit,
+        extraFieldLabel: String?,
+        extraFieldPlaceholder: String?,
+        submit: (String?, String?) -> Unit,
     ) {
         val selected = addresses[index]
         val content = column()
@@ -370,7 +378,11 @@ class TvTools(private val activity: Activity) {
                     .setTitle("手机连接不上")
                     .setMessage(message)
                     .setPositiveButton("重新生成二维码") { _, _ ->
-                        showPhoneInput(anchor, addresses, index, inputTitle, pageTitle, pagePrompt, inputPlaceholder, submit)
+                        showPhoneInput(
+                            anchor, addresses, index,
+                            inputTitle, pageTitle, pagePrompt, inputPlaceholder,
+                            extraFieldLabel, extraFieldPlaceholder, submit,
+                        )
                     }
                     .setNegativeButton("关闭", null)
                     .create()
@@ -385,7 +397,8 @@ class TvTools(private val activity: Activity) {
                     { chosen ->
                         showPhoneInput(
                             anchor, addresses, chosen,
-                            inputTitle, pageTitle, pagePrompt, inputPlaceholder, submit,
+                            inputTitle, pageTitle, pagePrompt, inputPlaceholder,
+                            extraFieldLabel, extraFieldPlaceholder, submit,
                         )
                     },
                 )
@@ -395,11 +408,11 @@ class TvTools(private val activity: Activity) {
                 val session =
                     PhoneSearchServer(
                         selected.address,
-                        { query ->
+                        { query, extra ->
                             main.post {
                                 if (dialog === next) {
                                     next.dismiss()
-                                    submit(query)
+                                    submit(query, extra)
                                 }
                             }
                         },
@@ -410,6 +423,8 @@ class TvTools(private val activity: Activity) {
                         pageTitle = pageTitle,
                         pagePrompt = pagePrompt,
                         inputPlaceholder = inputPlaceholder,
+                        extraFieldLabel = extraFieldLabel,
+                        extraFieldPlaceholder = extraFieldPlaceholder,
                     )
                 main.post {
                     if (dialog !== next) {

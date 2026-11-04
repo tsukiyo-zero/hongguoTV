@@ -38,11 +38,11 @@ class PhoneSearchServerTest {
     @Test
     fun `phone form accepts one unicode search without reflecting it in HTML`() {
         val received = CountDownLatch(1)
-        var query = ""
+        var query: String? = ""
         PhoneSearchServer(
                 "127.0.0.1",
-                {
-                    query = it
+                { value, _ ->
+                    query = value
                     received.countDown()
                 },
             )
@@ -70,7 +70,7 @@ class PhoneSearchServerTest {
     @Test
     fun `same origin browser form can submit while opaque and foreign origins stay blocked`() {
         val received = CountDownLatch(1)
-        PhoneSearchServer("127.0.0.1", { received.countDown() }).use { server ->
+        PhoneSearchServer("127.0.0.1", { _, _ -> received.countDown() }).use { server ->
             val uri = URI(server.url)
             val page = request(server)
             // no-referrer makes native form POST origins opaque (Origin: null).
@@ -105,7 +105,7 @@ class PhoneSearchServerTest {
     @Test
     fun `connection status only reports a valid phone page request`() {
         var connections = 0
-        PhoneSearchServer("127.0.0.1", {}, onConnected = { connections++ }).use { server ->
+        PhoneSearchServer("127.0.0.1", { _, _ -> }, onConnected = { connections++ }).use { server ->
             request(server, path = "/wrong")
             assertEquals(0, connections)
             val page = request(server)
@@ -118,7 +118,7 @@ class PhoneSearchServerTest {
     @Test
     fun `wrong token host and cross site posts cannot submit`() {
         var submitted = false
-        PhoneSearchServer("127.0.0.1", { submitted = true }).use { server ->
+        PhoneSearchServer("127.0.0.1", { _, _ -> submitted = true }).use { server ->
             assertTrue(request(server, path = "/wrong").startsWith("HTTP/1.1 404"))
             assertTrue(request(server, host = "evil.example").startsWith("HTTP/1.1 404"))
             assertTrue(
@@ -137,7 +137,7 @@ class PhoneSearchServerTest {
 
     @Test
     fun `invalid and oversized input does not consume the session`() {
-        PhoneSearchServer("127.0.0.1", {}).use { server ->
+        PhoneSearchServer("127.0.0.1", { _, _ -> }).use { server ->
             for (body in
                 listOf(
                     "query=",
@@ -164,13 +164,13 @@ class PhoneSearchServerTest {
 
     @Test
     fun `closing or expiry makes a session unreachable`() {
-        val closed = PhoneSearchServer("127.0.0.1", {})
+        val closed = PhoneSearchServer("127.0.0.1", { _, _ -> })
         closed.close()
         assertTrue(runCatching { request(closed) }.isFailure)
         val expired = CountDownLatch(1)
         PhoneSearchServer(
                 "127.0.0.1",
-                { fail("expired session submitted") },
+                { _, _ -> fail("expired session submitted") },
                 { expired.countDown() },
                 1,
             )

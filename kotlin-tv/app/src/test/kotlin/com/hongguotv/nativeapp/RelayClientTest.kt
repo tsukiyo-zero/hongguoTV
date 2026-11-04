@@ -108,6 +108,38 @@ class RelayClientTest {
     }
 
     @Test
+    fun `409 占用时自动结束占用会话并重试一次`() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(409)
+                .setBody(JSONObject().put("error", "伴机正被其他播放占用").put("sessionId", "old1").toString()),
+        )
+        server.enqueue(MockResponse().setResponseCode(200)) // 旧会话 DELETE 的应答
+        server.enqueue(
+            MockResponse().setBody(
+                JSONObject()
+                    .put("sessionId", "new1")
+                    .put("hlsUrl", "http://192.168.1.100:46521/hls/new1/index.m3u8")
+                    .toString(),
+            ),
+        )
+        val session = client().createSession("https://cdn/x", null, "720P")!!
+        assertEquals("new1", session.first)
+        assertEquals("/session", server.takeRequest().path)
+        assertEquals("/session/old1", server.takeRequest().path) // 主动结束占用会话
+        assertEquals("/session", server.takeRequest().path) // 重试
+    }
+
+    @Test
+    fun `令牌随请求头透出`() {
+        server.enqueue(
+            MockResponse().setBody(JSONObject().put("ok", true).put("ffmpegOk", true).toString()),
+        )
+        RelayClient(OkHttpClient(), "127.0.0.1:${server.port}", "abcd1234").health()
+        assertEquals("abcd1234", server.takeRequest().getHeader("X-Relay-Token"))
+    }
+
+    @Test
     fun `设置持久化开关与地址`() {
         val store = RelayStore(context)
         assertFalse(store.enabled)
