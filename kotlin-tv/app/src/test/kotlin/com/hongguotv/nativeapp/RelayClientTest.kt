@@ -38,13 +38,13 @@ class RelayClientTest {
 
     @Test
     fun `地址规范化补默认端口并校验形态`() {
-        assertEquals("192.168.6.114:46521", RelayClient.normalizeHost("192.168.6.114"))
-        assertEquals("192.168.6.114:8080", RelayClient.normalizeHost(" 192.168.6.114:8080 "))
+        assertEquals("192.168.1.100:46521", RelayClient.normalizeHost("192.168.1.100"))
+        assertEquals("192.168.1.100:8080", RelayClient.normalizeHost(" 192.168.1.100:8080 "))
         assertNull(RelayClient.normalizeHost(""))
-        assertNull(RelayClient.normalizeHost("192.168.6.114:80"))
-        assertNull(RelayClient.normalizeHost("192.168.6.114:99999"))
-        assertNull(RelayClient.normalizeHost("http://192.168.6.114:46521"))
-        assertNull(RelayClient.normalizeHost("192.168.6.114:端口"))
+        assertNull(RelayClient.normalizeHost("192.168.1.100:80"))
+        assertNull(RelayClient.normalizeHost("192.168.1.100:99999"))
+        assertNull(RelayClient.normalizeHost("http://192.168.1.100:46521"))
+        assertNull(RelayClient.normalizeHost("192.168.1.100:端口"))
     }
 
     @Test
@@ -92,13 +92,13 @@ class RelayClientTest {
             MockResponse().setBody(
                 JSONObject()
                     .put("sessionId", "abc123")
-                    .put("hlsUrl", "http://192.168.6.114:46521/hls/abc123/index.m3u8")
+                    .put("hlsUrl", "http://192.168.1.100:46521/hls/abc123/index.m3u8")
                     .toString(),
             ),
         )
         val session = client().createSession("https://cdn/x", "a2V5", "720P")!!
         assertEquals("abc123", session.first)
-        assertEquals("http://192.168.6.114:46521/hls/abc123/index.m3u8", session.second)
+        assertEquals("http://192.168.1.100:46521/hls/abc123/index.m3u8", session.second)
         val recorded = server.takeRequest()
         val body = JSONObject(recorded.body.readUtf8())
         assertEquals("https://cdn/x", body.optString("url"))
@@ -112,8 +112,8 @@ class RelayClientTest {
         val store = RelayStore(context)
         assertFalse(store.enabled)
         store.enabled = true
-        store.host = "192.168.6.114:46521"
+        store.host = "192.168.1.100:46521"
         assertTrue(RelayStore(context).enabled)
-        assertEquals("192.168.6.114:46521", RelayStore(context).host)
+        assertEquals("192.168.1.100:46521", RelayStore(context).host)
     }
 }

@@ -986,7 +986,7 @@ class MainActivity : Activity() {
                         nav[tab],
                         repository::searchSuggestions,
                         ::runSearch,
-                        { anchor -> tvTools.phoneInput(anchor, ::runSearch) },
+                        { anchor -> tvTools.phoneInput(anchor, submit = ::runSearch) },
                         ::returnToDiscovery,
                     )
                 tvSearchPanel = panel
@@ -3658,12 +3658,72 @@ class MainActivity : Activity() {
             }
         val hostInput =
             EditText(this).apply {
-                hint = "伴机地址，如 192.168.6.114:46521"
+                hint = "伴机地址，如 192.168.1.100:46521"
                 setText(relayStore.host)
                 setSingleLine(true)
             }
         container.addView(toggle)
         container.addView(hostInput)
+        val searchStatus =
+            TextView(this).apply {
+                setTextColor(muted)
+                textSize = 13f
+                setPadding(0, dp(6), 0, 0)
+            }
+        val toolsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val searchButton = Button(this).apply { text = "搜索伴机" }
+        val qrButton = Button(this).apply { text = "扫码输入" }
+        searchButton.setOnClickListener {
+            it.isEnabled = false
+            searchStatus.text = "正在搜索局域网伴机（约 5 秒）…"
+            val started =
+                RelayDiscovery.discover(this@MainActivity, 5_000) { hosts ->
+                    searchButton.isEnabled = true
+                    when {
+                        hosts.isEmpty() ->
+                            searchStatus.text = "未发现伴机：请确认其电脑已启动伴机，或改用扫码/手动输入"
+                        hosts.size == 1 -> {
+                            hostInput.setText(hosts.first())
+                            searchStatus.text = "已找到伴机 ${hosts.first()}"
+                        }
+                        else -> {
+                            searchStatus.text = "发现 ${hosts.size} 台伴机，请选择"
+                            AlertDialog.Builder(this@MainActivity)
+                                .setTitle("发现多台伴机")
+                                .setItems(hosts.toTypedArray()) { _, picked ->
+                                    hostInput.setText(hosts[picked])
+                                    searchStatus.text = "已选用 ${hosts[picked]}"
+                                }
+                                .show()
+                        }
+                    }
+                }
+            if (!started) {
+                searchButton.isEnabled = true
+                searchStatus.text = "此设备不支持自动发现，请改用扫码或手动输入"
+            }
+        }
+        qrButton.setOnClickListener {
+            tvTools.phoneInput(
+                anchor,
+                inputTitle = "手机输入伴机地址",
+                pageTitle = "在电视上输入",
+                pagePrompt = "输入伴机的局域网地址（示例 192.168.1.100:46521）。",
+                inputPlaceholder = "伴机地址",
+            ) { raw ->
+                val normalized = RelayClient.normalizeHost(raw)
+                if (normalized == null) {
+                    Toast.makeText(this@MainActivity, "手机提交的地址格式不对", Toast.LENGTH_SHORT).show()
+                } else {
+                    hostInput.setText(normalized)
+                    searchStatus.text = "已填入 $normalized"
+                }
+            }
+        }
+        toolsRow.addView(searchButton, LinearLayout.LayoutParams(0, -2, 1f))
+        toolsRow.addView(qrButton, LinearLayout.LayoutParams(0, -2, 1f))
+        container.addView(toolsRow, LinearLayout.LayoutParams(-1, -2))
+        container.addView(searchStatus)
         val dialog =
             AlertDialog.Builder(this)
                 .setTitle("伴机代解码")
@@ -3676,7 +3736,7 @@ class MainActivity : Activity() {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val normalized = RelayClient.normalizeHost(hostInput.text.toString())
                 if (toggle.isChecked && normalized == null) {
-                    Toast.makeText(this, "地址格式不对（示例 192.168.6.114:46521）", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "地址格式不对（示例 192.168.1.100:46521）", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
                 relayStore.enabled = toggle.isChecked
@@ -3686,7 +3746,7 @@ class MainActivity : Activity() {
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
                 val normalized = RelayClient.normalizeHost(hostInput.text.toString())
                 if (normalized == null) {
-                    Toast.makeText(this, "地址格式不对（示例 192.168.6.114:46521）", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "地址格式不对（示例 192.168.1.100:46521）", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
                 Toast.makeText(this, "正在连接 $normalized …", Toast.LENGTH_SHORT).show()

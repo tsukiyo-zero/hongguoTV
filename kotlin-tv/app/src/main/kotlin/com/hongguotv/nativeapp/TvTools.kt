@@ -317,7 +317,14 @@ class TvTools(private val activity: Activity) {
             contentDescription = "二维码"
         }
 
-    fun phoneInput(anchor: View?, submit: (String) -> Unit) {
+    fun phoneInput(
+        anchor: View?,
+        inputTitle: String = "手机输入剧名",
+        pageTitle: String = "在电视上搜索",
+        pagePrompt: String = "输入剧名，电视会搜索全部短剧和漫剧。",
+        inputPlaceholder: String = "输入剧名或关键词",
+        submit: (String) -> Unit,
+    ) {
         val addresses =
             runCatching {
                     LanInputAddresses.find(
@@ -329,14 +336,18 @@ class TvTools(private val activity: Activity) {
             info("手机输入", "未找到可用的 Wi-Fi 或网线局域网地址。请检查电视网络；手机和电视需要在可互通的局域网内。", anchor)
             return
         }
-        showPhoneInput(anchor, submit, addresses, 0)
+        showPhoneInput(anchor, addresses, 0, inputTitle, pageTitle, pagePrompt, inputPlaceholder, submit)
     }
 
     private fun showPhoneInput(
         anchor: View?,
-        submit: (String) -> Unit,
         addresses: List<LanInputAddress>,
         index: Int,
+        inputTitle: String,
+        pageTitle: String,
+        pagePrompt: String,
+        inputPlaceholder: String,
+        submit: (String) -> Unit,
     ) {
         val selected = addresses[index]
         val content = column()
@@ -344,7 +355,7 @@ class TvTools(private val activity: Activity) {
         content.addView(status)
         val builder =
             AlertDialog.Builder(activity)
-                .setTitle("手机输入剧名")
+                .setTitle(inputTitle)
                 .setView(content)
                 .setNegativeButton("关闭", null)
                 .setPositiveButton("连接帮助", null)
@@ -359,7 +370,7 @@ class TvTools(private val activity: Activity) {
                     .setTitle("手机连接不上")
                     .setMessage(message)
                     .setPositiveButton("重新生成二维码") { _, _ ->
-                        showPhoneInput(anchor, submit, addresses, index)
+                        showPhoneInput(anchor, addresses, index, inputTitle, pageTitle, pagePrompt, inputPlaceholder, submit)
                     }
                     .setNegativeButton("关闭", null)
                     .create()
@@ -371,10 +382,15 @@ class TvTools(private val activity: Activity) {
                     "选择电视网络地址",
                     addresses.map { "${it.label} · ${it.address}" },
                     anchor,
-                    { chosen -> showPhoneInput(anchor, submit, addresses, chosen) },
+                    { chosen ->
+                        showPhoneInput(
+                            anchor, addresses, chosen,
+                            inputTitle, pageTitle, pagePrompt, inputPlaceholder, submit,
+                        )
+                    },
                 )
             }
-        worker.execute {
+                worker.execute {
             try {
                 val session =
                     PhoneSearchServer(
@@ -389,8 +405,11 @@ class TvTools(private val activity: Activity) {
                         },
                         { main.post { if (dialog === next) status.text = "二维码已过期，请关闭后重新打开。" } },
                         onConnected = {
-                            main.post { if (dialog === next) status.text = "手机已连接，请在手机上输入剧名并发送。" }
+                            main.post { if (dialog === next) status.text = "手机已连接，请在手机上输入并发送。" }
                         },
+                        pageTitle = pageTitle,
+                        pagePrompt = pagePrompt,
+                        inputPlaceholder = inputPlaceholder,
                     )
                 main.post {
                     if (dialog !== next) {
@@ -404,7 +423,7 @@ class TvTools(private val activity: Activity) {
                     val instructions = column()
                     instructions.addView(
                         label(
-                            "${selected.label} · ${selected.address}\n手机扫码后，用浏览器打开并发送剧名。\n需要同一局域网；二维码有效 5 分钟。",
+                            "${selected.label} · ${selected.address}\n手机扫码后，用浏览器打开并提交。\n需要同一局域网；二维码有效 5 分钟。",
                             16f,
                         )
                     )

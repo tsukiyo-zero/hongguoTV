@@ -22,6 +22,9 @@ class PhoneSearchServer(
     private val onExpired: () -> Unit = {},
     ttlMillis: Long = 300_000,
     private val onConnected: () -> Unit = {},
+    private val pageTitle: String = "在电视上搜索",
+    private val pagePrompt: String = "输入剧名，电视会搜索全部短剧和漫剧。",
+    private val inputPlaceholder: String = "输入剧名或关键词",
 ) : Closeable {
     private val stopped = AtomicBoolean(false)
     private val consumed = AtomicBoolean(false)
@@ -114,7 +117,7 @@ class PhoneSearchServer(
             return respond(
                 socket,
                 200,
-                """<h1>在电视上搜索</h1><p>输入剧名，电视会搜索全部短剧和漫剧。</p><form method="post" action="/$token/submit"><input name="query" maxlength="80" required autofocus placeholder="输入剧名或关键词" autocomplete="off"><button>发送到电视</button></form><p>页面仅在电视的手机输入窗口打开期间有效，最长 5 分钟。</p>""",
+                """<h1>$pageTitle</h1><p>$pagePrompt</p><form method="post" action="/$token/submit"><input name="query" maxlength="80" required autofocus placeholder="$inputPlaceholder" autocomplete="off"><button>发送到电视</button></form><p>页面仅在电视的手机输入窗口打开期间有效，最长 5 分钟。</p>""",
             )
         }
         if (request[0] != "POST" || request[1] != "/$token/submit")
