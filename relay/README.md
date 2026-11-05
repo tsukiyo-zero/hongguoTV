@@ -8,7 +8,7 @@
 
 ## 启动（macOS）
 
-**普通用户（推荐）**：从 GitHub Release 下载 `GuoyingRelay-<版本>.dmg` → 拖进「应用程序」→ 双击 `果映伴机`（首次打开需右键 → 打开，或在系统设置允许）。菜单栏出现图标即运行中：
+**普通用户（推荐）**：从[固定 Release 页](https://github.com/WingkySky/hongguoTV/releases/tag/relay-stable)下载 `GuoyingRelay-<版本>.dmg` → 拖进「应用程序」→ 双击 `果映伴机`（首次打开需右键 → 打开，或在系统设置允许）。菜单栏出现图标即运行中：
 
 - 菜单显示运行状态与局域网地址；**复制地址 / 复制令牌** 一键拷贝
 - **开机自启** 开关（LaunchAgents，默认关）
@@ -30,11 +30,11 @@ scripts/build-relay-macos.sh
 
 ## 启动（Windows）
 
-**普通用户**：获取 `GuoyingRelay-<版本>.msi` → 双击安装（有选择安装目录的向导页）→ 开始菜单「果映伴机」文件夹或桌面快捷方式启动。运行后**驻留任务栏右下角托盘**（Win11 默认收在「^」溢出区，可拖出常显），启动时以气泡通知提示地址，不弹常驻窗口：
+**普通用户**：从[固定 Release 页](https://github.com/WingkySky/hongguoTV/releases/tag/relay-stable)获取 `GuoyingRelay-<版本>.msi` → 双击安装（有选择安装目录的向导页）→ 开始菜单「果映伴机」文件夹或桌面快捷方式启动。运行后**驻留任务栏右下角托盘**（Win11 默认收在「^」溢出区，可拖出常显），启动时以气泡通知提示地址，不弹常驻窗口：
 
 - 托盘菜单与 macOS 菜单栏一致（状态/复制地址/复制令牌/退出），「打开状态窗口」可随时唤出地址与令牌面板；「开机自启」暂为 macOS 专属（LaunchAgents），Windows 菜单不显示该项
 - 令牌持久化在 `%APPDATA%\GuoyingRelay\token`，重装不变
-- 制品目前由本仓库 Actions 构建页产出，尚未挂正式 Release
+- 安装包由 CI 自动发布到上述固定 Release 页，每次迭代覆盖更新（页面永远只有当前一版的两平台附件，文件名含版本号）
 
 **构建（本仓库，Git Bash）**：需 JDK 17 与 WiX 3.x（jpackage 出 msi 依赖 `candle`/`light`；可下载官方 `wix314-binaries.zip` 免安装解压后注入 PATH）：
 
