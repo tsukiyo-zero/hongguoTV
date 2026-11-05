@@ -28,6 +28,27 @@ scripts/build-relay-macos.sh
 - **局域网地址**（如 `http://192.168.6.114:46521`）
 - **伴机令牌**（8 位，App 形态持久化在 `~/Library/Application Support/GuoyingRelay/token`）
 
+## 启动（Windows）
+
+**普通用户**：获取 `GuoyingRelay-<版本>.msi` → 双击安装（有选择安装目录的向导页）→ 开始菜单「果映伴机」文件夹或桌面快捷方式启动。运行后**驻留任务栏右下角托盘**（Win11 默认收在「^」溢出区，可拖出常显），启动时以气泡通知提示地址，不弹常驻窗口：
+
+- 托盘菜单与 macOS 菜单栏一致（状态/复制地址/复制令牌/退出），「打开状态窗口」可随时唤出地址与令牌面板；「开机自启」暂为 macOS 专属（LaunchAgents），Windows 菜单不显示该项
+- 令牌持久化在 `%APPDATA%\GuoyingRelay\token`，重装不变
+- 制品目前由本仓库 Actions 构建页产出，尚未挂正式 Release
+
+**构建（本仓库，Git Bash）**：需 JDK 17 与 WiX 3.x（jpackage 出 msi 依赖 `candle`/`light`；可下载官方 `wix314-binaries.zip` 免安装解压后注入 PATH）：
+
+```sh
+export PATH="/path/to/wix314:$PATH"
+./kotlin-tv/gradlew -p relay -Prelay.jdk="$JAVA_HOME" -PrelayVersion=1.0.0 :relay:test :relay:jpackageCompanion
+# = GyanD ffmpeg 7.1.1 下载+sha256 校验 + fatJar + jpackage msi
+# 产物：relay/backend/build/jpackage/GuoyingRelay-<版本>.msi
+```
+
+慢网技巧：GyanD zip（约 90MB）直连 GitHub 慢时，可手动下载后放到 `relay/backend/build/ffmpeg-bundle/ffmpeg-7.1.1-essentials_build.zip`，任务检测到文件存在会跳过下载，直接解压并做 sha256 校验（字节不符即构建失败，完整性有兜底）。
+
+**冒烟**（管理员 Git Bash）：`scripts/smoke-relay-windows.sh`（msiexec /a 管理员解包 → 启动 → `/health` 断言 ffmpegOk=true → 清理；加 `--install` 追加带 UI 交互安装确认）。已知限制：CI 上 `msiexec /qn` 静默安装曾挂起、根因未定位，冒烟与 CI 均走 /a 解包路径。
+
 ## 电视端配置（一次性）
 
 1. 播放器「更多 → 播放设置 → 伴机代解码」
