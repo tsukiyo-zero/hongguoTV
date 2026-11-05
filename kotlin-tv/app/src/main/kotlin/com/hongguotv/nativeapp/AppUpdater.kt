@@ -331,6 +331,26 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
             throw IOException("新版包名、版本或签名不匹配，已阻止安装")
     }
 
+    /** 依次尝试电视上可能存在的安装入口；返回 true 表示已拉起某个界面。 */
+    private fun launchInstaller(uri: Uri): Boolean {
+        val sources = mutableListOf<Intent>()
+        if (Build.VERSION.SDK_INT < 26)
+            sources +=
+                Intent(Intent.ACTION_INSTALL_PACKAGE)
+                    .setData(uri)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        sources +=
+            Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, "application/vnd.android.package-archive")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        for (intent in sources) {
+            intent.clipData = ClipData.newRawUri("更新安装包", uri)
+            val opened = runCatching { activity.startActivity(intent) }.isSuccess
+            if (opened) return true
+        }
+        return false
+    }
+
     private fun install() {
         val update = available ?: return
         if (busy || !active || !ready) return
@@ -350,12 +370,26 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
                 } else {
                     val uri =
                         FileProvider.getUriForFile(activity, "${activity.packageName}.updates", apk)
-                    activity.startActivity(
-                        Intent(Intent.ACTION_VIEW)
-                            .setDataAndType(uri, "application/vnd.android.package-archive")
-                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            .apply { clipData = ClipData.newRawUri("更新安装包", uri) }
-                    )
+                    // Android 6/7 的电视安装器不一定认 ACTION_VIEW：老机型通常只实现
+                    // ACTION_INSTALL_PACKAGE，先走它再回退，避免直接报「未提供安装入口」。
+                    if (!launchInstaller(uri)) {
+                        val openedSettings =
+                            runCatching {
+                                    activity.startActivity(
+                                        Intent(Settings.ACTION_SECURITY_SETTINGS)
+                                    )
+                                    true
+                                }
+                                .getOrDefault(false)
+                        if (openedSettings) {
+                            permissionRequested = true
+                            updateStatus(
+                                "已在系统设置打开「未知来源」开关，允许后返回这里再次点安装新版"
+                            )
+                        } else {
+                            updateStatus("电视未提供安装或授权入口，请通过系统文件管理器安装新版")
+                        }
+                    }
                 }
             } catch (_: Exception) {
                 permissionRequested = false
