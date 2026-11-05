@@ -4,12 +4,24 @@
 name: relay-build
 
 on:
+  # push 到开发分支时在本仓库（fork）构建验证——制品挂在本仓库 Actions 运行页。
+  push:
+    branches: [feature-relay-transcode]
+    paths:
+      - 'relay/**'
+      - '.github/workflows/relay-build.yml'
   workflow_dispatch:
     inputs:
       version:
         description: '伴机版本号（默认 1.0.0，与 relay/gradle.properties 的 relayVersion 保持一致）'
         default: '1.0.0'
         required: false
+  # 注：pull_request 触发待本 workflow 进入源仓库默认分支后才会生效（届时 PR 会自动出构建检查）。
+  pull_request:
+    branches: [main]
+    paths:
+      - 'relay/**'
+      - '.github/workflows/relay-build.yml'
 
 jobs:
   build:
@@ -37,7 +49,7 @@ jobs:
           ./kotlin-tv/gradlew -p relay \
             -Porg.gradle.java.installations.paths="$JAVA_HOME" \
             -Prelay.jdk="$JAVA_HOME" \
-            -PrelayVersion="${{ inputs.version }}" \
+            -PrelayVersion="${{ inputs.version || '1.0.0' }}" \
             :relay:test :relay:jpackageCompanion
 
       - name: 确保 WiX（Windows MSI 需要）
