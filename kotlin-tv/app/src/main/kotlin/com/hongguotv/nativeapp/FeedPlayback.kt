@@ -43,6 +43,9 @@ internal interface FeedBackend : Closeable {
     fun recommendations(page: Int, cursor: RecommendationCursor): CatalogPage =
         catalog(DramaCategory.COMIC, page)
 
+    /** 仅供无新推荐后的主动恢复；category=null 表示推荐来源。 */
+    fun resetRecommendations(category: DramaCategory? = null) = Unit
+
     fun detail(series: Series): Detail
 
     fun prepare(detail: Detail): TrialClip
@@ -146,6 +149,13 @@ internal class PublicFeedBackend(
         startupCache?.saveCursor(cacheIdentity, source, cursor.snapshot())
         android.util.Log.i("HongguoTV", "Home cursor-save bytes=${cursor.snapshot().length}")
         return result
+    }
+
+    override fun resetRecommendations(category: DramaCategory?) {
+        if (closed.get()) return
+        val source = category?.route ?: "recommend"
+        synchronized(trialHints) { startupPages.remove(source) }
+        startupCache?.clearSource(cacheIdentity, source)
     }
 
     override fun recommendations(page: Int, cursor: RecommendationCursor) =

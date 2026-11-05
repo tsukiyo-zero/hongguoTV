@@ -51,6 +51,7 @@ internal class HomeFeedScreen(
     private var active = false
     private var loading = false
     private var failed = false
+    private val exhaustedCursors = mutableSetOf<RecommendationCursor>()
     private var lastPlaybackError: androidx.media3.common.PlaybackException? = null
     private var healTarget: String? = null
     private var healAttempts = 0
@@ -122,9 +123,10 @@ internal class HomeFeedScreen(
             button("换一批") {
                 clearCurrent()
                 clearCache()
-                state.refresh()
+                val restart = exhaustedCursors.remove(state.recommendationCursor)
+                state.refresh(restartCurrentSource = restart)
                 describe()
-                loadPage(false)
+                loadPage(false, resetSource = restart)
             }
         val typeChoices = listOf(recommendButton, comicButton, realButton, refresh)
         typeChoices.forEachIndexed { i, b ->
@@ -482,6 +484,7 @@ internal class HomeFeedScreen(
         cancelRequest()
         loading = true
         val token = generation
+        val requestedCursor = state.recommendationCursor
         val requestScope = RequestScope()
         scope = requestScope
         job =
@@ -503,7 +506,10 @@ internal class HomeFeedScreen(
                         status.visibility = View.VISIBLE
                         val message =
                             error.message.orEmpty().replace(Regex("https?://\\S+"), "[地址]").take(90)
-                        status.text = "暂时无法加载 · ${message.ifBlank { "请重试或换一部" }}"
+                        if (error is NoNewRecommendationsException) {
+                            exhaustedCursors += requestedCursor
+                            status.text = "暂时没有新的推荐 · 按“换一批”重新获取，可能出现旧作品"
+                        } else status.text = "暂时无法加载 · ${message.ifBlank { "请重试或换一部" }}"
                         paintActions()
                     }
                 }
@@ -511,7 +517,7 @@ internal class HomeFeedScreen(
     }
 
     // 按当前推荐模式请求下一页；结果写入状态后，再加载当前作品的试播资源。
-    private fun loadPage(advance: Boolean) {
+    private fun loadPage(advance: Boolean, resetSource: Boolean = false) {
         if (!active || closed || loading) return
         if (state.page >= 100 || (!state.hasMore && state.current != null)) {
             status.visibility = View.VISIBLE
@@ -525,6 +531,7 @@ internal class HomeFeedScreen(
         val recommendation = state.recommendation
         val cursor = state.recommendationCursor
         request({
+            if (resetSource) backend.resetRecommendations(if (recommendation) null else category)
             if (recommendation) backend.recommendations(page, cursor)
             else backend.categoryRecommendations(category, page, cursor)
         }) { result ->
