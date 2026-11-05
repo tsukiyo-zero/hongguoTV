@@ -53,9 +53,14 @@
 - 分发：随 TV 正式 Release 附件（同一发布页标注「macOS 伴机」，Latest 仍指向 TV APK，符合 AGENTS.md 发布约束）；README/relay/README.md 更新下载指引
 - 里程碑内不做 App 内自更新
 
-## 6. Windows 阶段二（概要，另行细化）
+## 6. Windows（CI 构建管线，2026-11-05 设计定稿）
 
-jpackage `--type msi` + ffmpeg.exe（GPL 预编译源 BtbN/gyan）+ 注册表 Run 键自启；SystemTray 代码跨平台复用；需 Windows 实机验证。
+- `.github/workflows/relay-build.yml`：`workflow_dispatch` 手动触发（输入版本号）——**CI 只产制品不发布**（符合 AGENTS.md：CI 产物≠Release，人工挂载），matrix = `macos-14`(arm64) + `windows-latest`(x64)
+- Windows ffmpeg 捆绑：**GyanD/codexffmpeg 7.1.1 版本化 release**（GitHub 直链不可变、sha256 可固定，essentials build 含 VVC 解码器）→ 解出 ffmpeg.exe → 校验 → 落位；哈希固化进 relay/ffmpeg-hashes.properties（zip 解压与哈希不依赖平台，本地可预先算好）
+- 打包：jpackage `--type msi`（WiX：runner 预装检测，缺失 `choco install wixtoolset` 兜底）→ `GuoyingRelay-<版本>.msi`；失败回退 app-image+zip
+- **CI 冒烟**：runner 直接启动产物 → `curl /health` 断言 `ffmpegOk=true`（Windows runner PATH 无 ffmpeg，天然模拟用户环境）；产物 upload-artifact，人工挂 Release
+- 代码侧：bundleFfmpeg 增 Windows 分支、jpackageDmg 重构为跨平台 jpackageCompanion（dmg/msi）、RelayLocations 适配 ffmpeg.exe 后缀与 Windows 布局、版本号单一来源（VERSION 常量）
+- 边界：MSI 未签名（SmartScreen 警告需文档注明，签名需证书范围外）；**Windows 真机播放未验证**——CI 冒烟是出厂底线，MSI 标注「实验性」待有 Windows 机器验证后转正；Local 验证方式=zip 解压算哈希（不依赖平台）
 
 ## 7. 测试与验收
 

@@ -63,10 +63,14 @@ tasks.register("bundleFfmpeg") {
                 }
             }
             copy { from(zipTree(zipFile)); into(dir) }
-            // GyanD zip 带一层包装目录，二进制位置按名递归定位（兼容有/无包装的布局）。
-            val exe = dir.walk().firstOrNull { it.name == "ffmpeg.exe" }
-                ?: error("解压后未找到 ffmpeg.exe")
-                .also { it.setExecutable(true) }
+            // GyanD zip 带包装目录，按名递归定位；找不到立即报错（不与 error() 链式造成 Nothing 推断）。
+            var exe = dir.walk().firstOrNull { it.name == "ffmpeg.exe" }
+            if (exe == null) {
+                val rootCandidate = File(dir, "ffmpeg.exe")
+                if (!rootCandidate.exists()) error("解压后未找到 ffmpeg.exe")
+                exe = rootCandidate
+            }
+            exe.setExecutable(true)
             val actual =
                 MessageDigest.getInstance("SHA-256")
                     .digest(exe.readBytes())
