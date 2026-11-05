@@ -32,57 +32,17 @@ tasks.register<Jar>("fatJar") {
 }
 
 // ── macOS 产品化打包：ffmpeg 捆绑（sha256 校验）+ jpackage dmg ────────────────
+// Windows msi 构建拆分至后续迭代（msiexec 静默安装挂起待排；历史实现见 git 历史）。
 
-val isWindowsBuild = System.getProperty("os.name").orEmpty().contains("Windows", true)
 val ffmpegBundleDir = layout.buildDirectory.dir("ffmpeg-bundle")
 val jpackageInputDir = layout.buildDirectory.dir("jpackage-input")
 val jpackageOutputDir = layout.buildDirectory.dir("jpackage")
 
 tasks.register("bundleFfmpeg") {
     description = "下载并校验捆绑用 ffmpeg（osxexperts 预编译，arm=9.0.2/intel=8.0.2，均含 VVC 解码器）"
-    outputs.file(ffmpegBundleDir.map { if (isWindowsBuild) it.file("ffmpeg.exe") else it.file("ffmpeg") })
+    outputs.file(ffmpegBundleDir.map { it.file("ffmpeg") })
     doLast {
         val dir = ffmpegBundleDir.get().asFile.apply { mkdirs() }
-        if (isWindowsBuild) {
-            // Windows：GyanD 7.1.1 版本化 release（GitHub 直链不可变），zip 内 bin/ffmpeg.exe。
-            val zipName = "ffmpeg-7.1.1-essentials_build.zip"
-            val url = "https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/$zipName"
-            val expected =
-                Properties().apply {
-                    rootProject.file("ffmpeg-hashes.properties").inputStream().use { load(it) }
-                }.getProperty(zipName) ?: error("ffmpeg-hashes.properties 缺少 $zipName 的校验值")
-            val zipFile = ffmpegBundleDir.get().file(zipName).asFile
-            if (!zipFile.exists()) {
-                logger.lifecycle("下载 $url")
-                exec {
-                    commandLine("curl", "-sL", "--retry", "3", "--max-time", "600", "-o", zipFile, url)
-                    providers.gradleProperty("relay.proxy").orNull?.let { proxy ->
-                        environment("https_proxy", proxy)
-                        environment("http_proxy", proxy)
-                    }
-                }
-            }
-            copy { from(zipTree(zipFile)); into(dir) }
-            // GyanD zip 带包装目录，按名递归定位；找不到立即报错（不与 error() 链式造成 Nothing 推断）。
-            var exe = dir.walk().firstOrNull { it.name == "ffmpeg.exe" }
-            if (exe == null) {
-                val rootCandidate = File(dir, "ffmpeg.exe")
-                if (!rootCandidate.exists()) error("解压后未找到 ffmpeg.exe")
-                exe = rootCandidate
-            }
-            exe.setExecutable(true)
-            val actual =
-                MessageDigest.getInstance("SHA-256")
-                    .digest(exe.readBytes())
-                    .joinToString("") { "%02x".format(it) }
-            check(actual == expected) { "ffmpeg.exe sha256 校验失败：$actual != $expected" }
-            copy {
-                from(exe)
-                into(dir)
-            }
-            logger.lifecycle("ffmpeg.exe 捆绑就绪：${File(dir, "ffmpeg.exe").absolutePath}")
-            return@doLast
-        }
         val arch = when (System.getProperty("os.arch")) {
             "aarch64" -> "arm"
             else -> "intel"
@@ -125,31 +85,28 @@ tasks.register("bundleFfmpeg") {
 val relayVersion = providers.gradleProperty("relayVersion").orElse("1.0.0").get()
 
 tasks.register("jpackageCompanion") {
-    description = "打包伴机安装制品（macOS=dmg / Windows=msi，JRE + fatJar + 捆绑 ffmpeg）"
+    description = "打包伴机 macOS 制品（dmg，JRE + fatJar + 捆绑 ffmpeg）"
     dependsOn("fatJar", "bundleFfmpeg")
     doLast {
         val fatJarFile = tasks.named<Jar>("fatJar").get().archiveFile.get().asFile
         val inputDir = jpackageInputDir.get().asFile
         inputDir.deleteRecursively() // 清旧布局残留，保证输入目录可复现
         inputDir.mkdirs()
-        val isWindows = isWindowsBuild
-        val binaryName = if (isWindows) "ffmpeg.exe" else "ffmpeg"
         copy {
             from(fatJarFile)
             into(inputDir.resolve("app"))
         }
-        // ffmpeg 以「目录/二进制」布局进包：app/ffmpeg/ffmpeg(.exe)（与 RelayLocations.resolveFfmpeg 对应）。
+        // ffmpeg 以「目录/二进制」布局进包：app/ffmpeg/ffmpeg（与 RelayLocations.resolveFfmpeg 对应）。
         copy {
-            from(ffmpegBundleDir.get().file(binaryName))
+            from(ffmpegBundleDir.get().file("ffmpeg"))
             into(inputDir.resolve("app/ffmpeg"))
         }
         val jdkHome = providers.gradleProperty("relay.jdk").orElse(providers.systemProperty("java.home")).get()
-        val jpackageBin = if (isWindows) "jpackage.exe" else "jpackage"
         delete(jpackageOutputDir)
         exec {
             commandLine(
-                File(jdkHome, "bin/$jpackageBin"),
-                "--type", if (isWindows) "msi" else "dmg",
+                File(jdkHome, "bin/jpackage"),
+                "--type", "dmg",
                 "--name", "GuoyingRelay",
                 "--app-version", relayVersion,
                 "--input", inputDir.resolve("app"),
@@ -157,6 +114,6 @@ tasks.register("jpackageCompanion") {
                 "--dest", jpackageOutputDir.get().asFile,
             )
         }
-        logger.lifecycle("制品：${jpackageOutputDir.get().asFile}")
+        logger.lifecycle("dmg 产物：${jpackageOutputDir.get().asFile}")
     }
 }
