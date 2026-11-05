@@ -52,36 +52,38 @@ internal object RelayLocations {
             .let(::filterSiteLocalV4)
 
     /**
-     * jpackage app 根目录（…/果映伴机.app/Contents）：
-     * 优先 jpackage.app-dir 系统属性，回退从当前进程可执行路径向上找 *.app/Contents。
+     * 伴机 app 根目录（其下有 app/ 子目录装着 jar 与 ffmpeg）：
+     * 优先 jpackage.app-dir 系统属性，回退从当前进程可执行路径向上找含 app/ 的目录
+     * （macOS=…/Contents，Windows msi=安装根目录）。
      */
-    fun appContents(jpackageAppDir: String?, processCommand: String?): Path? {
+    fun appRoot(jpackageAppDir: String?, processCommand: String?): Path? {
         jpackageAppDir?.takeIf { it.isNotBlank() }?.let { return Path.of(it).normalize() }
         val command = processCommand ?: return null
-        var dir = Path.of(command).toAbsolutePath().normalize()
+        var dir = Path.of(command).toAbsolutePath().normalize().parent ?: return null
         while (dir.parent != null) {
+            if (Files.isDirectory(dir.resolve("app"))) return dir
             dir = dir.parent
-            if (dir.fileName?.toString() == "Contents") return dir
         }
         return null
     }
 
     /**
-     * ffmpeg 路径解析：捆绑（app 根下 app/ffmpeg/ffmpeg 或 app/ffmpeg 平铺文件，兼容两种
+     * ffmpeg 路径解析：捆绑（app 根下 app/ffmpeg/<binary> 或 app/<binary> 平铺，兼容两种
      * 打包布局；jpackage 拷贝可能丢失可执行位，探测前自愈）→ 显式指定（env/参数）→ 系统 PATH
-     * → Homebrew 常见绝对位置（双击启动的 PATH 极简，bare name 会找不到）。全无返回 null。
+     * → Homebrew 常见绝对位置（macOS 双击启动的 PATH 极简）。全无返回 null。
      */
     fun resolveFfmpeg(
         explicit: String?,
-        appContents: Path?,
+        appRoot: Path?,
+        binaryName: String = "ffmpeg",
         probe: (String) -> Boolean,
         homebrewCandidates: List<String> = listOf("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"),
     ): String? {
-        if (appContents != null) {
-            val appDir = appContents.resolve("app")
-            for (candidate in listOf(appDir.resolve("ffmpeg/ffmpeg"), appDir.resolve("ffmpeg"))) {
+        if (appRoot != null) {
+            val appDir = appRoot.resolve("app")
+            for (candidate in listOf(appDir.resolve(binaryName), appDir.resolve("ffmpeg").resolve(binaryName))) {
                 val normalized = candidate.normalize()
-                if (normalized.startsWith(appContents) && Files.isRegularFile(normalized)) {
+                if (normalized.startsWith(appRoot) && Files.isRegularFile(normalized)) {
                     normalized.toFile().setExecutable(true) // 自愈：打包拷贝可能丢失 +x
                     if (probe(normalized.toString())) return normalized.toString()
                 }

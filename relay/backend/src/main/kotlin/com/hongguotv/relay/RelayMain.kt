@@ -41,6 +41,9 @@ fun main(args: Array<String>) {
     }
 
     // 单实例：已有伴机在跑则唤醒其状态窗口并提示后退出（.command 脚本负责「结束旧的」）。
+    val osIsMac = System.getProperty("os.name").orEmpty().contains("Mac", true)
+    val osIsWindows = System.getProperty("os.name").orEmpty().contains("Windows", true)
+    val binaryName = if (osIsWindows) "ffmpeg.exe" else "ffmpeg"
     if (isAlreadyRunning(port)) {
         runCatching {
             val connection = URI("http://127.0.0.1:$port/show").toURL().openConnection() as HttpURLConnection
@@ -75,16 +78,15 @@ fun main(args: Array<String>) {
             .build()
     val manager = SessionManager(workRoot)
 
-    val appContents =
-        RelayLocations.appContents(
-            System.getProperty("jpackage.app-dir"),
-            ProcessHandle.current().info().command().orElse(null),
-        )
+    val appRoot = RelayLocations.appRoot(
+        System.getProperty("jpackage.app-dir"),
+        ProcessHandle.current().info().command().orElse(null),
+    )
     val window = RelayWindow.install()
     val tray =
         RelayTray.install(
-            autostartHome = home,
-            appContents = appContents,
+            autostartHome = if (osIsMac) home else null, // 自启 plist 为 macOS 专属
+            appRoot = appRoot,
             onCopyAddress = { addresses.joinToString("\n") },
             onCopyToken = { relayToken },
             onShowWindow = { window?.showWindow() },
@@ -99,7 +101,7 @@ fun main(args: Array<String>) {
 
     // ffmpeg 解析：app 捆绑 → 显式指定/env → 系统 PATH；均无则带错误状态运行（TV 端会回落）。
     val ffmpegResolved =
-        RelayLocations.resolveFfmpeg(ffmpegExplicit, appContents, probe = { candidate ->
+        RelayLocations.resolveFfmpeg(ffmpegExplicit, appRoot, binaryName, probe = { candidate ->
             runCatching {
                 ProcessBuilder(candidate, "-hide_banner", "-h", "decoder=vvc").start().waitFor() == 0
             }.getOrDefault(false)

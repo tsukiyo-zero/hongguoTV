@@ -18,20 +18,20 @@ internal class RelayTray private constructor(
     private val onCopyAddress: () -> String,
     private val onCopyToken: () -> String,
     private val onShowWindow: () -> Unit,
-    autostartHome: Path,
-    appContents: Path?,
+    autostartHome: Path?,
+    appRoot: Path?,
     private val onAutostartChanged: (Boolean) -> Unit,
     private val onExit: () -> Unit,
 ) {
     private val statusItem = MenuItem("启动中…").apply { isEnabled = false }
     private val autostartItem =
-        if (appContents == null) null
+        if (autostartHome == null || appRoot == null) null // 自启 plist 为 macOS 专属
         else
             CheckboxMenuItem("开机自启", RelayAutostart.isEnabled(autostartHome)).apply {
                 addItemListener {
                     val enabled = state
                     runCatching {
-                        if (enabled) RelayAutostart.enable(autostartHome, appContents)
+                        if (enabled) RelayAutostart.enable(autostartHome, appRoot)
                         else RelayAutostart.disable(autostartHome)
                     }
                         .onFailure { problem ->
@@ -84,8 +84,8 @@ internal class RelayTray private constructor(
     companion object {
         /** 安装菜单栏图标；系统不支持（headless 等）返回 null，伴机仍以纯后台运行。 */
         fun install(
-            autostartHome: Path,
-            appContents: Path?,
+            autostartHome: Path?,
+            appRoot: Path?,
             onCopyAddress: () -> String,
             onCopyToken: () -> String,
             onShowWindow: () -> Unit,
@@ -98,7 +98,7 @@ internal class RelayTray private constructor(
                 trayIcon.isImageAutoSize = true
                 RelayTray(
                     trayIcon, onCopyAddress, onCopyToken, onShowWindow,
-                    autostartHome, appContents, onAutostartChanged, onExit,
+                    autostartHome, appRoot, onAutostartChanged, onExit,
                 )
             }.getOrNull()
 

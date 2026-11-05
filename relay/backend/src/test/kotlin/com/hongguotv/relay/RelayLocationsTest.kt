@@ -46,13 +46,13 @@ class RelayLocationsTest {
         Files.writeString(bundled, "binary")
 
         val ok: (String) -> Boolean = { true }
-        assertEquals(bundled.toString(), RelayLocations.resolveFfmpeg("/usr/bin/ffmpeg", appContents, ok))
+        assertEquals(bundled.toString(), RelayLocations.resolveFfmpeg("/usr/bin/ffmpeg", appContents, probe = ok))
 
         Files.delete(bundled)
-        assertEquals("/usr/bin/ffmpeg", RelayLocations.resolveFfmpeg("/usr/bin/ffmpeg", appContents, ok))
+        assertEquals("/usr/bin/ffmpeg", RelayLocations.resolveFfmpeg("/usr/bin/ffmpeg", appContents, probe = ok))
 
-        assertEquals("ffmpeg", RelayLocations.resolveFfmpeg(null, appContents, ok))
-        assertNull(RelayLocations.resolveFfmpeg(null, appContents, { false }, emptyList()))
+        assertEquals("ffmpeg", RelayLocations.resolveFfmpeg(null, appContents, probe = ok))
+        assertNull(RelayLocations.resolveFfmpeg(null, appContents, "ffmpeg", { false }, emptyList()))
     }
 
     @Test
@@ -64,7 +64,8 @@ class RelayLocationsTest {
         flat.toFile().setExecutable(false) // 模拟 jpackage 丢失 +x
 
         var probed: String? = null
-        val result = RelayLocations.resolveFfmpeg(null, appContents, { probed = it; true })
+        val result =
+            RelayLocations.resolveFfmpeg(null, appContents, "ffmpeg", probe = { probed = it; true })
         assertEquals(flat.normalize().toString(), result)
         assertTrue(flat.toFile().canExecute()) // 探测前已自愈
         assertEquals(flat.normalize().toString(), probed)
@@ -78,6 +79,7 @@ class RelayLocationsTest {
             RelayLocations.resolveFfmpeg(
                 null,
                 null,
+                "ffmpeg",
                 { it == fallback.toString() },
                 homebrewCandidates = listOf(fallback.toString()),
             )
