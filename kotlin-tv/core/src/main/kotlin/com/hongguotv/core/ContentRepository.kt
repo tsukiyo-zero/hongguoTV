@@ -163,10 +163,6 @@ class EmptyPlaybackResponseException(val detail: String? = null) :
 /** 连续整轮空响应达到该次数后轮换一次设备身份（两轮 = 8 发跨 3 域名全空，约 25 秒）。 */
 private const val IDENTITY_ROTATE_ROUNDS = 2
 
-/** 播放模型请求使用的厂商 UA；旧 `/novel/player` 与新 `video_tab` 接口一致。 */
-private const val PLAYER_UA =
-    "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)"
-
 class ContentRepository
 @JvmOverloads
 constructor(
@@ -267,8 +263,32 @@ constructor(
         return request
     }
 
+    /** Sign the final query and body together, using the same registered identity in Medusa.
+     * Never refresh _rticket after signing; each retry builds a new signature instead.
+     */
+    private fun playbackRequest(
+        base: String,
+        identity: PlaybackDeviceSession.Profile,
+        extra: Map<String, String> = emptyMap(),
+        body: ByteArray? = null,
+    ): Request.Builder {
+        val profile = identity.values + mapOf(
+            "version_code" to "73932", "manifest_version_code" to "73932",
+            "update_version_code" to "73932", "pv_player" to "73932",
+            "version_name" to "7.3.9.32",
+        )
+        val signed = Signer(clock = clock, device = profile)
+            .signPlayback(base, profile + extra, body)
+        return signedRequest(signed.url, signed).apply {
+            if (identity.cookie.isNotBlank()) header("Cookie", identity.cookie)
+        }
+    }
+
     /** 单次请求执行：HTTP 状态、响应大小与空响应判定；重试策略由调用方决定。 */
-    private fun fetchOnce(request: Request.Builder, client: OkHttpClient, refreshTicket: Boolean): String {
+    private fun fetchOnce(
+        request: Request.Builder, client: OkHttpClient, refreshTicket: Boolean,
+        rejectEmptyPlayback: Boolean = refreshTicket,
+    ): String {
         val next =
             request.build().let { original ->
                 if (refreshTicket)
@@ -298,7 +318,7 @@ constructor(
             val bytes = out.toByteArray()
             if (bytes.size > 16 * 1024 * 1024) throw IOException("内容响应过大")
             val content = String(bytes, Charsets.UTF_8)
-            if (refreshTicket && content.isBlank()) throw EmptyPlaybackResponseException()
+            if (rejectEmptyPlayback && content.isBlank()) throw EmptyPlaybackResponseException()
             content
         }
     }
@@ -678,22 +698,18 @@ constructor(
      * 既有的空响应恢复与身份轮换语义。
      */
     private fun tabVideoModel(id: String, identity: PlaybackDeviceSession.Profile): JSONObject? {
-        val extra =
-            "&video_id=$id&video_id_type=0&device_level=1&need_all_video_definition=1" +
-                "&need_mp4_align=0&use_os_player=0&video_platform=1024&source=0&from_video_id="
-        // 只试一次：新接口失败时旧接口仍有三域名换路重试兜底，重复换路没有收益。
+        val extra = mapOf(
+            "video_id" to id, "video_id_type" to "0", "device_level" to "1",
+            "need_all_video_definition" to "1", "need_mp4_align" to "0",
+            "use_os_player" to "0", "video_platform" to "1024", "source" to "0",
+            "from_video_id" to "",
+        )
+        // One preferred request; the legacy path retains the bounded cross-host retry budget.
         for (host in listOf(PlayRetryPlan.hosts.first())) {
-            val query = Signer.encode(identity.values + ("_rticket" to clock().toString()))
-            val request =
-                Request.Builder()
-                    .url("https://$host/reading/bookapi/video_tab/multi_video_model/v1/?$query$extra")
-                    .header("User-Agent", PLAYER_UA)
-                    .header("Accept", "application/json; charset=utf-8")
-                    .apply {
-                        if (identity.cookie.isNotBlank()) header("Cookie", identity.cookie)
-                    }
-                    .get()
-                    .build()
+            val request = playbackRequest(
+                "https://$host/reading/bookapi/video_tab/multi_video_model/v1/",
+                identity, extra,
+            ).build()
             val text =
                 try {
                     RequestScope.execute(http.newCall(request)) { response ->
@@ -832,29 +848,14 @@ constructor(
                         }
                         val host = PlayRetryPlan.host(attempt)
                         tried += PlayRetryPlan.tag(host)
-                        val query =
-                            Signer.encode(requestIdentity.values + ("_rticket" to clock().toString()))
-                        val playerUrl = "https://$host/novel/player/multi_video_model/v1/?$query"
-                        val request =
-                            signedRequest(
-                                playerUrl,
-                                Signer.Request(
-                                    playerUrl,
-                                    mapOf(
-                                        "User-Agent" to PLAYER_UA,
-                                        "Accept" to
-                                            "application/json; charset=utf-8,application/x-protobuf",
-                                    ) +
-                                        (if (requestIdentity.cookie.isBlank()) emptyMap()
-                                        else mapOf("Cookie" to requestIdentity.cookie)) +
-                                        (if (PlayRetryPlan.freshConnection(attempt))
-                                            mapOf("Connection" to "close")
-                                        else emptyMap()),
-                                    payload,
-                                ),
-                            )
+                        val request = playbackRequest(
+                            "https://$host/novel/player/multi_video_model/v1/",
+                            requestIdentity, body = payload,
+                        ).apply {
+                            if (PlayRetryPlan.freshConnection(attempt)) header("Connection", "close")
+                        }
                         try {
-                            content = fetchOnce(request, http, refreshTicket = true)
+                            content = fetchOnce(request, http, refreshTicket = false, rejectEmptyPlayback = true)
                             break
                         } catch (e: IOException) {
                             if (Thread.currentThread().isInterrupted) throw e

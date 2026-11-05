@@ -430,6 +430,35 @@ internal class Signer(
         error("无法生成请求签名")
     }
 
+    /** Playback uses the registered profile, no legacy ts query parameter, and branch 0.
+     * Keep the existing branch-0 signing algorithm for deterministic compatibility.
+     */
+    fun signPlayback(base: String, values: Map<String, String>, body: ByteArray? = null): Request {
+        val now = clock()
+        val ts = (now / 1000).toInt()
+        for (offset in 0..127) {
+            val ticket = now + offset
+            val query = encode(values + ("_rticket" to ticket.toString()))
+            if (branch(query, body, ts) != 0) continue
+            val url = "$base?$query"
+            val headers = linkedMapOf(
+                "User-Agent" to "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)",
+                "Accept" to "application/json; charset=utf-8,application/x-protobuf",
+                "x-ss-req-ticket" to ticket.toString(), "sdk-version" to "2",
+                "x-xs-from-web" to "0", "x-khronos" to ts.toString(),
+                "x-ladon" to be32(ts).base64(), "x-argus" to le32(ts).base64(),
+                "x-gorgon" to gorgon(query, body, ts, (random() * 65536).toInt()),
+                "x-helios" to helios(ts), "x-medusa" to medusa(url, body, ts),
+            )
+            if (body != null) {
+                headers["Content-Type"] = "application/json; charset=utf-8"
+                headers["x-ss-stub"] = digest("MD5", body).hex().uppercase()
+            }
+            return Request(url, headers, body)
+        }
+        error("无法生成播放签名")
+    }
+
     companion object {
         fun encode(values: Map<String, String>) =
             values.entries.joinToString("&") { (k, v) -> "${encode(k)}=${encode(v)}" }

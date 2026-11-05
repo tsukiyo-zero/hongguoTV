@@ -1,5 +1,6 @@
 package com.hongguotv.core
 
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONArray
 import org.junit.Assert.*
 import org.junit.Test
@@ -41,4 +42,28 @@ class SignerTest {
             assertEquals("medusa $i", row.getString("medusa"), signer.medusa(url, body, ts))
         }
     }
+    @Test
+    fun playbackSignatureBindsFinalQueryBodyAndRegisteredProfile() {
+        val now = 1793880000000L
+        val profile = VendorConstants.device + mapOf("device_id" to "333", "iid" to "444",
+            "version_name" to "7.3.9.32", "version_code" to "73932")
+        for (body in listOf(null, "{\"video_id\":\"123\"}".toByteArray())) {
+            val signer = Signer({ now }, profile) { 0.5 }
+            val signed = signer.signPlayback("https://example.test/model", profile + ("video_id" to "123"), body)
+            val url = signed.url.toHttpUrl()
+            val query = url.encodedQuery!!
+            val ts = signed.headers.getValue("x-khronos").toInt()
+            assertNull(url.queryParameter("ts"))
+            assertEquals("123", url.queryParameter("video_id"))
+            assertEquals(url.queryParameter("_rticket"), signed.headers["x-ss-req-ticket"])
+            assertEquals(0, signer.branch(query, body, ts))
+            assertEquals(signer.gorgon(query, body, ts, 32768), signed.headers["x-gorgon"])
+            assertEquals(signer.medusa(signed.url, body, ts), signed.headers["x-medusa"])
+            val wrongProfile = Signer({ now }) { 0.5 }
+            assertNotEquals(wrongProfile.medusa(signed.url, body, ts), signed.headers["x-medusa"])
+            if (body != null)
+                assertEquals(digest("MD5", body).hex().uppercase(), signed.headers["x-ss-stub"])
+        }
+    }
+
 }
