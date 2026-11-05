@@ -1,12 +1,13 @@
 # 果映伴机跨平台制品构建：workflow_dispatch 手动触发（CI 只产制品不发布，人工挂 Release）。
 # matrix：macos-14（arm64，osxexperts ffmpeg 9.0.2）+ windows-latest（x64，GyanD 7.1.1 essentials）。
 # 每个 runner 构建后做健康冒烟（启动 + /health 断言 ffmpegOk=true），再上传制品。
+# Windows 冒烟走 scripts/smoke-relay-windows.sh 的 msiexec /a 解包路径（msiexec 静默安装挂起待排）。
 name: relay-build
 
 on:
   # push 到开发分支时在本仓库（fork）构建验证——制品挂在本仓库 Actions 运行页。
   push:
-    branches: [feature-relay-transcode]
+    branches: [feature-relay-windows-build]
     paths:
       - 'relay/**'
       - '.github/workflows/relay-build.yml'
@@ -73,21 +74,11 @@ jobs:
             done
             pkill -f "GuoyingRelay" || true
             hdiutil detach /Volumes/GuoyingRelay || true
+            [ "$OK" = "1" ] || { echo "health 冒烟失败"; exit 1; }
           else
-            MSI="$(cygpath -w "relay/backend/build/jpackage/GuoyingRelay-${VERSION}.msi")"
-            [ -f "relay/backend/build/jpackage/GuoyingRelay-${VERSION}.msi" ] || { echo "MSI 未生成"; exit 1; }
-            msiexec /i "$MSI" /qn
-            EXE="/c/Program Files/GuoyingRelay/GuoyingRelay.exe"
-            "$EXE" --port 46599 &
-            OK=0
-            for i in $(seq 1 20); do
-              sleep 1
-              curl -s -m 2 http://127.0.0.1:46599/health | grep -q '"ffmpegOk":true' && OK=1 && break
-            done
-            taskkill //F //IM GuoyingRelay.exe || true
-            msiexec /x "$MSI" /qn || true
+            # 与本地同一份冒烟脚本：msiexec /a 解包 → 启动 → /health 断言（msiexec 静默安装挂起待排）
+            ./scripts/smoke-relay-windows.sh "relay/backend/build/jpackage/GuoyingRelay-${VERSION}.msi"
           fi
-          [ "$OK" = "1" ] || { echo "health 冒烟失败"; exit 1; }
 
       - name: 上传制品
         uses: actions/upload-artifact@v4
