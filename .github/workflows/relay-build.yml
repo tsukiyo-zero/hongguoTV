@@ -115,6 +115,8 @@ jobs:
       - name: 发布（首次创建 relay-stable，之后清理旧附件并覆盖上传）
         env:
           GH_TOKEN: ${{ github.token }}
+          # 本 job 不 checkout，工作目录无 .git，gh 靠 GH_REPO 定位仓库
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
