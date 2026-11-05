@@ -150,6 +150,39 @@ class HomeFeedScreenTest {
         else if (view is TextView) listOf(view) else emptyList()
 
     @Test
+    fun refreshAfterExhaustionStartsFreshInsteadOfReusingStuckCursor() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val state = DramaFeedState()
+        state.recommendationCursor.restore("""{"session":"stuck","offset":500,"seen":["1"]}""")
+        var reset = false
+        val backend = object : Backend() {
+            override fun resetRecommendations(category: DramaCategory?) {
+                assertNull(category)
+                reset = true
+            }
+            override fun recommendations(page: Int, cursor: RecommendationCursor): CatalogPage {
+                if (org.json.JSONObject(cursor.snapshot()).optString("session").isNotBlank())
+                    throw NoNewRecommendationsException()
+                return super.recommendations(page, cursor)
+            }
+        }
+        val player = Playback(activity)
+        val screen = HomeFeedScreen(activity, state, listOf(TextView(activity)), {}, { _, _ -> }, { "收藏" }, backend, player)
+        try {
+            activity.setContentView(screen)
+            screen.start(true, false)
+            pump(screen)
+            assertTrue(texts(screen).any { it.text.contains("暂时没有新的推荐") })
+            texts(screen).first { it.text == "换一批" }.performClick()
+            pump(screen)
+            assertTrue(reset)
+            assertEquals("1", player.loaded)
+            assertEquals(0, org.json.JSONObject(state.recommendationCursor.snapshot()).optInt("offset"))
+        } finally { screen.close(); controller.pause().stop().destroy() }
+    }
+
+    @Test
     fun transportCleanupRunsOffUiThreadAndOnlyOnce() {
         val finished = java.util.concurrent.CountDownLatch(1)
         val shutdowns = java.util.concurrent.atomic.AtomicInteger()

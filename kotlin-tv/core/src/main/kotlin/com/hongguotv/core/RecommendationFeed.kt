@@ -100,6 +100,9 @@ internal constructor(
     }
 }
 
+/** 有效推荐批次耗尽或连续重复，需要用户主动重新获取当前来源。 */
+class NoNewRecommendationsException : IOException("暂时没有新的推荐，请稍后换一批")
+
 /** Official App feed, not the public website's sorted category list. No behavior reporting. */
 class RecommendationFeed(
     private val http: OkHttpClient,
@@ -280,7 +283,7 @@ class RecommendationFeed(
                 cursor.lastResult = fresh
                 return@synchronized fresh
             }
-            throw IOException("暂时没有新的推荐，请稍后换一批")
+            throw NoNewRecommendationsException()
         }
 
     companion object {

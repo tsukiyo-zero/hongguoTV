@@ -57,6 +57,15 @@ internal class FeedStartupCache(
         }
     }
 
+    /** 用户主动重建当前来源时同时移除游标和首屏，避免下一次读取又恢复旧状态。 */
+    fun clearSource(identity: String, source: String) {
+        synchronized(lock) {
+            owner(identity)
+            if (!prefs.edit().remove(source).remove("cursor:$source").commit())
+                throw java.io.IOException("推荐记录重置失败，请重试")
+        }
+    }
+
     fun save(identity: String, source: String, page: CatalogPage) {
         runCatching {
             synchronized(lock) {

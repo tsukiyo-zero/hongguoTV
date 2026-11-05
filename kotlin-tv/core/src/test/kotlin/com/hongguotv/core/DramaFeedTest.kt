@@ -5,6 +5,27 @@ import org.junit.Test
 
 class DramaFeedTest {
     @Test
+    fun restartingOnlyCurrentSourcePreservesOtherSourceAndNormalRefreshProgress() {
+        val state = DramaFeedState()
+        state.recommendationCursor.restore("""{"session":"recommend-session","offset":20,"seen":["101"]}""")
+        state.append(CatalogPage(listOf(Series("101", "推荐")), true), 1)
+        state.select(DramaCategory.COMIC)
+        val comic = state.recommendationCursor
+        comic.restore("""{"session":"comic-session","offset":10,"seen":["202"]}""")
+        state.append(CatalogPage(listOf(Series("202", "漫剧")), true), 1)
+        state.recommend()
+        state.refresh(restartCurrentSource = true)
+        assertFalse(state.recommendationCursor.hasProgress)
+        assertEquals(0, org.json.JSONObject(state.recommendationCursor.snapshot()).getJSONArray("seen").length())
+        state.select(DramaCategory.COMIC)
+        assertSame(comic, state.recommendationCursor)
+        assertEquals("202", state.current!!.id)
+        state.refresh()
+        assertTrue(state.recommendationCursor.hasProgress)
+        assertEquals("comic-session", org.json.JSONObject(state.recommendationCursor.snapshot()).getString("session"))
+    }
+
+    @Test
     fun returningToSourceRestoresCardsSelectionAndPagingButAccountResetClearsAllSources() {
         val state = DramaFeedState()
         state.append(page(100), 1)

@@ -81,11 +81,14 @@ class DramaFeedState {
         restoreSource()
     }
 
-    fun refresh(resetRecommendations: Boolean = false) {
+    fun refresh(resetRecommendations: Boolean = false, restartCurrentSource: Boolean = false) {
         if (resetRecommendations) {
             sourceCursors.clear()
             sourcePages.clear()
-        } else sourcePages.remove(sourceKey())
+        } else {
+            sourcePages.remove(sourceKey())
+            if (restartCurrentSource) sourceCursors.remove(sourceKey())
+        }
         recommendationCursor = sourceCursors[sourceKey()]?.nextBatch() ?: RecommendationCursor()
         sourceCursors[sourceKey()] = recommendationCursor
         items = emptyList()

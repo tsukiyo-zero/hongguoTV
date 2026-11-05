@@ -35,6 +35,35 @@ class FeedStartupCacheTest {
     }
 
     @Test
+    fun explicitRecoveryRemovesStuckCursorAndStarterBeforeFetchingFresh() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup()
+        val cache = FeedStartupCache(activity.get())
+        cache.save("guest", "recommend", page)
+        cache.saveCursor("guest", "recommend", """{"session":"stuck","offset":500,"seen":["101"]}""")
+        cache.saveCursor("guest", DramaCategory.COMIC.route, "comic-saved")
+        var requests = 0
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            requests++
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200)
+                .message("fixture").body(feedResponse(listOf("101")).toResponseBody()).build()
+        }.build()
+        val backend = PublicFeedBackend(720, http = http, startupCache = cache)
+        try {
+            assertThrows(NoNewRecommendationsException::class.java) {
+                backend.recommendations(1, DramaFeedState().recommendationCursor)
+            }
+            assertEquals(3, requests)
+            backend.resetRecommendations(null)
+            assertNull(cache.loadCursor("guest", "recommend"))
+            assertNull(cache.load("guest", "recommend"))
+            assertEquals("comic-saved", cache.loadCursor("guest", DramaCategory.COMIC.route))
+            val fresh = backend.recommendations(1, DramaFeedState().recommendationCursor)
+            assertEquals("101", fresh.items.single().id)
+            assertEquals(4, requests)
+        } finally { backend.close(); activity.pause().stop().destroy() }
+    }
+
+    @Test
     fun cacheDisplayAndImmediateCloseDoNotReplayTheSameFirstWorkOnRestart() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val cache = FeedStartupCache(controller.get()) { 1000L }
