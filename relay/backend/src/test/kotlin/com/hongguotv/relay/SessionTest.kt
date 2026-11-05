@@ -6,6 +6,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
+import org.junit.Assume
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -14,6 +16,15 @@ import java.io.File
 class SessionTest {
     @get:Rule
     val temp = TemporaryFolder()
+
+    // 假 ffmpeg 脚本是 POSIX 方案（.sh + 进程执行），Windows CI 无法运行——状态机逻辑平台无关，
+    // Windows 侧由 CI 的真实 MSI 安装冒烟覆盖，本类跳过。
+    @Before
+    fun skipOnWindows() {
+        Assume.assumeFalse(
+            System.getProperty("os.name").orEmpty().contains("Windows", true),
+        )
+    }
 
     /** 10 样本 × 28 字节（2 个长度前缀 NALU），dts 5fps 步进 200ms。 */
     private fun fakeTable() =
