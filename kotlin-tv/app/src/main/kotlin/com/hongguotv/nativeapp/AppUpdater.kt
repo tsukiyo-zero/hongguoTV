@@ -331,6 +331,26 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
             throw IOException("新版包名、版本或签名不匹配，已阻止安装")
     }
 
+    /** 依次尝试电视上可能存在的安装入口；返回 true 表示已拉起某个界面。 */
+    private fun launchInstaller(uri: Uri): Boolean {
+        val sources = mutableListOf<Intent>()
+        if (Build.VERSION.SDK_INT < 26)
+            sources +=
+                Intent(Intent.ACTION_INSTALL_PACKAGE)
+                    .setData(uri)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        sources +=
+            Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, "application/vnd.android.package-archive")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        for (intent in sources) {
+            intent.clipData = ClipData.newRawUri("更新安装包", uri)
+            val opened = runCatching { activity.startActivity(intent) }.isSuccess
+            if (opened) return true
+        }
+        return false
+    }
+
     private fun install() {
         val update = available ?: return
         if (busy || !active || !ready) return
@@ -350,12 +370,26 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
                 } else {
                     val uri =
                         FileProvider.getUriForFile(activity, "${activity.packageName}.updates", apk)
-                    activity.startActivity(
-                        Intent(Intent.ACTION_VIEW)
-                            .setDataAndType(uri, "application/vnd.android.package-archive")
-                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            .apply { clipData = ClipData.newRawUri("更新安装包", uri) }
-                    )
+                    // 为 Android 6/7 增加标准安装 action；厂商 ROM 是否提供对应入口仍需实机验证。
+                    if (!launchInstaller(uri)) {
+                        val openedSettings =
+                            runCatching {
+                                    activity.startActivity(
+                                        Intent(Settings.ACTION_SECURITY_SETTINGS)
+                                    )
+                                    true
+                                }
+                                .getOrDefault(false)
+                        if (openedSettings) {
+                            // 这里只打开设置，不能视为已经授权，也不在返回时自动重试，
+                            // 否则安装入口始终缺失的 ROM 会反复跳回设置。
+                            updateStatus(
+                                "已打开系统安全设置，请查找并允许「未知来源」，返回后再次点安装新版"
+                            )
+                        } else {
+                            updateStatus("电视未提供安装或授权入口，请通过系统文件管理器安装新版")
+                        }
+                    }
                 }
             } catch (_: Exception) {
                 permissionRequested = false
