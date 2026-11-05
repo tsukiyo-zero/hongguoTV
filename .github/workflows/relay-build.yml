@@ -74,7 +74,9 @@ jobs:
             pkill -f "GuoyingRelay" || true
             hdiutil detach /Volumes/GuoyingRelay || true
           else
-            msiexec //i "relay/backend/build/jpackage/GuoyingRelay-${VERSION}.msi" //qn
+            MSI="$(cygpath -w "relay/backend/build/jpackage/GuoyingRelay-${VERSION}.msi")"
+            [ -f "relay/backend/build/jpackage/GuoyingRelay-${VERSION}.msi" ] || { echo "MSI 未生成"; exit 1; }
+            msiexec /i "$MSI" /qn
             EXE="/c/Program Files/GuoyingRelay/GuoyingRelay.exe"
             "$EXE" --port 46599 &
             OK=0
@@ -83,7 +85,7 @@ jobs:
               curl -s -m 2 http://127.0.0.1:46599/health | grep -q '"ffmpegOk":true' && OK=1 && break
             done
             taskkill //F //IM GuoyingRelay.exe || true
-            msiexec //x "relay/backend/build/jpackage/GuoyingRelay-${VERSION}.msi" //qn || true
+            msiexec /x "$MSI" /qn || true
           fi
           [ "$OK" = "1" ] || { echo "health 冒烟失败"; exit 1; }
 
