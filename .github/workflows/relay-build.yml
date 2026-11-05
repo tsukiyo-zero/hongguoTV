@@ -44,6 +44,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: 确保 WiX（Windows MSI 需要；必须在构建前——jpackage 打 msi 时就要 candle/light）
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          command -v candle >/dev/null 2>&1 || choco install wixtoolset -y --no-progress
+
       - name: 构建（ffmpeg 捆绑 + sha256 校验 + fatJar + jpackage）
         shell: bash
         run: |
@@ -52,12 +58,6 @@ jobs:
             -Prelay.jdk="$JAVA_HOME" \
             -PrelayVersion="${{ inputs.version || '1.0.0' }}" \
             :relay:test :relay:jpackageCompanion
-
-      - name: 确保 WiX（Windows MSI 需要）
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          command -v candle >/dev/null 2>&1 || choco install wixtoolset -y --no-progress
 
       - name: 冒烟（启动产物 + /health 断言 ffmpegOk=true）
         shell: bash
