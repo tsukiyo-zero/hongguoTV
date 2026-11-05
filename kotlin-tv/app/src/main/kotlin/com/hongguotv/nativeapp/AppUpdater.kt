@@ -370,8 +370,7 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
                 } else {
                     val uri =
                         FileProvider.getUriForFile(activity, "${activity.packageName}.updates", apk)
-                    // Android 6/7 的电视安装器不一定认 ACTION_VIEW：老机型通常只实现
-                    // ACTION_INSTALL_PACKAGE，先走它再回退，避免直接报「未提供安装入口」。
+                    // 为 Android 6/7 增加标准安装 action；厂商 ROM 是否提供对应入口仍需实机验证。
                     if (!launchInstaller(uri)) {
                         val openedSettings =
                             runCatching {
@@ -382,9 +381,10 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
                                 }
                                 .getOrDefault(false)
                         if (openedSettings) {
-                            permissionRequested = true
+                            // 这里只打开设置，不能视为已经授权，也不在返回时自动重试，
+                            // 否则安装入口始终缺失的 ROM 会反复跳回设置。
                             updateStatus(
-                                "已在系统设置打开「未知来源」开关，允许后返回这里再次点安装新版"
+                                "已打开系统安全设置，请查找并允许「未知来源」，返回后再次点安装新版"
                             )
                         } else {
                             updateStatus("电视未提供安装或授权入口，请通过系统文件管理器安装新版")
