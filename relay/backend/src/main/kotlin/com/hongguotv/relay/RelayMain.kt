@@ -53,7 +53,9 @@ fun main(args: Array<String>) {
             connection.responseCode
             connection.disconnect()
         }
-        val message = "果映伴机已在菜单栏运行，已为你唤出状态窗口（屏幕上的「果映伴机」窗口）。"
+        val message =
+            if (osIsWindows) "果映伴机已在任务栏右下角托盘运行，已为你唤出状态窗口（屏幕上的「果映伴机」窗口）。"
+            else "果映伴机已在菜单栏运行，已为你唤出状态窗口（屏幕上的「果映伴机」窗口）。"
         println(message)
         showMacDialog(message)
         return
@@ -172,9 +174,13 @@ fun main(args: Array<String>) {
         println("自测会话 ${session.id} 已启动：${publicBase}/hls/${session.id}/index.m3u8")
     }
 
-    tray?.status("运行中 · $publicBase", notify = true)
+    tray?.status(
+        if (osIsWindows) "运行中 · $publicBase（驻留右下角托盘，Win11 默认收在「^」溢出区，可拖出常显）"
+        else "运行中 · $publicBase",
+        notify = true,
+    )
     window?.update("运行中", addresses, relayToken)
-    window?.showWindow() // 每次启动自动弹出状态窗口，让驻留过程可见
+    if (osIsMac) window?.showWindow() // macOS 保留启动弹窗（已验收）；Windows 驻留以托盘为锚，状态窗口从托盘菜单按需打开（AWT Frame 在 Windows 必占任务栏）
     println("果映伴机 $VERSION 已启动：$publicBase（encoder=$encoder）")
     println("伴机令牌：$relayToken（TV 端播放设置需填入同一令牌；文件 $tokenFile）")
     println("mDNS：${if (jmdns != null) "_guoying-relay._tcp 已注册" else "注册失败（TV 端可手动填 IP）"}")

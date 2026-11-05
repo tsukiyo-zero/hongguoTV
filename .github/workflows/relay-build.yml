@@ -1,14 +1,23 @@
-# 果映伴机 macOS 制品构建：workflow_dispatch 手动触发（CI 只产制品不发布，人工挂 Release）。
-# Windows msi 构建拆分至后续迭代（msiexec 静默安装挂起待排，方案与历史代码见 git 历史）。
+# 果映伴机跨平台制品构建：workflow_dispatch 手动触发（CI 只产制品不发布，人工挂 Release）。
+# matrix：macos-14（arm64，osxexperts ffmpeg 9.0.2）+ windows-latest（x64，GyanD 7.1.1 essentials）。
+# 每个 runner 构建后做健康冒烟（启动 + /health 断言 ffmpegOk=true），再上传制品。
+# Windows 冒烟走 scripts/smoke-relay-windows.sh 的 msiexec /a 解包路径（msiexec 静默安装挂起待排）。
 name: relay-build
 
 on:
+  # push 到开发分支时在本仓库（fork）构建验证——制品挂在本仓库 Actions 运行页。
+  push:
+    branches: [feature-relay-windows-build]
+    paths:
+      - 'relay/**'
+      - '.github/workflows/relay-build.yml'
   workflow_dispatch:
     inputs:
       version:
         description: '伴机版本号（默认 1.0.0，与 relay/gradle.properties 的 relayVersion 保持一致）'
         default: '1.0.0'
         required: false
+  # 注：pull_request 触发待本 workflow 进入源仓库默认分支后才会生效（届时 PR 会自动出构建检查）。
   pull_request:
     branches: [main]
     paths:
@@ -17,7 +26,15 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            name: macOS-arm64
+          - os: windows-latest
+            name: Windows-x64
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -27,7 +44,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: 构建（ffmpeg 捆绑 + sha256 校验 + fatJar + jpackage dmg）
+      - name: 确保 WiX（Windows MSI 需要；必须在构建前——jpackage 打 msi 时就要 candle/light）
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          command -v candle >/dev/null 2>&1 || choco install wixtoolset -y --no-progress
+
+      - name: 构建（ffmpeg 捆绑 + sha256 校验 + fatJar + jpackage）
         shell: bash
         run: |
           ./kotlin-tv/gradlew -p relay \
@@ -36,25 +59,32 @@ jobs:
             -PrelayVersion="${{ inputs.version || '1.0.0' }}" \
             :relay:test :relay:jpackageCompanion
 
-      - name: 冒烟（挂载 dmg 启动 + /health 断言 ffmpegOk=true）
+      - name: 冒烟（启动产物 + /health 断言 ffmpegOk=true）
         shell: bash
         run: |
           VERSION="${{ inputs.version || '1.0.0' }}"
-          hdiutil attach -nobrowse "relay/backend/build/jpackage/GuoyingRelay-${VERSION}.dmg"
-          BIN="/Volumes/GuoyingRelay/GuoyingRelay.app/Contents/MacOS/GuoyingRelay"
-          "$BIN" --port 46599 &
-          OK=0
-          for i in $(seq 1 20); do
-            sleep 1
-            curl -s -m 2 http://127.0.0.1:46599/health | grep -q '"ffmpegOk":true' && OK=1 && break
-          done
-          pkill -f "GuoyingRelay" || true
-          hdiutil detach /Volumes/GuoyingRelay || true
-          [ "$OK" = "1" ] || { echo "health 冒烟失败"; exit 1; }
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            hdiutil attach -nobrowse "relay/backend/build/jpackage/GuoyingRelay-${VERSION}.dmg"
+            BIN="/Volumes/GuoyingRelay/GuoyingRelay.app/Contents/MacOS/GuoyingRelay"
+            "$BIN" --port 46599 &
+            OK=0
+            for i in $(seq 1 20); do
+              sleep 1
+              curl -s -m 2 http://127.0.0.1:46599/health | grep -q '"ffmpegOk":true' && OK=1 && break
+            done
+            pkill -f "GuoyingRelay" || true
+            hdiutil detach /Volumes/GuoyingRelay || true
+            [ "$OK" = "1" ] || { echo "health 冒烟失败"; exit 1; }
+          else
+            # 与本地同一份冒烟脚本：msiexec /a 解包 → 启动 → /health 断言（msiexec 静默安装挂起待排）
+            ./scripts/smoke-relay-windows.sh "relay/backend/build/jpackage/GuoyingRelay-${VERSION}.msi"
+          fi
 
       - name: 上传制品
         uses: actions/upload-artifact@v4
         with:
-          name: guoying-relay-macOS-arm64
-          path: relay/backend/build/jpackage/*.dmg
+          name: guoying-relay-${{ matrix.name }}
+          path: |
+            relay/backend/build/jpackage/*.dmg
+            relay/backend/build/jpackage/*.msi
           if-no-files-found: error
