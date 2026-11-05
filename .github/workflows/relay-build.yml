@@ -1,13 +1,14 @@
-# 果映伴机跨平台制品构建：workflow_dispatch 手动触发（CI 只产制品不发布，人工挂 Release）。
+# 果映伴机跨平台制品构建与固定 Release 发布：
 # matrix：macos-14（arm64，osxexperts ffmpeg 9.0.2）+ windows-latest（x64，GyanD 7.1.1 essentials）。
 # 每个 runner 构建后做健康冒烟（启动 + /health 断言 ffmpegOk=true），再上传制品。
 # Windows 冒烟走 scripts/smoke-relay-windows.sh 的 msiexec /a 解包路径（msiexec 静默安装挂起待排）。
+# 构建冒烟全过后由 publish job 自动发布到 fork 固定 Release「relay-stable」（见 spec：伴机包固定 Release 发布机制）。
 name: relay-build
 
 on:
-  # push 到开发分支时在本仓库（fork）构建验证——制品挂在本仓库 Actions 运行页。
+  # push 到 main（上游合并后）与实施分支时在本仓库（fork）构建验证并发布固定 Release。
   push:
-    branches: [feature-relay-windows-build]
+    branches: [main, feature-relay-stable-release]
     paths:
       - 'relay/**'
       - '.github/workflows/relay-build.yml'
@@ -23,6 +24,11 @@ on:
     paths:
       - 'relay/**'
       - '.github/workflows/relay-build.yml'
+
+# 同一时刻只跑一次：连续 push 时取消旧运行，防止并发发布竞争固定 Release。
+concurrency:
+  group: relay-build
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -88,3 +94,57 @@ jobs:
             relay/backend/build/jpackage/*.dmg
             relay/backend/build/jpackage/*.msi
           if-no-files-found: error
+
+  # 固定 Release 发布：两平台构建冒烟全过后运行。tag 固定 relay-stable，页面永远只有
+  # 当前一版的两平台附件（GuoyingRelay-<版本>.dmg/.msi），每次迭代自动覆盖。
+  # 凭据用本仓库内置 GITHUB_TOKEN（job 级最小权限声明 contents: write），零 secret。
+  publish:
+    name: 发布到固定 relay-stable Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 下载两平台制品
+        uses: actions/download-artifact@v4
+        with:
+          pattern: guoying-relay-*
+          merge-multiple: true
+          path: dist
+
+      - name: 发布（首次创建 relay-stable，之后清理旧附件并覆盖上传）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 版本号从制品文件名解析（GuoyingRelay-<版本>.dmg），保证 Release 说明与附件一致
+          VERSION=$(basename "$(ls dist/GuoyingRelay-*.dmg)" .dmg | sed 's/^GuoyingRelay-//')
+          DATE=$(TZ=Asia/Shanghai date +%F)
+          NOTES="## 果映伴机（GuoyingRelay）${VERSION}
+
+          发布日期：${DATE}。固定 Release：每次迭代自动覆盖更新，附件文件名含版本号。
+
+          | 文件 | 平台 |
+          | --- | --- |
+          | GuoyingRelay-${VERSION}.dmg | macOS（Apple Silicon） |
+          | GuoyingRelay-${VERSION}.msi | Windows（x64） |
+
+          下载安装与使用说明见 [relay/README.md](https://github.com/WingkySky/hongguoTV/blob/main/relay/README.md)。"
+          # 只清理 relay-stable 内 GuoyingRelay-* 前缀旧附件，不触碰其它 Release；
+          # jq select 过滤保证无旧附件时输出为空且退出码为 0（合法空状态，不让 pipefail 误判失败）
+          if gh release view relay-stable >/dev/null 2>&1; then
+            gh release view relay-stable --json assets \
+              --jq '.assets[] | select(.name | startswith("GuoyingRelay-")) | .name' \
+              | while read -r asset; do
+                  gh release delete-asset relay-stable "$asset" --yes
+                done
+            gh release upload relay-stable dist/GuoyingRelay-*.dmg dist/GuoyingRelay-*.msi --clobber
+            gh release edit relay-stable --title "果映伴机（GuoyingRelay）${VERSION}" --notes "$NOTES"
+          else
+            gh release create relay-stable \
+              --target "$GITHUB_SHA" \
+              --title "果映伴机（GuoyingRelay）${VERSION}" \
+              --notes "$NOTES" \
+              dist/GuoyingRelay-*.dmg dist/GuoyingRelay-*.msi
+          fi
