@@ -145,18 +145,30 @@ tasks.register("jpackageCompanion") {
         }
         val jdkHome = providers.gradleProperty("relay.jdk").orElse(providers.systemProperty("java.home")).get()
         val jpackageBin = if (isWindows) "jpackage.exe" else "jpackage"
-        delete(jpackageOutputDir)
-        exec {
-            commandLine(
-                File(jdkHome, "bin/$jpackageBin"),
-                "--type", if (isWindows) "msi" else "dmg",
-                "--name", "GuoyingRelay",
-                "--app-version", relayVersion,
-                "--input", inputDir.resolve("app"),
-                "--main-jar", fatJarFile.name,
-                "--dest", jpackageOutputDir.get().asFile,
+        val jpackageArgs = mutableListOf(
+            File(jdkHome, "bin/$jpackageBin"),
+            "--type", if (isWindows) "msi" else "dmg",
+            "--name", "GuoyingRelay",
+            "--app-version", relayVersion,
+            "--description", "果映 TV 伴机转码服务",
+            "--vendor", "果映 TV",
+            "--input", inputDir.resolve("app"),
+            "--main-jar", fatJarFile.name,
+            "--dest", jpackageOutputDir.get().asFile,
+        )
+        if (isWindows) {
+            // jpackage msi 默认极简安装（进度条即安装、装完不自启），普通用户无感知也无入口：
+            // --win-dir-chooser 提供选安装目录的向导页；--win-menu(+group)/--win-shortcut
+            // 提供开始菜单「果映伴机」文件夹与桌面快捷方式。完整多页向导需自建 WiX 打包，不在本期。
+            jpackageArgs += listOf(
+                "--win-dir-chooser",
+                "--win-menu",
+                "--win-menu-group", "果映伴机",
+                "--win-shortcut",
             )
         }
+        delete(jpackageOutputDir)
+        exec { commandLine(*jpackageArgs.toTypedArray()) }
         logger.lifecycle("制品：${jpackageOutputDir.get().asFile}")
     }
 }
