@@ -354,6 +354,32 @@ fun main(args: Array<String>) {
         }
         return
     }
+    if (args.contains("--ladder")) {
+        // 正式链路探针：streamLadder = GET video_tab 失效时回退签名 POST multi_video_model。
+        // 输出仅含档位元数据，不含地址与凭据。
+        val idx = args.indexOf("--ladder")
+        val episodeId = args.getOrNull(idx + 1) ?: error("用法: --ladder <episodeId>")
+        val repository = ContentRepository()
+        try {
+            val ladder = repository.streamLadder(episodeId)
+            if (ladder.renditions.isEmpty()) {
+                println("ladder episode=$episodeId; result=EMPTY")
+            } else {
+                for (r in ladder.renditions) {
+                    println(
+                        "ladder episode=$episodeId; q=${r.quality}; codec=${r.codec}; " +
+                            "${r.width}x${r.height}"
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            println("ladder episode=$episodeId; error=${e.message?.take(150)}")
+        } finally {
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
     if (args.contains("--novel-batch")) {
         // 2026-11-02 逆向发现（红果 7.3.9.32 classes8）：官方 PlayerApiService.getVideoModelRx
         // 现行使用 `POST /novel/player/video_model/v1/`（KMP 批量 body：biz_param + 
