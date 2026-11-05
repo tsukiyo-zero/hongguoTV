@@ -101,6 +101,9 @@ jobs:
   publish:
     name: 发布到固定 relay-stable Release
     needs: build
+    # 只在 fork 仓库发布：上游（源仓库）跑 CI 只验证构建，publish 自动跳过
+    # （上游 GITHUB_TOKEN 默认无 Releases 写权限，固定 Release 属于 fork）
+    if: github.repository == 'WingkySky/hongguoTV'
     runs-on: ubuntu-latest
     permissions:
       contents: write

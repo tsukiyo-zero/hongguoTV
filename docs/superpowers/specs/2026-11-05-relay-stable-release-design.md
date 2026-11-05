@@ -63,7 +63,9 @@
 
 ### 5. 边界与错误处理
 
-- 仓库 Settings → Actions 的 workflow 写权限需为 "Read and write"（个人仓库默认开启，实施时验证一次；若为只读需改设置）
+- 仓库 Settings → Actions 的 workflow 写权限需为 "Read and write"（fork 实测初始为 read，已改为 write；上游仓库不改动）
+- 发布仅限 fork 仓库执行：publish job 加 `if: github.repository == 'WingkySky/hongguoTV'`。上游 PR/合并后 main 的 CI 只验证构建，publish 显示 skipped（不算失败）；上游 GITHUB_TOKEN 默认无 Releases 写权限，且固定 Release 属于 fork
+- publish job 无需 checkout，用 `GH_REPO` 环境变量让 gh 定位仓库（工作目录无 .git 时 gh 会因无法推断仓库而失败，已实测）
 - 发布 job 失败不影响构建结论（构建冒烟红即红）；发布失败可在 Actions 页手动重跑该 job
 - `gh release create` 与 `gh release upload --clobber` 幂等：重复运行不产生重复附件，同版本名附件直接覆盖
 - 删除旧附件仅删除 relay-stable Release 内的 `GuoyingRelay-*` 前缀文件，不触碰其它 release
