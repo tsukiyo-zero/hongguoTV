@@ -86,6 +86,31 @@ class ContentRepositoryTest {
     private val videoTabModel =
         """{"code":0,"message":"SUCCESS","data":{"video_model_data":{"123":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}}}"""
 
+    @Test
+    fun preferredVideoModelSignsAllParametersBeforeSending() {
+        val requests = mutableListOf<Request>()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            requests += request
+            fixtureResponse(request, videoTabModel)
+        }.build()
+        val session = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }
+        ContentRepository(http, playbackSession = session).streamLadder("123")
+        val request = requests.single()
+        assertEquals("GET", request.method)
+        assertEquals("123", request.url.queryParameter("video_id"))
+        assertEquals("333", request.url.queryParameter("device_id"))
+        assertEquals("444", request.url.queryParameter("iid"))
+        assertEquals(request.url.queryParameter("_rticket"), request.header("x-ss-req-ticket"))
+        assertNull(request.url.queryParameter("ts"))
+            assertTrue(kotlin.math.abs(request.header("x-khronos")!!.toLong() -
+                request.url.queryParameter("_rticket")!!.toLong() / 1000) <= 1)
+        for (header in listOf("x-gorgon", "x-medusa", "x-argus", "x-ladon", "x-khronos", "x-helios"))
+            assertFalse(request.header(header).isNullOrBlank())
+        val ts = request.header("x-khronos")!!.toInt()
+        assertEquals(0, Signer().branch(request.url.encodedQuery!!, null, ts))
+    }
+
     private fun fixtureResponse(request: Request, body: String, setCookie: Boolean = false) =
         Response.Builder()
             .request(request)
@@ -323,7 +348,7 @@ class ContentRepositoryTest {
     }
 
     @Test
-    fun playbackUsesUnsignedRegisteredIdentifiersAndKeepsThemAcrossEpisodes() {
+    fun playbackSignsRegisteredIdentifiersAndKeepsThemAcrossEpisodes() {
         val requests = mutableListOf<Request>()
         val repo = repository { request ->
             requests += request
@@ -335,10 +360,10 @@ class ContentRepositoryTest {
         }
         for (request in requests) {
             assertEquals("POST", request.method)
-            for (header in listOf("x-gorgon", "x-medusa", "x-argus", "x-ladon")) assertNull(
+            for (header in listOf("x-gorgon", "x-medusa", "x-argus", "x-ladon", "x-khronos", "x-helios")) assertNotNull(
                 request.header(header)
             )
-            assertTrue(request.header("User-Agent").orEmpty().contains("tt-ok/"))
+            assertTrue(request.header("User-Agent").orEmpty().startsWith("com.phoenix.read/"))
             for (key in listOf("iid", "device_id")) {
                 val value = request.url.queryParameter(key)!!
                 assertEquals(if (key == "iid") "444" else "333", value)
@@ -486,13 +511,21 @@ class ContentRepositoryTest {
         // 换路重试：host 轮换到备选，设备身份查询参数保持一致，仅时间戳单独刷新。
         assertNotEquals(requests[0].url.host, requests[1].url.host)
         assertEquals(
-            requests[0].url.newBuilder().host(requests[1].url.host).removeAllQueryParameters("_rticket").build(),
-            requests[1].url.newBuilder().removeAllQueryParameters("_rticket").build(),
+            requests[0].url.newBuilder().host(requests[1].url.host).removeAllQueryParameters("_rticket").removeAllQueryParameters("ts").build(),
+            requests[1].url.newBuilder().removeAllQueryParameters("_rticket").removeAllQueryParameters("ts").build(),
         )
         assertNotEquals(
             requests[0].url.queryParameter("_rticket"),
             requests[1].url.queryParameter("_rticket"),
         )
+        for (request in requests) {
+            assertEquals(request.url.queryParameter("_rticket"), request.header("x-ss-req-ticket"))
+            assertNull(request.url.queryParameter("ts"))
+            assertTrue(kotlin.math.abs(request.header("x-khronos")!!.toLong() -
+                request.url.queryParameter("_rticket")!!.toLong() / 1000) <= 1)
+        }
+        assertNotEquals(requests[0].header("x-gorgon"), requests[1].header("x-gorgon"))
+        assertNotEquals(requests[0].header("x-medusa"), requests[1].header("x-medusa"))
         // 重试强制新建连接，首拍不携带。
         assertNull(requests[0].header("Connection"))
         assertEquals("close", requests[1].header("Connection"))
