@@ -18,10 +18,15 @@ import java.util.concurrent.atomic.AtomicBoolean
 /** A one-use, short-lived LAN form. No cookies, platform credentials or external resources. */
 class PhoneSearchServer(
     address: String,
-    private val onQuery: (String) -> Unit,
+    private val onQuery: (String?, String?) -> Unit,
     private val onExpired: () -> Unit = {},
     ttlMillis: Long = 300_000,
     private val onConnected: () -> Unit = {},
+    private val pageTitle: String = "在电视上搜索",
+    private val pagePrompt: String = "输入剧名，电视会搜索全部短剧和漫剧。",
+    private val inputPlaceholder: String = "输入剧名或关键词",
+    private val extraFieldLabel: String? = null,
+    private val extraFieldPlaceholder: String? = null,
 ) : Closeable {
     private val stopped = AtomicBoolean(false)
     private val consumed = AtomicBoolean(false)
@@ -111,10 +116,14 @@ class PhoneSearchServer(
             return respond(socket, 404, "页面不存在")
         if (request[0] == "GET" && request[1] == "/$token") {
             onConnected()
+            val extraInput =
+                if (extraFieldLabel == null) ""
+                else
+                    "<p>$extraFieldLabel</p><input name=\"extra\" maxlength=\"80\" placeholder=\"$extraFieldPlaceholder\" autocomplete=\"off\">"
             return respond(
                 socket,
                 200,
-                """<h1>在电视上搜索</h1><p>输入剧名，电视会搜索全部短剧和漫剧。</p><form method="post" action="/$token/submit"><input name="query" maxlength="80" required autofocus placeholder="输入剧名或关键词" autocomplete="off"><button>发送到电视</button></form><p>页面仅在电视的手机输入窗口打开期间有效，最长 5 分钟。</p>""",
+                """<h1>$pageTitle</h1><p>$pagePrompt</p><form method="post" action="/$token/submit"><input name="query" maxlength="80" placeholder="$inputPlaceholder" autocomplete="off">$extraInput<button>发送到电视</button></form><p>页面仅在电视的手机输入窗口打开期间有效，最长 5 分钟。</p>""",
             )
         }
         if (request[0] != "POST" || request[1] != "/$token/submit")
@@ -136,19 +145,29 @@ class PhoneSearchServer(
             if (n < 0) return
             offset += n
         }
+        // 字段名/数量严格（单字段恰一个 query；双字段恰 query+extra），但值均可留空——
+        // 至少填一项即可，TV 端只回填手机上实际提交的字段（留空的保持电视原值）。
+        val expectedNames = if (extraFieldLabel == null) listOf("query") else listOf("query", "extra")
         val fields = String(body, Charsets.UTF_8).split('&').map { it.split('=', limit = 2) }
-        if (fields.size != 1 || fields[0].size != 2 || fields[0][0] != "query")
-            return respond(socket, 400, "请填写剧名")
+        if (fields.size != expectedNames.size || fields.map { it.getOrNull(0) } != expectedNames)
+            return respond(socket, 400, "请求字段不匹配")
         val query = runCatching { URLDecoder.decode(fields[0][1], "UTF-8").trim() }.getOrNull()
-        if (query.isNullOrBlank() || query.length > 80 || query.any { it.isISOControl() })
-            return respond(socket, 400, "请输入 1—80 个字符的剧名")
+        var extra: String? = null
+        if (extraFieldLabel != null) {
+            extra = runCatching { URLDecoder.decode(fields[1][1], "UTF-8").trim() }.getOrNull()
+        }
+        fun malformed(value: String?): Boolean =
+            value != null && (value.length > 80 || value.any { it.isISOControl() })
+        if (malformed(query) || malformed(extra)) return respond(socket, 400, "请输入 1—80 个字符")
+        if (query.isNullOrBlank() && extra.isNullOrBlank())
+            return respond(socket, 400, "请至少填写一项")
         if (stopped.get() || System.nanoTime() >= deadline || !consumed.compareAndSet(false, true))
             return respond(socket, 410, "二维码已失效")
         try {
-            respond(socket, 200, "<h1>已发送到电视</h1><p>请回到电视查看搜索结果。</p>")
+            respond(socket, 200, "<h1>已发送到电视</h1><p>请回到电视查看结果。</p>")
         } finally {
             close()
-            onQuery(query)
+            onQuery(query, extra)
         }
     }
 

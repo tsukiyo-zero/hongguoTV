@@ -727,6 +727,41 @@ constructor(
         return null
     }
 
+    /** 诊断旁路：返回原始 video_list 各档（含 bytevc2），不参与正式播放路径；relay 探针专用。 */
+    fun rawVideoModel(id: String): List<Rendition> {
+        require(id.matches(Regex("[0-9]{1,30}")))
+        val entry = tabVideoModel(id, playbackSession.profile(http)) ?: return emptyList()
+        val model = entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
+        return model.optJSONArray("video_list")?.objects().orEmpty().mapNotNull { row ->
+            runCatching {
+                val meta = row.optJSONObject("video_meta") ?: return@runCatching null
+                val encryption = row.optJSONObject("encrypt_info") ?: return@runCatching null
+                val codec = meta.str("codec_type").lowercase()
+                val url = cleanUrl(row.str("main_url"))
+                if (codec.isBlank() || (!url.startsWith("https://") && !url.startsWith("http://")))
+                    return@runCatching null
+                val key =
+                    encryption
+                        .str("spade_a")
+                        .takeIf(String::isNotBlank)
+                        ?.let(MediaCrypto::deriveKey)
+                if (
+                    key == null &&
+                        encryption.opt("encrypt") !in listOf(false, 0, "0", "false")
+                )
+                    return@runCatching null
+                Rendition(
+                    qualityNumber(meta.str("definition")),
+                    codec,
+                    dimension(meta, "vwidth", "width"),
+                    dimension(meta, "vheight", "height"),
+                    url,
+                    key,
+                )
+            }.getOrNull()
+        }
+    }
+
     fun stream(
         id: String,
         maxQuality: Int = 1080,

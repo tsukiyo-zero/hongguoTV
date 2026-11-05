@@ -28,6 +28,7 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
 import com.hongguotv.core.*
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class MainActivity : Activity() {
@@ -45,6 +46,21 @@ class MainActivity : Activity() {
     private val prefetchWorker = Executors.newSingleThreadExecutor()
     private var prefetchHttp: okhttp3.OkHttpClient? = null
     private var playbackHttp: okhttp3.OkHttpClient? = null
+
+    // 伴机兜底（bytevc2 锁定集）：会话与尝试标记随每次 playEpisode 重置。
+    private var relayAttempted = false
+    private var relaySessionId: String? = null
+    private var relaySlowCount = 0
+    private var relaySlowHintShown = false
+    private var relaySpeedWatch: Runnable? = null
+    private val relayStore by lazy { RelayStore(this) }
+    private val relayHttp: okhttp3.OkHttpClient by lazy {
+        okhttp3.OkHttpClient.Builder()
+            .connectTimeout(2, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.SECONDS)
+            .callTimeout(8, TimeUnit.SECONDS)
+            .build()
+    }
     private val preparedNext =
         PreparedSlot<RemoteVideo>({ android.os.SystemClock.elapsedRealtime() })
     private var prefetchJob: java.util.concurrent.Future<*>? = null
@@ -280,6 +296,7 @@ class MainActivity : Activity() {
     private var transportPlay: TextView? = null
     private var sleepButton: TextView? = null
     private var speedDialog: AlertDialog? = null
+    private var relayDialog: AlertDialog? = null
     private var pendingSeek: Long? = null
     private var playError = false
     private var lastSaved = 0L
@@ -977,7 +994,7 @@ class MainActivity : Activity() {
                         nav[tab],
                         repository::searchSuggestions,
                         ::runSearch,
-                        { anchor -> tvTools.phoneInput(anchor, ::runSearch) },
+                        { anchor -> tvTools.phoneInput(anchor) { query, _ -> query?.let { runSearch(it) } } },
                         ::returnToDiscovery,
                     )
                 tvSearchPanel = panel
@@ -1034,7 +1051,7 @@ class MainActivity : Activity() {
                     addButton(searchRow, "手机输入") {
                         (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
                             .hideSoftInputFromWindow(input.windowToken, 0)
-                        tvTools.phoneInput(phone) { runSearch(it) }
+                        tvTools.phoneInput(phone) { query, _ -> query?.let { runSearch(it) } }
                     }
                 phone.nextFocusUpId = input.nextFocusUpId
                 val keyboard =
@@ -2779,6 +2796,7 @@ class MainActivity : Activity() {
         saveProgress()
         library.flush()
         invalidatePage()
+        relayStopAsync() // 换集即结束上一会话；伴机兜底会另起新会话
         favoriteMonitor.stop()
         releaseCatalogViews()
         if (reuse) {
@@ -2820,6 +2838,9 @@ class MainActivity : Activity() {
         group = episodeIndex / 20
         panel = false
         playError = false
+        relayAttempted = false
+        relaySlowHintShown = false
+        stopRelaySpeedWatch()
         playbackReady = false
         episodeDuration = 0
         quality = ""
@@ -2944,31 +2965,7 @@ class MainActivity : Activity() {
                 currentRendition = opened.rendition
                 currentTiers = opened.tiers
                 val p =
-                    player
-                        ?: run {
-                            val load =
-                                DefaultLoadControl.Builder()
-                                    .setBufferDurationsMs(15000, 30000, 1000, 2000)
-                                    .setTargetBufferBytes(12 * 1024 * 1024)
-                                    .build()
-                            val renderers =
-                                androidx.media3.exoplayer
-                                    .DefaultRenderersFactory(this)
-                                    .setEnableDecoderFallback(true)
-                            ExoPlayer.Builder(this, renderers).setLoadControl(load).build().also {
-                                player = it
-                                playerView?.player = it
-                                it.setAudioAttributes(
-                                    AudioAttributes.Builder()
-                                        .setUsage(C.USAGE_MEDIA)
-                                        .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
-                                        .build(),
-                                    true,
-                                )
-                                it.setHandleAudioBecomingNoisy(true)
-                                it.addAnalyticsListener(playbackDriftListener(it))
-                            }
-                        }
+                    ensurePlayer()
                 p.setPlaybackSpeed(library.playbackSpeed)
                 val listener =
                     object : Player.Listener {
@@ -3484,6 +3481,370 @@ class MainActivity : Activity() {
         return if (ideal != null && rendition.quality < ideal) label + "（自动降清）" else label
     }
 
+    /** 懒建播放器（正式路径与伴机路径共用）；已存在则原样返回。 */
+    private fun ensurePlayer(): ExoPlayer =
+        player
+            ?: run {
+                val load =
+                    DefaultLoadControl.Builder()
+                        .setBufferDurationsMs(15000, 30000, 1000, 2000)
+                        .setTargetBufferBytes(12 * 1024 * 1024)
+                        .build()
+                val renderers =
+                    androidx.media3.exoplayer
+                        .DefaultRenderersFactory(this)
+                        .setEnableDecoderFallback(true)
+                ExoPlayer.Builder(this, renderers).setLoadControl(load).build().also {
+                    player = it
+                    playerView?.player = it
+                    it.setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(C.USAGE_MEDIA)
+                            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                            .build(),
+                        true,
+                    )
+                    it.setHandleAudioBecomingNoisy(true)
+                    it.addAnalyticsListener(playbackDriftListener(it))
+                }
+            }
+
+    /** 解析 bytevc2 档并让伴机起转码会话；失败抛 RelayException。 */
+    private fun relayOpen(episodeId: String): RelayPlayback {
+        val host = relayStore.host
+        if (host.isBlank()) throw RelayException("伴机地址未配置，请在播放设置里填写")
+        val client = RelayClient(relayHttp, host, relayStore.token)
+        val health = client.health() ?: throw RelayException("伴机不可达（$host），请确认其电脑已启动伴机")
+        if (!health.optBoolean("ffmpegOk", false))
+            throw RelayException("伴机缺少 VVC 解码器，请在其电脑上安装 ffmpeg 7+")
+        health.optJSONObject("session")?.takeIf { it.optString("state") == "RUNNING" }
+            ?.let { throw RelayException("伴机正被其他播放占用") }
+        val pick =
+            repository.rawVideoModel(episodeId)
+                .filter { it.codec in setOf("bytevc2", "bvc2") }
+                .maxByOrNull { it.quality }
+                ?: throw RelayException("本集没有 bytevc2 档位，伴机无用武之地")
+        val keyB64 =
+            pick.key?.let { android.util.Base64.encodeToString(it, android.util.Base64.NO_WRAP) }
+        val (sessionId, hlsUrl) =
+            client.createSession(
+                pick.url,
+                keyB64,
+                if (pick.quality > 0) "${pick.quality}P" else "自动",
+            ) ?: throw RelayException("伴机会话创建失败（可能正被占用）")
+        val label =
+            buildString {
+                append(if (pick.quality > 0) "${pick.quality}P" else "自动")
+                if ((pick.width ?: 0) > 0 && (pick.height ?: 0) > 0)
+                    append(" · ${pick.width}×${pick.height}")
+            }
+        return RelayPlayback(sessionId, hlsUrl, label)
+    }
+
+    /** 把当前播放器切到伴机 HLS（复用既有进度/界面机制）；须在主线程调用。 */
+    private fun startRelaySource(
+        p: ExoPlayer,
+        hlsUrl: String,
+        id: String,
+        position: Long,
+        qualityLabel: String,
+    ) {
+        p.stop()
+        p.clearMediaItems()
+        playbackReady = false
+        playError = false
+        panel = false
+        quality = "伴机转码 $qualityLabel"
+        progressBar.visibility = View.VISIBLE
+        playbackText.text = "正在由伴机转码…"
+        controls.removeAllViews()
+        controls.visibility = View.GONE
+        val source =
+            androidx.media3.exoplayer.hls.HlsMediaSource.Factory(
+                androidx.media3.datasource.DefaultDataSource.Factory(this),
+            )
+                .createMediaSource(
+                    MediaItem.Builder()
+                        .setMediaId(id)
+                        .setUri(hlsUrl)
+                        .setMimeType(MimeTypes.APPLICATION_M3U8)
+                        .build(),
+                )
+        p.setMediaSource(source)
+        p.seekTo(position.coerceAtLeast(0))
+        p.prepare()
+        p.playWhenReady = foreground && requestedAutoplay && !pausedForLifecycle
+    }
+
+    /** 伴机兜底入口（playerFailure 面板前调用）：起会话成功则切 HLS，失败回落错误面板。 */
+    private fun attemptRelayPlayback(position: Long, autoplay: Boolean) {
+        val data = detail
+        if (data == null) {
+            playerFailure(RelayException("伴机不可用"))
+            return
+        }
+        playbackText.text = "正在由伴机转码…"
+        progressBar.visibility = View.VISIBLE
+        val requestedId = data.episodes[episodeIndex]
+        val ticket = generation
+        work(
+            { relayOpen(requestedId) },
+            { result ->
+                relaySessionId = result.sessionId
+                // 正式路径监听器可能仍挂着（硬解失败路径），换上伴机专用监听避免双重处理。
+                playerListener?.let { player?.removeListener(it) }
+                playerListener = null
+                val p = ensurePlayer()
+                val relayListener =
+                    object : Player.Listener {
+                        private fun active() =
+                            player === p &&
+                                generation == ticket &&
+                                p.currentMediaItem?.mediaId == requestedId
+
+                        override fun onPlaybackStateChanged(state: Int) {
+                            if (!active()) return
+                            if (state == Player.STATE_READY) {
+                                playbackReady = true
+                                episodeDuration = p.duration.coerceAtLeast(0)
+                                if (hud.visibility == View.VISIBLE) updatePlaybackText()
+                            }
+                            syncMediaSession()
+                            if (state == Player.STATE_ENDED) {
+                                saveProgress(true)
+                                if (
+                                    library.autoNext &&
+                                        !sleepStopped &&
+                                        !sleepTimer.episodeEnded() &&
+                                        episodeIndex + 1 < data.episodes.size
+                                ) {
+                                    playEpisode(episodeIndex + 1, 0, true)
+                                }
+                            }
+                        }
+
+                        override fun onPlayerError(error: PlaybackException) {
+                            if (active()) playerFailure(error)
+                        }
+                    }
+                playerListener = relayListener
+                p.addListener(relayListener)
+                startRelaySource(p, result.hlsUrl, requestedId, position, result.qualityLabel)
+                startRelaySpeedWatch(ticket)
+                android.util.Log.i(
+                    "HongguoTV",
+                    "Relay playback started episode=${episodeIndex + 1} position=$position quality=${result.qualityLabel}",
+                )
+            },
+            { problem ->
+                // 伴机失败：回落既有错误面板（relayAttempted 已置位，不会循环重试伴机）。
+                playerFailure(problem)
+            },
+        )
+    }
+
+    /** 结束伴机会话（尽力而为，网络失败静默——伴机侧有空闲超时兜底）。 */
+    private fun relayStopAsync() {
+        val sessionId = relaySessionId ?: return
+        relaySessionId = null
+        val host = relayStore.host
+        if (host.isBlank()) return
+        Thread {
+            runCatching { RelayClient(relayHttp, host, relayStore.token).stop(sessionId) }
+        }.apply { isDaemon = true }.start()
+    }
+
+    /** 轻量性能监控：转码速度持续 <1x 实时提示一次（伴机 /health 的 speed 字段）。 */
+    private fun startRelaySpeedWatch(ticket: Int) {
+        stopRelaySpeedWatch()
+        val poll =
+            object : Runnable {
+                override fun run() {
+                    if (generation != ticket || relaySessionId == null) return
+                    val host = relayStore.host
+                    Thread {
+                            val speed =
+                                runCatching {
+                                        RelayClient(relayHttp, host, relayStore.token)
+                                            .health()
+                                            ?.optJSONObject("session")
+                                            ?.optDouble("speed")
+                                            ?: Double.NaN
+                                    }
+                                    .getOrDefault(Double.NaN)
+                            main.post {
+                                if (generation != ticket || relaySessionId == null) return@post
+                                if (!speed.isNaN() && speed < 1.0) {
+                                    relaySlowCount++
+                                    if (relaySlowCount >= 2 && !relaySlowHintShown) {
+                                        relaySlowHintShown = true
+                                        playbackText.text =
+                                            "伴机性能不足（转码 ${"%.1f".format(speed)}x 实时），建议降低清晰度或稍后重试"
+                                    }
+                                } else relaySlowCount = 0
+                                main.postDelayed(this, 10_000)
+                            }
+                        }.apply { isDaemon = true }.start()
+                }
+            }
+        relaySpeedWatch = poll
+        main.postDelayed(poll, 8_000)
+    }
+
+    private fun stopRelaySpeedWatch() {
+        relaySpeedWatch?.let { main.removeCallbacks(it) }
+        relaySpeedWatch = null
+        relaySlowCount = 0
+    }
+
+    /** 伴机设置：开关 + 局域网地址 + 连接测试。 */
+    private fun showRelaySettings(anchor: TextView) {
+        if (relayDialog != null) return
+        val container =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(24), dp(16), dp(24), 0)
+            }
+        val toggle =
+            Switch(this).apply {
+                isChecked = relayStore.enabled
+                text = "启用伴机代解码（仅 bytevc2 兜底）"
+            }
+        val hostInput =
+            EditText(this).apply {
+                hint = "伴机地址，如 192.168.1.100:46521"
+                setText(relayStore.host)
+                setSingleLine(true)
+            }
+        val tokenInput =
+            EditText(this).apply {
+                hint = "伴机令牌（伴机电脑启动日志可查）"
+                setText(relayStore.token)
+                setSingleLine(true)
+            }
+        container.addView(toggle)
+        container.addView(hostInput)
+        container.addView(tokenInput)
+        val searchStatus =
+            TextView(this).apply {
+                setTextColor(muted)
+                textSize = 13f
+                setPadding(0, dp(6), 0, 0)
+            }
+        val toolsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val searchButton = Button(this).apply { text = "搜索伴机" }
+        val qrButton = Button(this).apply { text = "扫码输入" }
+        searchButton.setOnClickListener {
+            it.isEnabled = false
+            searchStatus.text = "正在搜索局域网伴机（约 5 秒）…"
+            val started =
+                RelayDiscovery.discover(this@MainActivity, 5_000) { hosts ->
+                    searchButton.isEnabled = true
+                    when {
+                        hosts.isEmpty() ->
+                            searchStatus.text = "未发现伴机：请确认其电脑已启动伴机，或改用扫码/手动输入"
+                        hosts.size == 1 -> {
+                            hostInput.setText(hosts.first())
+                            searchStatus.text = "已找到伴机 ${hosts.first()}"
+                        }
+                        else -> {
+                            searchStatus.text = "发现 ${hosts.size} 台伴机，请选择"
+                            AlertDialog.Builder(this@MainActivity)
+                                .setTitle("发现多台伴机")
+                                .setItems(hosts.toTypedArray()) { _, picked ->
+                                    hostInput.setText(hosts[picked])
+                                    searchStatus.text = "已选用 ${hosts[picked]}"
+                                }
+                                .show()
+                        }
+                    }
+                }
+            if (!started) {
+                searchButton.isEnabled = true
+                searchStatus.text = "此设备不支持自动发现，请改用扫码或手动输入"
+            }
+        }
+        qrButton.setOnClickListener {
+            tvTools.phoneInput(
+                anchor,
+                inputTitle = "手机输入伴机地址",
+                pageTitle = "在电视上输入",
+                pagePrompt = "输入伴机的局域网地址与令牌（示例 192.168.1.100:46521）。",
+                inputPlaceholder = "伴机地址",
+                extraFieldLabel = "伴机令牌",
+                extraFieldPlaceholder = "8 位，伴机电脑启动日志可查",
+            ) { host, token ->
+                // 手机上留空的字段保持电视上原值（地址已配置时只需补令牌，反之亦然）。
+                val normalized = RelayClient.normalizeHost(host ?: hostInput.text.toString())
+                val trimmedToken = token?.trim().takeUnless { it.isNullOrEmpty() } ?: tokenInput.text.toString()
+                when {
+                    normalized == null ->
+                        Toast.makeText(this@MainActivity, "无法确定伴机地址，请检查手机输入或地址栏", Toast.LENGTH_SHORT).show()
+                    trimmedToken.isBlank() ->
+                        Toast.makeText(this@MainActivity, "令牌不能为空（伴机电脑启动日志可查）", Toast.LENGTH_SHORT).show()
+                    else -> {
+                        hostInput.setText(normalized)
+                        tokenInput.setText(trimmedToken)
+                        searchStatus.text = "已填入 $normalized"
+                    }
+                }
+            }
+        }
+        toolsRow.addView(searchButton, LinearLayout.LayoutParams(0, -2, 1f))
+        toolsRow.addView(qrButton, LinearLayout.LayoutParams(0, -2, 1f))
+        container.addView(toolsRow, LinearLayout.LayoutParams(-1, -2))
+        container.addView(searchStatus)
+        val dialog =
+            AlertDialog.Builder(this)
+                .setTitle("伴机代解码")
+                .setView(container)
+                .setPositiveButton("保存", null)
+                .setNeutralButton("测试连接", null)
+                .setNegativeButton("取消", null)
+                .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val normalized = RelayClient.normalizeHost(hostInput.text.toString())
+                if (toggle.isChecked && (normalized == null || tokenInput.text.toString().isBlank())) {
+                    val reason = if (normalized == null) "地址格式不对（示例 192.168.1.100:46521）" else "启用伴机需填写令牌（见伴机电脑启动日志）"
+                    Toast.makeText(this, reason, Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                relayStore.enabled = toggle.isChecked
+                if (normalized != null) relayStore.host = normalized
+                relayStore.token = tokenInput.text.toString().trim()
+                relayDialog?.dismiss()
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                val normalized = RelayClient.normalizeHost(hostInput.text.toString())
+                if (normalized == null) {
+                    Toast.makeText(this, "地址格式不对（示例 192.168.1.100:46521）", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                Toast.makeText(this, "正在连接 $normalized …", Toast.LENGTH_SHORT).show()
+                val token = tokenInput.text.toString().trim()
+                Thread {
+                    val health = RelayClient(relayHttp, normalized, token).health()
+                    val message =
+                        when {
+                            health == null -> "伴机不可达，请确认其电脑已启动伴机"
+                            !health.optBoolean("ffmpegOk", false) -> "已连接，但伴机缺少 VVC 解码器（需 ffmpeg 7+）"
+                            else -> "连接成功：果映伴机 ${health.optString("version")}"
+                        }
+                    runOnUiThread {
+                        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                    }
+                }.apply { isDaemon = true }.start()
+            }
+        }
+        dialog.setOnDismissListener {
+            relayDialog = null
+            if (anchor.isAttachedToWindow) anchor.requestFocus()
+        }
+        relayDialog = dialog
+        dialog.show()
+    }
+
     private fun playerFailure(problem: Throwable) {
         lastPlaybackFailure = playbackFailureSummary(problem)
         lastPlaybackDetail = diagnosticDetail(problem)
@@ -3526,6 +3887,16 @@ class MainActivity : Activity() {
                 playEpisode(episodeIndex, retryPosition, retryAutoplay, autoDowngrade = true)
                 return
             }
+        }
+        // 伴机兜底：bytevc2 锁定集（阶梯耗尽）或硬解失败时，面板展示前先试一次局域网伴机
+        // 转码；成功则把当前播放器切到伴机 HLS，失败原样落入下方错误面板，行为向后兼容。
+        val relayEligible =
+            noPlayableQuality ||
+                (problem is PlaybackException && problem.errorCode in 3000..4999)
+        if (!relayAttempted && relayStore.enabled && relayEligible) {
+            relayAttempted = true
+            attemptRelayPlayback(retryPosition, retryAutoplay)
+            return
         }
         playError = true
         player?.pause()
@@ -3823,6 +4194,7 @@ class MainActivity : Activity() {
                             "清晰度 ${library.maxQuality}P",
                             "画面 ${library.frameMode.label}",
                             "定时 ${sleepTimer.label()}",
+                            "伴机代解码 ${if (relayStore.enabled) "开" else "关"}",
                             "从头播放",
                             "重置设备能力记录",
                         ),
@@ -3835,11 +4207,12 @@ class MainActivity : Activity() {
                                         1 -> showQualityPicker(more, true)
                                         2 -> showFramePicker(more, true)
                                         3 -> showSleepPicker(more)
-                                        4 -> {
+                                        4 -> showRelaySettings(more)
+                                        5 -> {
                                             seekTo(0)
                                             hidePanel()
                                         }
-                                        5 -> {
+                                        6 -> {
                                             val count = CodecCapabilities.learnedCount()
                                             CodecCapabilities.resetLearned()
                                             android.util.Log.i(
@@ -4012,6 +4385,7 @@ class MainActivity : Activity() {
         social.reset()
         cancelRecovery()
         cancelPrefetchState(keepPrepared)
+        relayStopAsync()
         mediaSession.deactivate()
         tvTools.close()
         val wasForeground = foreground
