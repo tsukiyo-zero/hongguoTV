@@ -33,10 +33,10 @@ internal class RelayWindow private constructor(private val frame: Frame) {
             add(tokenField.apply { font = bodyFont })
             add(activityLabel.apply { font = bodyFont })
             add(
-                Label("关闭本窗口不会停止转码；程序驻留于屏幕右上角菜单栏（橙色圆点）。")
+                Label(residencyHint())
                     .apply { font = smallFont },
             )
-            add(Label("退出请点菜单栏图标 → 退出；电视端用「搜索伴机」自动发现本机。").apply { font = smallFont })
+            add(Label("退出请点${trayWord()}图标 → 退出；电视端用「搜索伴机」自动发现本机。").apply { font = smallFont })
             addWindowListener(
                 object : WindowAdapter() {
                     override fun windowClosing(event: WindowEvent?) = hide()
@@ -79,6 +79,15 @@ internal class RelayWindow private constructor(private val frame: Frame) {
     }
 
     companion object {
+        private val osIsWindows = System.getProperty("os.name").orEmpty().contains("Windows", true)
+
+        /** 驻留位置提示：macOS=菜单栏圆点；Windows=任务栏右下角托盘（Win11 默认收在溢出区）。 */
+        private fun residencyHint(): String =
+            if (osIsWindows) "关闭本窗口不会停止转码；程序驻留于任务栏右下角托盘（Win11 默认收在「^」溢出区，可拖出常显）。"
+            else "关闭本窗口不会停止转码；程序驻留于屏幕右上角菜单栏（橙色圆点）。"
+
+        private fun trayWord(): String = if (osIsWindows) "托盘" else "菜单栏"
+
         fun install(): RelayWindow? =
             runCatching {
                 RelayWindow(Frame("果映伴机"))
