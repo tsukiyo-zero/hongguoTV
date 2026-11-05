@@ -61,7 +61,7 @@ jobs:
       - name: 冒烟（启动产物 + /health 断言 ffmpegOk=true）
         shell: bash
         run: |
-          VERSION="${{ inputs.version }}"
+          VERSION="${{ inputs.version || '1.0.0' }}"
           if [ "$RUNNER_OS" = "macOS" ]; then
             hdiutil attach -nobrowse "relay/backend/build/jpackage/GuoyingRelay-${VERSION}.dmg"
             BIN="/Volumes/GuoyingRelay/GuoyingRelay.app/Contents/MacOS/GuoyingRelay"
