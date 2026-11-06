@@ -302,20 +302,12 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
     private fun validateApk(update: AppUpdate) {
         if (!UpdateFiles.verify(apk, update)) throw IOException("安装包校验未通过，请重新下载")
         val pm = activity.packageManager
-        val flags =
-            if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES
-            else PackageManager.GET_SIGNATURES
+        val flags = UpdateApkSignatures.flags()
         val candidate = pm.getPackageArchiveInfo(apk.path, flags) ?: throw IOException("安装包无法识别")
         val installed = pm.getPackageInfo(activity.packageName, flags)
         val version =
             if (Build.VERSION.SDK_INT >= 28) candidate.longVersionCode
             else candidate.versionCode.toLong()
-        fun signers(info: android.content.pm.PackageInfo) =
-            (if (Build.VERSION.SDK_INT >= 28) info.signingInfo?.apkContentsSigners
-                else info.signatures)
-                ?.map { it.toCharsString() }
-                ?.toSet()
-                .orEmpty()
         // ApplicationInfo.minSdkVersion is unavailable on API 23. The system installer
         // still enforces the APK's declared minimum there; retain all hash/signature checks.
         if (
@@ -324,11 +316,10 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
                 candidate.versionName != update.versionName ||
                 version <= BuildConfig.VERSION_CODE ||
                 (Build.VERSION.SDK_INT >= 24 &&
-                    candidate.applicationInfo?.minSdkVersion != update.minSdk) ||
-                signers(installed).isEmpty() ||
-                signers(installed) != signers(candidate)
+                    candidate.applicationInfo?.minSdkVersion != update.minSdk)
         )
-            throw IOException("新版包名、版本或签名不匹配，已阻止安装")
+            throw IOException("新版包名或版本不匹配，已阻止安装")
+        UpdateApkSignatures.verify(installed, candidate)
     }
 
     /** 依次尝试电视上可能存在的安装入口；返回 true 表示已拉起某个界面。 */
