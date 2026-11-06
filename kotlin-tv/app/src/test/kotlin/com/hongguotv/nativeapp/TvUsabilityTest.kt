@@ -33,6 +33,33 @@ class TvUsabilityTest {
         else if (view is TextView) listOf(view) else emptyList()
 
     @Test
+    fun startupLocalHistoryRendersRecordsWithoutSearchingAnEmptyKeyword() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+        val activity = controller.get()
+        try {
+            val library = get(activity, "library") as Library
+            (get(library, "loader") as ExecutorService).submit {}.get(5, TimeUnit.SECONDS)
+            val account = get(activity, "cloudAccount") as AccountController
+            (get(account, "worker") as ExecutorService).submit {}.get(5, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper()
+            library.save(WatchProgress(Series("123", "启动历史回归"), "456", 0, 1000, 90000, false, 1000))
+            set(activity, "tab", 4)
+            set(activity, "query", "")
+            activity.javaClass.getDeclaredMethod("showCatalog", Boolean::class.javaPrimitiveType,
+                Boolean::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
+                .apply { isAccessible = true }.invoke(activity, true, false, false)
+            ShadowLooper.idleMainLooper()
+            val root = get(activity, "root") as View
+            val labels = texts(root).map { it.text.toString() }
+            assertTrue(labels.contains("本机历史"))
+            assertFalse(labels.any { it.contains("Failed requirement") || it.contains("正在加载…") })
+            assertEquals(listOf("123"), (get(activity, "catalog") as List<*>).filterIsInstance<Series>().map { it.id })
+        } finally {
+            controller.destroy()
+        }
+    }
+
+    @Test
     fun detailKeepsPlaybackCommentsAndSeparateSecondaryActions() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).create()
         val activity = controller.get()
