@@ -68,6 +68,9 @@ data class CloudProgress(
     val episodeCount: Int = 0,
 )
 
+internal class EmptyAccountResponseException(val detail: String) :
+    IOException("账号接口返回空响应，请稍后重试")
+
 internal fun cloudResponse(response: okhttp3.Response): String {
     if (!response.isSuccessful) throw IOException("账号请求失败（HTTP ${response.code}）")
     val body = response.body ?: throw IOException("账号接口响应为空")
@@ -84,7 +87,10 @@ internal fun cloudResponse(response: okhttp3.Response): String {
     val bytes = out.toByteArray()
     if (bytes.size > limit) throw IOException("账号接口响应过大")
     val text = String(bytes, Charsets.UTF_8)
-    if (text.isBlank()) throw IOException("账号接口返回空响应，请稍后重试")
+    if (text.isBlank()) {
+        val protocol = if (response.protocol == okhttp3.Protocol.HTTP_2) "h2" else "h1"
+        throw EmptyAccountResponseException("HTTP ${response.code}/${bytes.size}B/$protocol")
+    }
     return text
 }
 
@@ -151,7 +157,19 @@ class CloudAccountClient(private val http: OkHttpClient) {
                 http.newBuilder().retryOnConnectionFailure(false).build()
             else http
         return transport.newCall(request.build()).execute().use { response ->
-            val json = JSONObject(cloudResponse(response))
+            val text = try {
+                cloudResponse(response)
+            } catch (error: EmptyAccountResponseException) {
+                // 只暴露固定阶段与传输结果，不携带请求地址、账号、Cookie 或设备身份。
+                val stage = when (path) {
+                    "/reading/user/info/v1/" -> "账号资料"
+                    "/reading/bookapi/read_progress/list/v1/" -> "云端历史列表"
+                    "/reading/bookapi/multi-detail/v1/" -> "云端剧集资料"
+                    else -> "账号"
+                }
+                throw IOException("${stage}接口返回空响应（${error.detail}），可刷新重试；持续失败可尝试重新登录")
+            }
+            val json = JSONObject(text)
             val code = json.optInt("code", -1)
             if (code != 0) throw IOException("账号接口不可用（错误码 $code），请重新登录或稍后重试")
             json

@@ -61,6 +61,23 @@ class CloudAccountTest {
     }
 
     @Test
+    fun historyEmptyResponsesIdentifyTheFailingStageWithoutLeakingIdentity() {
+        for (failureStage in listOf("read_progress", "multi-detail")) {
+            val client = CloudAccountClient(http { request ->
+                if (request.url.encodedPath.contains(failureStage)) ""
+                else """{"code":0,"video_data":[{"series_id":"123","vid":"456","vid_index":2}]}"""
+            })
+            val error = assertThrows(IOException::class.java) { client.history(credentials) }
+            val message = error.message.orEmpty()
+            assertTrue(message.contains(if (failureStage == "read_progress") "云端历史列表" else "云端剧集资料"))
+            assertTrue(message.contains("HTTP 200/0B/h1"))
+            assertFalse(message.contains(credentials.cookie))
+            assertFalse(message.contains(credentials.deviceId))
+            assertFalse(message.contains("https://"))
+        }
+    }
+
+    @Test
     fun historyLoadsMetadataWithoutLosingPlaybackPosition() {
         val client =
             CloudAccountClient(

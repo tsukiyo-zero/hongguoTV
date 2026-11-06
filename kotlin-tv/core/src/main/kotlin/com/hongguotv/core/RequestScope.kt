@@ -59,6 +59,13 @@ class RequestScope {
             }
         }
 
+        /** 在签名、状态提交和重试前检查取消，避免旧任务污染下一次播放。 */
+        fun ensureActive() {
+            val owner = current.get()
+            if (Thread.currentThread().isInterrupted || owner != null && synchronized(owner) { owner.cancelled })
+                throw java.io.InterruptedIOException("请求已取消")
+        }
+
         fun <T> execute(call: Call, consume: (Response) -> T): T {
             val owner = current.get()
             owner?.attach(call)

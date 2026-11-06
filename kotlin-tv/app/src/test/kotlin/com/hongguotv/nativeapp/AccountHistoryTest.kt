@@ -2,6 +2,7 @@ package com.hongguotv.nativeapp
 
 import android.app.Activity
 import com.hongguotv.core.*
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -88,6 +89,39 @@ class AccountHistoryTest {
             assertFalse(texts(root).contains("云端独有记录"))
         } finally {
             controller.destroy()
+        }
+    }
+
+    @Test
+    fun failedHistoryRefreshKeepsPreviouslyLoadedRowsAndReportsItsStage() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val account = AccountController(controller.get()) {}
+        fun drain() {
+            val worker = AccountController::class.java.getDeclaredField("worker").apply { isAccessible = true }
+                .get(account) as java.util.concurrent.ExecutorService
+            worker.submit {}.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        }
+        try {
+            drain()
+            val http = okhttp3.OkHttpClient.Builder().addInterceptor { chain ->
+                okhttp3.Response.Builder().request(chain.request()).protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200).message("OK").body("".toResponseBody()).build()
+            }.build()
+            field(account, "client", CloudAccountClient(http))
+            field(account, "credentials", AccountCredentials("test-only"))
+            field(account, "profile", CloudProfile("a", "账号 A"))
+            val rows = listOf(CloudProgress(Series("123", "已读取的记录"), "456", 2, 12000, 90000, 1000))
+            field(account, "history", rows)
+            field(account, "historyLoaded", true)
+            account.refreshHistory()
+            drain()
+            assertEquals(rows, account.historyRows())
+            assertTrue(account.historyReady)
+            assertTrue(account.historyStatus.contains("账号资料接口返回空响应"))
+        } finally {
+            account.destroy()
+            controller.pause().stop().destroy()
         }
     }
 

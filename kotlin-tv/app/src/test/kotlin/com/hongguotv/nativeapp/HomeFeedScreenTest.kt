@@ -131,6 +131,7 @@ class HomeFeedScreenTest {
 
     private fun pump(screen: HomeFeedScreen) {
         repeat(4) {
+            if (get(screen, "pendingTrial") != null) ShadowLooper.idleMainLooper(300, TimeUnit.MILLISECONDS)
             (get(screen, "job") as? Future<*>)?.get(5, TimeUnit.SECONDS)
             ShadowLooper.idleMainLooper()
         }
@@ -184,6 +185,35 @@ class HomeFeedScreenTest {
             pump(screen)
         }
         override fun close() {
+            screen.close()
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun rapidSwitchesOnlyPrepareTheFinalUncachedWorkAndLeavingCancelsTheDelay() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val state = DramaFeedState()
+        val backend = Backend(5)
+        val player = Playback(activity)
+        val screen = HomeFeedScreen(activity, state, listOf(TextView(activity)), {}, { _, _ -> }, { "收藏" }, backend, player)
+        try {
+            activity.setContentView(screen)
+            screen.start(true, false)
+            pump(screen)
+            val stage = get(screen, "stage") as View
+            repeat(2) { stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN)) }
+            assertEquals("3", state.current?.id)
+            ShadowLooper.idleMainLooper(299, TimeUnit.MILLISECONDS)
+            assertEquals(listOf("1"), backend.preparedIds.toList())
+            pump(screen)
+            assertEquals(listOf("1", "3"), backend.preparedIds.toList())
+            stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN))
+            screen.close()
+            ShadowLooper.idleMainLooper(1, TimeUnit.SECONDS)
+            assertEquals(listOf("1", "3"), backend.preparedIds.toList())
+        } finally {
             screen.close()
             controller.pause().stop().destroy()
         }
@@ -344,7 +374,9 @@ class HomeFeedScreenTest {
             override fun recommendations(page: Int, cursor: RecommendationCursor): CatalogPage {
                 if (org.json.JSONObject(cursor.snapshot()).optString("session").isNotBlank())
                     throw NoNewRecommendationsException()
-                return super.recommendations(page, cursor)
+                val seen = org.json.JSONObject(cursor.snapshot()).getJSONArray("seen")
+                assertEquals("1", seen.getString(0))
+                return CatalogPage(listOf(Series("2", "新作品")), false)
             }
         }
         val player = Playback(activity)
@@ -353,11 +385,11 @@ class HomeFeedScreenTest {
             activity.setContentView(screen)
             screen.start(true, false)
             pump(screen)
-            assertTrue(texts(screen).any { it.text.contains("暂时没有新的推荐") })
+            assertTrue(texts(screen).any { it.text.contains("推荐接口未返回新作品") })
             texts(screen).first { it.text == "换一批" }.performClick()
             pump(screen)
             assertTrue(reset)
-            assertEquals("1", player.loaded)
+            assertEquals("2", player.loaded)
             assertEquals(0, org.json.JSONObject(state.recommendationCursor.snapshot()).optInt("offset"))
         } finally { screen.close(); controller.pause().stop().destroy() }
     }

@@ -87,9 +87,8 @@ class DramaFeedState {
             sourcePages.clear()
         } else {
             sourcePages.remove(sourceKey())
-            if (restartCurrentSource) sourceCursors.remove(sourceKey())
         }
-        recommendationCursor = sourceCursors[sourceKey()]?.nextBatch() ?: RecommendationCursor()
+        recommendationCursor = sourceCursors[sourceKey()]?.nextBatch(restartSession = restartCurrentSource) ?: RecommendationCursor()
         sourceCursors[sourceKey()] = recommendationCursor
         items = emptyList()
         index = 0

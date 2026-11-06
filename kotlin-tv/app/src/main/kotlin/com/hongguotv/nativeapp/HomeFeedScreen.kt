@@ -407,7 +407,11 @@ internal class HomeFeedScreen(
         if (clip != null) state.position = playback.position()
     }
 
+    private var pendingTrial: Runnable? = null
+
     private fun cancelRequest() {
+        pendingTrial?.let(main::removeCallbacks)
+        pendingTrial = null
         trialRecovery?.let(main::removeCallbacks)
         trialRecovery = null
         generation++
@@ -566,7 +570,7 @@ internal class HomeFeedScreen(
                             error.message.orEmpty().replace(Regex("https?://\\S+"), "[地址]").take(90)
                         if (error is NoNewRecommendationsException) {
                             exhaustedCursors += requestedCursor
-                            status.text = "暂时没有新的推荐 · 按“换一批”重新获取，可能出现旧作品"
+                            status.text = "推荐接口未返回新作品 · 最近已去重 ${error.rememberedCount} 部\n可稍后换一批，或切换漫剧、真人剧继续发现"
                         } else if (recoverTrial && trialRecoveryAttempts > 0) {
                             val detail = diagnosticDetail(error)?.take(180)
                             status.text = "试播恢复未成功 · ${playbackFailureSummary(error)}\n可重试试播或按 ↑ ↓ 换一部" +
@@ -608,7 +612,7 @@ internal class HomeFeedScreen(
     }
 
     // 优先复用缓存或正在进行的预加载，避免为同一部作品重复请求。
-    private fun loadCurrent(statusHint: String? = null, recovering: Boolean = false) {
+    private fun loadCurrent(statusHint: String? = null, recovering: Boolean = false, settle: Boolean = false) {
         val series = state.current ?: return
         if (!active || closed) return
         if (!recovering) {
@@ -629,6 +633,17 @@ internal class HomeFeedScreen(
             // 将正在进行的预加载转为当前试播，不取消后再重复请求地址。
             loading = true
             android.util.Log.i("HongguoTV", "Home promoted in-flight preload")
+        } else if (settle) {
+            // 快速连刷只更新卡片，停留三百毫秒后才发起未缓存作品的播放准备。
+            loading = true
+            val token = generation
+            val pending = Runnable {
+                pendingTrial = null
+                if (!closed && active && token == generation && state.current?.id == series.id)
+                    request({ backend.trial(series) }, { it.close() }, recoverTrial = true, done = ::attach)
+            }
+            pendingTrial = pending
+            main.postDelayed(pending, 300)
         } else request({ backend.trial(series) }, { it.close() }, recoverTrial = true, done = ::attach)
     }
 
@@ -818,7 +833,7 @@ internal class HomeFeedScreen(
                 status.text = "正在切换作品…"
                 attach(ready)
                 trimCache()
-            } else loadCurrent()
+            } else loadCurrent(settle = true)
         }
     }
 

@@ -15,6 +15,8 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [23, 26])
 class FeedStartupCacheTest {
+    private fun session() = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }
+
     private val page = CatalogPage(listOf(Series("101", "缓存作品")), true)
 
     private fun feedResponse(ids: List<String>): String {
@@ -47,7 +49,7 @@ class FeedStartupCacheTest {
             Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200)
                 .message("fixture").body(feedResponse(listOf("101")).toResponseBody()).build()
         }.build()
-        val backend = PublicFeedBackend(720, http = http, startupCache = cache)
+        val backend = PublicFeedBackend(720, http = http, startupCache = cache, playbackSession = session())
         try {
             assertThrows(NoNewRecommendationsException::class.java) {
                 backend.recommendations(1, DramaFeedState().recommendationCursor)
@@ -78,7 +80,7 @@ class FeedStartupCacheTest {
         try {
             val displayed = mutableListOf<String>()
             repeat(3) {
-                val backend = PublicFeedBackend(720, http = transport(), startupCache = cache)
+                val backend = PublicFeedBackend(720, http = transport(), startupCache = cache, playbackSession = session())
                 try {
                     val cursor = DramaFeedState().recommendationCursor
                     val current = backend.recommendations(1, cursor).items.first()
@@ -89,7 +91,8 @@ class FeedStartupCacheTest {
                 }
             }
             assertEquals(listOf("101", "202", "303"), displayed)
-            assertEquals(2, requests) // 首次仍可立即使用旧首屏；后两次均继续取新内容。
+            // 首次使用本地首屏；换注册身份后重读入口，第三次跳过已看首批再取新内容。
+            assertEquals(3, requests)
         } finally {
             controller.pause().stop().destroy()
         }
@@ -100,7 +103,7 @@ class FeedStartupCacheTest {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val cache = FeedStartupCache(controller.get()) { 1000L }
         val http = OkHttpClient.Builder().addInterceptor { error("仅保存本地展示记录") }.build()
-        val backend = PublicFeedBackend(720, http = http, startupCache = cache)
+        val backend = PublicFeedBackend(720, http = http, startupCache = cache, playbackSession = session())
         try {
             val state = DramaFeedState()
             val recommend = state.recommendationCursor
@@ -134,7 +137,7 @@ class FeedStartupCacheTest {
         val cache = FeedStartupCache(controller.get()) { 1000L }
         cache.save("guest", "recommend", page)
         val http = OkHttpClient.Builder().addInterceptor { error("缓存命中不应请求网络") }.build()
-        val backend = PublicFeedBackend(720, http = http, startupCache = cache)
+        val backend = PublicFeedBackend(720, http = http, startupCache = cache, playbackSession = session())
         try {
             val cursor = DramaFeedState().recommendationCursor
             val result = backend.recommendations(1, cursor)

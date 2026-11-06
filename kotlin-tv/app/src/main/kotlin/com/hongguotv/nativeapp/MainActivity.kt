@@ -1440,7 +1440,8 @@ class MainActivity : Activity() {
                     isAccountHistory() ->
                         if (!cloudAccount.signedIn) "登录红果后查看账户历史，本机历史仍可使用"
                         else if (cloudAccount.historyLoading) "正在读取账户观看历史…"
-                        else "暂无已读取的云端记录，可按上方刷新重试"
+                        else if (!cloudAccount.historyReady) "账户历史读取失败，请按上方刷新重试"
+                        else "当前账号暂无云端观看记录"
                     isLocalHistory() -> "在这台电视播放过的剧集会自动保存在这里"
                     tab == 5 ->
                         if (!cloudAccount.signedIn) "登录红果账号后，在这里同步手机预约"
