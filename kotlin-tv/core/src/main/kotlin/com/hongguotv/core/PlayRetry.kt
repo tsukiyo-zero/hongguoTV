@@ -4,10 +4,10 @@ package com.hongguotv.core
 import java.io.IOException
 
 /**
- * Bounded fallback retries for playback model requests (issue #38).
- * 2026-11-06: HTTP/2 may reuse/coalesce connections despite Connection: close.
- * The caller must use an isolated pool for each retry. Fresh connections are not
- * a cure for every HTTP 200/0B response; keep timing/count unchanged and diagnose.
+ * 播放模型备用接口的有界重试计划（issue #38）。
+ * 2026-11-06 实测：设置 Connection: close 后 HTTP/2 仍可能复用或合并连接，
+ * 因此调用方必须为每次重试使用独立连接池。新连接不能消除所有 HTTP 200/0 字节，
+ * 保留既有间隔与次数，结合诊断继续调查。
  */
 internal object PlayRetryPlan {
     val hosts =

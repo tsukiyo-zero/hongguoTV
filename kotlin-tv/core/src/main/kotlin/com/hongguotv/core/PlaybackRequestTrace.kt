@@ -6,7 +6,7 @@ import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import okhttp3.Protocol
 
-/** One bounded model-request round. Never retain URLs, headers, IDs or exception messages. */
+/** 只记录一轮有界模型请求；不保留地址、请求头、身份或异常原文。 */
 internal class PlaybackRequestTrace {
     enum class Stage { GET, POST }
     private val entries = mutableListOf<String>()

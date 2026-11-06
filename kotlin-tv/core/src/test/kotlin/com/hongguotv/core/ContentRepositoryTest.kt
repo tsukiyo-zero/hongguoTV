@@ -600,8 +600,8 @@ class ContentRepositoryTest {
         }
         assertNotEquals(requests[0].header("x-gorgon"), requests[1].header("x-gorgon"))
         assertNotEquals(requests[0].header("x-medusa"), requests[1].header("x-medusa"))
-        // Fresh pools, not a Connection header, enforce HTTP/2 retry isolation.
-        // Real connection sequences are covered by PlaybackRetryConnectionTest.
+        // HTTP/2 重试通过独立连接池隔离，不依赖 Connection 请求头。
+        // 实际连接序号由 PlaybackRetryConnectionTest 验证。
         assertNull(requests[0].header("Connection"))
         assertNull(requests[1].header("Connection"))
         val first = okio.Buffer().also { requests[0].body!!.writeTo(it) }.readUtf8()

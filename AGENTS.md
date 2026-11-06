@@ -1,6 +1,7 @@
 # Repository workflow
 
 - 后续 Git 提交标题和提交说明使用中文，清楚描述具体修改内容及必要原因；代码标识符、命令和版本号可保留原文。
+- 新增或修改的代码注释统一使用中文；代码标识符、协议字段及原有 GPL/SPDX 声明保持原文。
 - 提交标题使用 Conventional Commits 类型前缀，例如 `feat:`、`fix:`、`docs:`、`test:`，前缀后的描述及提交正文继续使用中文。
 
 - The stable branch is `main`. Keep existing upstream history and GPL notices.

@@ -181,8 +181,7 @@ constructor(
     // 签名时钟与应用时钟同源：测试可注入，重签后的 ts/_rticket 保持在同一时间基上。
     private val signer = Signer(clock)
 
-    // Bounded recovery state. Some sampled incidents recover with a new session,
-    // but registration is not a proven cure for every empty response.
+    // 有界恢复状态：部分采样中新会话可以恢复，但不能保证消除所有空响应。
     // prefetch/试播/正式播放可能并发，统一持锁；轮换的网络 I/O 在锁外执行。
     private val playbackIdentityLock = Any()
     private var emptyPlaybackRounds = 0
@@ -854,8 +853,7 @@ constructor(
                     // 空正文）；失败时回退签名 POST 旧接口，两条路径共用同一注册身份。
                     val trace = PlaybackRequestTrace()
                     val previousIdentity = playbackSession.profile(http)
-                    // Claim under the lock before registration I/O: concurrent prefetch and
-                    // playback must not both rotate the same failure period.
+                    // 注册前先在锁内标记，避免预加载与播放任务为同一失败期重复轮换身份。
                     val rotationGeneration = synchronized(playbackIdentityLock) {
                         if (emptyPlaybackRounds >= IDENTITY_ROTATE_ROUNDS && !emptyPlaybackRotated) {
                             emptyPlaybackRotated = true
@@ -879,10 +877,9 @@ constructor(
                     val payload =
                         """{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":${JSONArray(ids)}}}"""
                             .toByteArray()
-                    // Batch up to two following episodes, preserving the existing retry budget.
-                    // 2026-11-06: genuinely fresh connections can still receive HTTP 200/0B.
-                    // Neither connection reuse nor identity alone explains every incident;
-                    // retain bounded recovery and collect per-path evidence instead of guessing.
+                    // 同次批量读取后两集，保留既有重试预算。2026-11-06 实测真正的新连接仍可能
+                    // 收到 HTTP 200/0 字节；连接复用或身份都不足以单独解释全部情况，
+                    // 保留有界恢复并按接口记录证据，不据此猜测原因。
                     val requestIdentity = identity
                     var content: String? = null
                     var lastError: IOException? = null
@@ -901,8 +898,8 @@ constructor(
                             "https://$host/novel/player/multi_video_model/v1/",
                             requestIdentity, body = payload,
                         )
-                        // A distinct pool prevents HTTP/2 reuse/coalescing. Connection: close
-                        // alone does not do this. Share dispatcher/cookies, never cancel peers.
+                        // 独立连接池阻止 HTTP/2 连接复用和合并，仅设置 Connection: close 无效。
+                        // 保留共享调度器与 Cookie，不取消其他任务。
                         val transport = if (PlayRetryPlan.freshConnection(attempt))
                             http.newBuilder().connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS)).build()
                         else http
@@ -921,8 +918,7 @@ constructor(
                             if (transport !== http) transport.connectionPool.evictAll()
                         }
                     }
-                    // A nonblank response breaks the all-empty streak, but only a parsed
-                    // model resets the registration-attempt guard for this failure period.
+                    // 非空响应打断连续全空计数，只有解析出模型才复位本失败期的注册尝试标记。
                     if (content != null) synchronized(playbackIdentityLock) { emptyPlaybackRounds = 0 }
                     val response =
                         content

@@ -153,9 +153,20 @@ class HomeFeedScreenTest {
     fun disabledAutoplayStaysPausedAcrossSwitchesButAllowsManualPlay() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val activity = controller.get()
+        val prefetchEntered = java.util.concurrent.CountDownLatch(1)
+        val finishPreload = java.util.concurrent.CountDownLatch(1)
+        val backend = object : Backend() {
+            override fun preload(series: Series): TrialClip {
+                if (series.id == "2") {
+                    prefetchEntered.countDown()
+                    check(finishPreload.await(5, TimeUnit.SECONDS))
+                }
+                return super.preload(series)
+            }
+        }
         val state = DramaFeedState()
         val playback = Playback(activity)
-        val screen = HomeFeedScreen(activity, state, listOf(TextView(activity)), {}, { _, _ -> }, { "收藏" }, Backend(), playback, autoPreview = false)
+        val screen = HomeFeedScreen(activity, state, listOf(TextView(activity)), {}, { _, _ -> }, { "收藏" }, backend, playback, autoPreview = false)
         try {
             activity.setContentView(screen)
             screen.start(true, false)
@@ -166,14 +177,24 @@ class HomeFeedScreenTest {
             screen.pause()
             screen.resume()
             assertTrue(playback.playing)
+            // 用闸门固定 CI 中的时序：切换作品时，第二部作品仍在后台预加载。
+            assertTrue(prefetchEntered.await(5, TimeUnit.SECONDS))
             screen.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN))
+            assertEquals("2", state.current?.id)
+            finishPreload.countDown()
+            // pump 只等待前台 job；晋升的预加载由 prefetchJob 交付，必须单独等待。
+            finishPrefetch(screen)
             pump(screen)
             assertEquals("2", playback.loaded)
             assertFalse(playback.playing)
             screen.pause()
             screen.resume()
             assertFalse(playback.playing)
-        } finally { screen.close(); controller.pause().stop().destroy() }
+        } finally {
+            finishPreload.countDown()
+            screen.close()
+            controller.pause().stop().destroy()
+        }
     }
 
     @Test

@@ -48,15 +48,14 @@ class PlaybackDeviceSession(
     }
 
     /**
-     * Try one anonymous replacement, bounded by the caller's failure-period guard.
-     * A new profile helped some dated probes, but does not guarantee recovery.
-     * If another repository already replaced [expected], reuse it without registering again.
-     * Return true when a replacement is ready; on failure keep the existing profile.
+     * 在调用方的失败期限制内尝试替换匿名身份，部分历史采样有效，但不保证恢复。
+     * 若其他仓库实例已替换 [expected]，直接复用替代身份，不重复注册。
+     * 替代身份就绪时返回 true；失败时保留原身份。
      */
     @Synchronized
     internal fun rotate(http: OkHttpClient, expected: Profile? = null): Boolean {
         if (Thread.currentThread().isInterrupted) return false
-        // Another repository sharing this session already replaced the failing profile.
+        // 共享会话的其他仓库实例已替换该失败身份，直接复用。
         if (expected != null && ready !== expected && ready != null) return true
         val device =
             try {
