@@ -3,6 +3,7 @@ package com.hongguotv.nativeapp
 
 // 找剧页面的界面辅助组件；与遥控器三栏搜索入口配合使用。
 
+import android.app.AlertDialog
 import android.content.Context
 import android.view.View
 import android.widget.*
@@ -44,6 +45,7 @@ internal class DiscoveryScreen(
     private val reset = button("重置") { change(DiscoverySelection()) }
     private val refresh = button("刷新") { request(null) }
     private val browser: ContinuousCatalogView
+    private var filterDialog: AlertDialog? = null
     private var loading = false
     private var closed = false
     private var headerOffset = 0
@@ -157,13 +159,7 @@ internal class DiscoveryScreen(
                 val selected = chosen()
                 isSelected = selected
                 setTextColor(if (selected) TvStyle.accent else TvStyle.text)
-                background =
-                    TvStyle.shape(
-                        context,
-                        if (selected) android.graphics.Color.rgb(61, 39, 34)
-                        else if (hasFocus()) TvStyle.raised else TvStyle.surface,
-                        if (hasFocus()) TvStyle.accent else android.graphics.Color.TRANSPARENT,
-                    )
+                background = TvStyle.card(context, hasFocus(), selected)
             }
             setOnFocusChangeListener { _, _ -> paint() }
             setOnClickListener { action() }
@@ -213,7 +209,25 @@ internal class DiscoveryScreen(
                 )
             val choices = LinearLayout(context)
             val all = DiscoveryFilter("", "全部")
-            (listOf(all) + group.options).forEach { option ->
+            val options = listOf(all) + group.options
+            val budget = (resources.displayMetrics.widthPixels - dp(320)).coerceAtLeast(dp(180))
+            var used = 0
+            val visibleOptions = options.takeWhile { option ->
+                val probe = button(option.label) {}
+                probe.measure(MeasureSpec.UNSPECIFIED, MeasureSpec.UNSPECIFIED)
+                used += probe.measuredWidth + dp(8)
+                used <= budget
+            }.toMutableList()
+            val overflow = visibleOptions.size < options.size && group.type != "genre"
+            if (!overflow) { visibleOptions.clear(); visibleOptions.addAll(options) }
+            val current = state.selection.values[group.type].orEmpty()
+            options.firstOrNull { it.id == current }?.let { selected ->
+                if (overflow && selected !in visibleOptions) {
+                    if (visibleOptions.size > 1) visibleOptions.removeAt(visibleOptions.lastIndex)
+                    visibleOptions.add(selected)
+                }
+            }
+            visibleOptions.forEach { option ->
                 val chip =
                     button(
                             if (group.type == "genre" && option.id.isEmpty()) "全部类型"
@@ -233,7 +247,7 @@ internal class DiscoveryScreen(
                             }
                         }
                 controls[group.type to option.id] = chip
-                choices.addView(chip, LayoutParams(-2, -2).apply { rightMargin = dp(5) })
+                choices.addView(chip, LayoutParams(-2, -2).apply { rightMargin = dp(8) })
             }
             val strip =
                 HorizontalScrollView(context).apply {
@@ -256,8 +270,13 @@ internal class DiscoveryScreen(
                 }
             }
             row.addView(strip, LayoutParams(0, -2, 1f))
+            if (overflow) {
+                val expand = button("全部 · ${group.options.size} 项 ›") { showAllFilters(group) }
+                controls[group.type to "__all_options__"] = expand
+                row.addView(expand, LayoutParams(-2, -2).apply { leftMargin = dp(8) })
+            }
             if (group.type == "genre") types.addView(row, LayoutParams(-1, -2))
-            else groups.addView(row, LayoutParams(-1, -2).apply { bottomMargin = dp(3) })
+            else groups.addView(row, LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
         }
         val rows =
             available.map { group ->
@@ -293,6 +312,54 @@ internal class DiscoveryScreen(
         expand(state.expanded)
         focused?.let { controls[it]?.requestFocus() }
         navigationChanged?.invoke()
+    }
+
+    private fun showAllFilters(group: DiscoveryGroup) {
+        filterDialog?.dismiss()
+        val options = listOf(DiscoveryFilter("", "全部")) + group.options
+        val panel = LinearLayout(context).apply {
+            orientation = VERTICAL
+            setPadding(dp(20), dp(18), dp(20), dp(18))
+            background = TvVisual.panel(context, modal = true)
+        }
+        panel.addView(TextView(context).apply {
+            text = "${group.label} · 全部选项"
+            textSize = 20f
+            setTextColor(TvStyle.text)
+            setPadding(0, 0, 0, dp(16))
+        })
+        val grid = GridLayout(context).apply { columnCount = 4 }
+        val cells = options.map { option ->
+            button(option.label, { state.selection.values[group.type].orEmpty() == option.id }) {
+                filterDialog?.dismiss()
+                if (!closed && state.selection.values[group.type].orEmpty() != option.id)
+                    change(state.selection.choose(group.type, option.id), group.type to option.id)
+            }.also { cell ->
+                cell.gravity = android.view.Gravity.CENTER
+                grid.addView(cell, GridLayout.LayoutParams().apply {
+                    width = dp(140)
+                    height = dp(42)
+                    setMargins(dp(4), dp(4), dp(4), dp(4))
+                })
+            }
+        }
+        cells.forEachIndexed { index, cell ->
+            cell.nextFocusLeftId = cells.getOrNull(index - 1)?.takeIf { index % 4 != 0 }?.id ?: cell.id
+            cell.nextFocusRightId = cells.getOrNull(index + 1)?.takeIf { index % 4 != 3 }?.id ?: cell.id
+            cell.nextFocusUpId = cells.getOrNull(index - 4)?.id ?: cell.id
+            cell.nextFocusDownId = cells.getOrNull(index + 4)?.id ?: cell.id
+        }
+        panel.addView(ScrollView(context).apply { addView(grid) }, LayoutParams(-1, -2))
+        val dialog = AlertDialog.Builder(context).setView(panel).create()
+        filterDialog = dialog
+        dialog.setOnDismissListener {
+            if (filterDialog === dialog) filterDialog = null
+            if (!closed) controls[group.type to "__all_options__"]?.requestFocus()
+        }
+        dialog.show()
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        dialog.window?.setLayout(dp(640), minOf(dp(420), (resources.displayMetrics.heightPixels * .85f).toInt()))
+        cells[options.indexOfFirst { it.id == state.selection.values[group.type].orEmpty() }.coerceAtLeast(0)].requestFocus()
     }
 
     private fun showItems() {
@@ -398,6 +465,8 @@ internal class DiscoveryScreen(
         state.filterVerticalOffset = scroll.scrollY
         strips.forEach { (type, strip) -> state.filterOffsets[type] = strip.scrollX }
         closed = true
+        filterDialog?.dismiss()
+        filterDialog = null
         serial++
         browser.capture()?.let { state.position = it.id to it.top }
         browser.close()

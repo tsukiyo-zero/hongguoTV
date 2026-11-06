@@ -45,14 +45,7 @@ class EpisodePanel(
             isFocusable = true
             isFocusableInTouchMode = true
             fun paint(focus: Boolean) {
-                background =
-                    GradientDrawable().apply {
-                        setColor(
-                            if (focus) TvStyle.accent
-                            else if (active) Color.rgb(61, 39, 34) else TvStyle.surface
-                        )
-                        cornerRadius = dp(6).toFloat()
-                    }
+                background = TvStyle.card(activity, focus, active)
             }
             paint(false)
             setOnFocusChangeListener { _, hasFocus -> paint(hasFocus) }
@@ -85,7 +78,7 @@ class EpisodePanel(
             LinearLayout(activity).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(14), dp(12), dp(14), dp(12))
-                setBackgroundColor(TvStyle.background)
+                background = TvVisual.panel(activity)
             }
         content.addView(label("选集  /  正在看第 ${current+1} 集", 20f))
         val actions = LinearLayout(activity)

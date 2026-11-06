@@ -104,29 +104,21 @@ class AccountLibraryTest {
             assertEquals(source.id, cards.getValue("222").nextFocusUpId)
             cards.getValue("222").performLongClick()
             val dialog = ShadowAlertDialog.getLatestAlertDialog()
-            val choices =
-                (0 until dialog.listView.adapter.count).map {
-                    dialog.listView.adapter.getItem(it).toString()
-                }
+            val choices = texts(dialog.findViewById(android.R.id.content))
+                .filter { (it.parent as? View)?.tag?.toString()?.startsWith("choice-") == true && it.text.isNotEmpty() }
+                .map { it.text.toString() }
             assertTrue("加入本机收藏" in choices)
             assertTrue(choices[2].contains("账户收藏"))
             assertEquals("加入本机收藏", choices[3])
             assertEquals("查看剧集详情", choices[1])
             assertFalse(choices.any { it.contains("稍后看") })
-            dialog.listView.performItemClick(
-                dialog.listView.adapter.getView(3, null, dialog.listView),
-                3,
-                3L,
-            )
+            dialog.findViewById<View>(android.R.id.content).findViewWithTag<View>("choice-3").performClick()
             assertTrue(library.favorite("222"))
             cards.getValue("222").performLongClick()
             val again = ShadowAlertDialog.getLatestAlertDialog()
-            assertEquals("取消本机收藏", again.listView.adapter.getItem(3))
-            again.listView.performItemClick(
-                again.listView.adapter.getView(3, null, again.listView),
-                3,
-                3L,
-            )
+            val remove = again.findViewById<View>(android.R.id.content).findViewWithTag<android.widget.LinearLayout>("choice-3")
+            assertEquals("取消本机收藏", (remove.getChildAt(0) as TextView).text.toString())
+            remove.performClick()
             assertFalse(library.favorite("222"))
             method(activity, "switchTab", 4)
             method(activity, "switchTab", 3)

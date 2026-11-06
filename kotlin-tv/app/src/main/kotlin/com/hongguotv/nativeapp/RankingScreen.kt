@@ -53,12 +53,7 @@ internal class RankingScreen(
             minHeight = dp(42)
             fun paint() {
                 setTextColor(if (isSelected) TvStyle.accent else TvStyle.text)
-                background =
-                    TvStyle.shape(
-                        activity,
-                        if (isSelected) android.graphics.Color.rgb(48, 32, 29) else TvStyle.surface,
-                        if (hasFocus()) TvStyle.accent else android.graphics.Color.TRANSPARENT,
-                    )
+                background = TvStyle.card(activity, hasFocus(), isSelected)
             }
             setOnFocusChangeListener { _, _ -> paint() }
             setOnClickListener { action() }
@@ -124,14 +119,7 @@ internal class RankingScreen(
             controls[i].isSelected = state.board == b
             controls[i].text = b.label + if (state.isRefreshing(b)) " …" else ""
             controls[i].setTextColor(if (state.board == b) TvStyle.accent else TvStyle.text)
-            controls[i].background =
-                TvStyle.shape(
-                    activity,
-                    if (state.board == b) android.graphics.Color.rgb(48, 32, 29)
-                    else TvStyle.surface,
-                    if (controls[i].hasFocus()) TvStyle.accent
-                    else android.graphics.Color.TRANSPARENT,
-                )
+            controls[i].background = TvStyle.card(activity, controls[i].hasFocus(), state.board == b)
         }
         refreshButton.text = if (state.isRefreshing(state.board)) "读取中…" else "刷新"
         heading.text = "${state.board.label}热播榜"

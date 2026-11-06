@@ -153,6 +153,36 @@ class PlaybackQueueTest {
     }
 
     @Test
+    fun upOpensTwoRowControlsWithoutPausingAndClockModesRemainIndependent() =
+        fixture { activity, fake, library, _ ->
+            val hud = LinearLayout(activity).apply { visibility = android.view.View.GONE }
+            val controls = LinearLayout(activity)
+            val clock = android.widget.TextClock(activity)
+            set(activity, "hud", hud)
+            set(activity, "controls", controls)
+            set(activity, "playbackText", TextView(activity))
+            set(activity, "progressBar", android.widget.ProgressBar(activity))
+            set(activity, "playbackClock", clock)
+            val before = fake.player.playWhenReady
+            activity.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DPAD_UP))
+            assertEquals(android.view.View.VISIBLE, hud.visibility)
+            assertEquals(true, get(activity, "panel"))
+            assertEquals(android.view.View.VISIBLE, clock.visibility)
+            assertEquals(2, controls.childCount)
+            assertEquals(3, (controls.getChildAt(0) as LinearLayout).childCount)
+            assertEquals(4, (controls.getChildAt(1) as LinearLayout).childCount)
+            assertEquals(before, fake.player.playWhenReady)
+            invoke(activity, "hidePlaybackOverlay")
+            assertEquals(android.view.View.GONE, clock.visibility)
+            library.clockMode = 2
+            invoke(activity, "updateClock")
+            assertEquals(android.view.View.VISIBLE, clock.visibility)
+            library.clockMode = 0
+            invoke(activity, "updateClock")
+            assertEquals(android.view.View.GONE, clock.visibility)
+        }
+
+    @Test
     fun automaticTransitionReusesPlayerAndUpdatesEpisodeProgress() =
         fixture { activity, fake, library, remote ->
             invoke(activity, "queuePreparedEpisode", "102:${library.maxQuality}")
