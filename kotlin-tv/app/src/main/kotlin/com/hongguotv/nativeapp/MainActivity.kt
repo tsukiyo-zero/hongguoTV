@@ -834,6 +834,7 @@ class MainActivity : Activity() {
         focusNav: Boolean = false,
         focusType: Boolean = false,
     ) {
+        val loadRemote = load && !localCatalog()
         relatedSection = null
         detailTrail.clear()
         reservationFilters.clear()
@@ -842,7 +843,7 @@ class MainActivity : Activity() {
         pendingDetail = null
         // Never cache a new page number with the previous page's results while a request is
         // pending.
-        if (load) {
+        if (loadRemote) {
             val cached =
                 if (tab == 0 && page == 1) library.cachedHome(library.contentType) else null
             catalog = cached?.items ?: emptyList()
@@ -1269,7 +1270,7 @@ class MainActivity : Activity() {
             page = page.coerceIn(1, maxOf(1, (catalog.size + pageSize - 1) / pageSize))
             hasMore = page * pageSize < catalog.size
         }
-        if (load) {
+        if (loadRemote) {
             if (tab == 0) catalogGrid(body, focusNav, focusType, loading = true)
             else {
                 message(body, "正在加载…")

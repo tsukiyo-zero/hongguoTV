@@ -815,8 +815,23 @@ constructor(
                     val ids = (listOf(id) + metadataAhead).distinct()
                     // GET video_tab 优先（官方 App 现行路径，2026-11-05 起对无签名请求短路返回
                     // 空正文）；失败时回退签名 POST 旧接口，两条路径共用同一注册身份。
+                    val rotated =
+                        synchronized(playbackIdentityLock) {
+                            emptyPlaybackRounds >= IDENTITY_ROTATE_ROUNDS && !emptyPlaybackRotated
+                        }
+                    if (rotated) {
+                        // 网络 I/O 在锁外；无论成败都视为本失败期已轮换，不重复尝试。
+                        playbackSession.rotate(http)
+                        synchronized(playbackIdentityLock) { emptyPlaybackRotated = true }
+                    }
                     val identity = playbackSession.profile(http)
-                    tabVideoModel(id, identity)?.let { return@run it }
+                    tabVideoModel(id, identity)?.let {
+                        synchronized(playbackIdentityLock) {
+                            emptyPlaybackRounds = 0
+                            emptyPlaybackRotated = false
+                        }
+                        return@run it
+                    }
                     // device_level=1 是服务端最保守的编码供给：level=3 会把部分剧集的 360P-720P
                     // 档下发成 bytevc2（Android 提取器读不出视频轨，只能被过滤掉），该集便只剩
                     // 1080P 一档，竖屏超出电视解码上限后降无可降；level=1 对正常集供给与 3 一致。
@@ -830,15 +845,6 @@ constructor(
                     //（被屏蔽身份全部路径 100% 空且贯穿事件全程，全新身份即时恢复），因此连续
                     // 两轮换路全空后轮换一次匿名设备身份，详见规格
                     // docs/superpowers/specs/2026-11-02-playinfo-identity-rotation-design.md。
-                    val rotated =
-                        synchronized(playbackIdentityLock) {
-                            emptyPlaybackRounds >= IDENTITY_ROTATE_ROUNDS && !emptyPlaybackRotated
-                        }
-                    if (rotated) {
-                        // 网络 I/O 在锁外；无论成败都视为本失败期已轮换，不重复尝试。
-                        playbackSession.rotate(http)
-                        synchronized(playbackIdentityLock) { emptyPlaybackRotated = true }
-                    }
                     val requestIdentity = playbackSession.profile(http)
                     var content: String? = null
                     var lastError: IOException? = null

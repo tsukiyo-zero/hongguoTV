@@ -17,6 +17,35 @@ class ContentRepositoryTest {
         """{"data":{"123":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}}"""
 
     @Test
+    fun rotatedIdentityRetriesPreferredEndpointAndSuccessResetsFailurePeriod() {
+        var registrations = 0
+        var allowPreferred = true
+        var legacyCalls = 0
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            when (request.url.encodedPath) {
+                "/service/2/device_register/" -> {
+                    registrations++
+                    fixtureResponse(request, """{"device_id":"${333 + registrations}","install_id":"${444 + registrations}"}""", setCookie = true)
+                }
+                "/reading/bookapi/video_tab/multi_video_model/v1/" ->
+                    fixtureResponse(request, if (registrations == 2 && allowPreferred) videoTabModel else "")
+                else -> { legacyCalls++; fixtureResponse(request, "") }
+            }
+        }.build()
+        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession(), sleep = {})
+        repeat(2) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") } }
+        assertEquals(1, registrations)
+        assertEquals(1, repo.streamLadder("123").renditions.size)
+        assertEquals(2, registrations)
+        assertEquals(8, legacyCalls)
+        allowPreferred = false
+        repeat(2) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") } }
+        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+        assertEquals(3, registrations)
+    }
+
+    @Test
     fun twoConsecutiveEmptyRoundsRotateIdentityOnceAndTagSubsequentFailures() {
         val registrations = AtomicInteger()
         val http =
