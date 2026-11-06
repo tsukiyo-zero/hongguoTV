@@ -253,6 +253,11 @@ class MainActivity : Activity() {
     private var generation = 0
     private var screen = "catalog"
     private var tab = 0
+    private var startupApplied = false
+    private var settingsGroup = 0
+    private val settingsPositions = IntArray(4)
+    private var settingsSidebar = emptyList<View>()
+    private var settingsRows = emptyList<View>()
     private lateinit var librarySources: LibrarySources
     private val sourceButtons = mutableListOf<View>()
     private var page = 1
@@ -293,9 +298,9 @@ class MainActivity : Activity() {
     private lateinit var progressBar: ProgressBar
     private lateinit var controls: LinearLayout
     private var panel = false
+    private var playbackClock: TextClock? = null
     private var transportPlay: TextView? = null
     private var sleepButton: TextView? = null
-    private var speedDialog: AlertDialog? = null
     private var relayDialog: AlertDialog? = null
     private var pendingSeek: Long? = null
     private var playError = false
@@ -312,6 +317,7 @@ class MainActivity : Activity() {
                 if (!foreground || isDestroyed) return
                 if (screen == "player") {
                     if (sleepTimer.poll()) stopForSleep()
+                    updateClock()
                     if (hud.visibility == View.VISIBLE) updatePlaybackText()
                     maybePrefetch()
                     val now = android.os.SystemClock.elapsedRealtime()
@@ -324,7 +330,7 @@ class MainActivity : Activity() {
             }
         }
     private val hideHud = Runnable {
-        if (screen == "player" && !panel && player?.isPlaying == true && !playError)
+        if (screen == "player" && player?.isPlaying == true && !playError && root.hasWindowFocus())
             hidePlaybackOverlay()
     }
     private val seekRunnable = Runnable {
@@ -366,12 +372,7 @@ class MainActivity : Activity() {
         view.isFocusable = true
         view.isFocusableInTouchMode = true
         fun paint(focused: Boolean) {
-            view.background =
-                rounded(
-                    if (focused) TvStyle.raised
-                    else if (selected) Color.rgb(61, 39, 34) else surface,
-                    if (focused) accent else Color.TRANSPARENT,
-                )
+            view.background = TvStyle.card(this, focused, selected)
         }
         paint(false)
         view.setOnFocusChangeListener { _, focused -> paint(focused) }
@@ -416,7 +417,7 @@ class MainActivity : Activity() {
         library = Library(this)
         artwork = ArtworkLoader(this)
         tvTools = TvTools(this)
-        root = FrameLayout(this).apply { setBackgroundColor(bg) }
+        root = FrameLayout(this).apply { background = TvVisual.backdrop(this@MainActivity) }
         setContentView(root)
         CodecCapabilities.init(this)
         CodecCapabilities.logDeviceCapabilities()
@@ -526,8 +527,13 @@ class MainActivity : Activity() {
                 }
             }
         ) {
+            if (!isDestroyed && !startupApplied) {
+                tab = library.initialTab()
+                startupApplied = true
+            }
             if (!isDestroyed && foreground) {
                 showCatalog(load = true)
+                refreshAccountSection()
                 favoriteMonitor.check()
             }
         }
@@ -536,7 +542,7 @@ class MainActivity : Activity() {
     // 创建页面公共容器；清除旧视图后设置边距，可按需添加标题和返回按钮。
     private fun base(title: String? = null): LinearLayout {
         root.removeAllViews()
-        root.setBackgroundColor(bg)
+        root.background = TvVisual.backdrop(this)
         val container = column()
         val horizontal = dp(widthDp() * .05f)
         val vertical = (resources.displayMetrics.heightPixels * .05f).toInt()
@@ -589,6 +595,8 @@ class MainActivity : Activity() {
     }
 
     private fun releaseCatalogViews() {
+        settingsSidebar = emptyList()
+        settingsRows = emptyList()
         searchSuggestions?.close()
         searchSuggestions = null
         tvSearchPanel = null
@@ -865,16 +873,9 @@ class MainActivity : Activity() {
             item.textSize = if (widthDp() < 1000) 13f else 15f
             item.setPadding(dp(9), dp(10), dp(9), dp(10))
             fun paint(focused: Boolean) {
-                item.setTextColor(if (focused) bg else if (index == tab) accent else muted)
-                item.background =
-                    rounded(
-                        if (focused) white
-                        else if (index == tab) Color.rgb(48, 32, 29) else Color.TRANSPARENT
-                    )
-                item.setTypeface(
-                    null,
-                    if (focused || index == tab) Typeface.BOLD else Typeface.NORMAL,
-                )
+                item.background = TvVisual.tab(this, focused, index == tab)
+                item.setTextColor(if (index == tab) TvStyle.accent else if (focused) white else muted)
+                item.setTypeface(null, if (focused || index == tab) Typeface.BOLD else Typeface.NORMAL)
             }
             paint(false)
             item.setOnFocusChangeListener { _, focused -> paint(focused) }
@@ -886,10 +887,8 @@ class MainActivity : Activity() {
             lp(-1, dp(1)).apply { bottomMargin = dp(6) },
         )
         if (tab == 6) {
-            val scroll = ScrollView(this)
             val body = column()
-            scroll.addView(body)
-            container.addView(scroll, lp(-1, 0).apply { weight = 1f })
+            container.addView(body, lp(-1, 0).apply { weight = 1f })
             settings(body)
             if (focusNav) nav[tab].requestFocus()
             return
@@ -916,6 +915,7 @@ class MainActivity : Activity() {
                         startupCache = cloudAccount.recommendationStartupCache(),
                     ),
                     Media3TrialPlayback(this),
+                    autoPreview = library.homeAutoplay,
                 )
             homeFeed = feed
             container.addView(feed, lp(-1, 0).apply { weight = 1f })
@@ -2190,119 +2190,165 @@ class MainActivity : Activity() {
         }
     }
 
-    // 组装设置页面；每个按钮的回调连接对应设置操作。
+    // 分类与内容并列显示；焦点位置仅在当前应用会话内记忆。
     private fun settings(parent: LinearLayout) {
-        parent.addView(
-            text("按你的习惯播放", 25f).apply {
-                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                setPadding(0, dp(15), 0, dp(7))
-            }
-        )
-        parent.addView(text("偏好自动保存，下一部剧继续使用。", 13f, muted).apply { setPadding(0, 0, 0, dp(18)) })
-        val groups = row().apply { gravity = Gravity.TOP }
-        val playback = column()
-        val device = column()
-        listOf(playback, device).forEachIndexed { i, group ->
-            group.setPadding(dp(16), dp(16), dp(16), dp(16))
-            group.background = rounded(surface)
-            groups.addView(
-                group,
-                lp(0, -2).apply {
-                    weight = 1f
-                    if (i == 0) rightMargin = dp(16)
-                },
-            )
+        parent.addView(Space(this), lp(1, dp(20)))
+        val layout = row().apply { gravity = Gravity.TOP }
+        parent.addView(layout, lp(-1, 0).apply { weight = 1f })
+        val sidebar = column()
+        layout.addView(sidebar, lp(dp(170), -1).apply { rightMargin = dp(22) })
+        val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false; isFillViewport = false }
+        val content = column().apply {
+            setPadding(dp(20), dp(14), dp(20), dp(14))
+            background = TvVisual.panel(this@MainActivity)
         }
-        parent.addView(groups)
-        fun heading(group: LinearLayout, title: String, subtitle: String) {
-            group.addView(text(title, 18f).apply { setTypeface(null, Typeface.BOLD) })
-            group.addView(text(subtitle, 12f, muted).apply { setPadding(0, dp(5), 0, dp(15)) })
-        }
-        fun setting(group: LinearLayout, label: String, action: () -> Unit): TextView {
-            val view =
-                button(label, onClick = action).apply {
-                    gravity = Gravity.CENTER_VERTICAL
-                    setPadding(dp(13), dp(11), dp(13), dp(11))
-                    background = rounded(bg)
-                    setOnFocusChangeListener { _, focused ->
-                        background =
-                            rounded(
-                                if (focused) TvStyle.raised else bg,
-                                if (focused) accent else Color.TRANSPARENT,
-                            )
-                    }
+        scroll.addView(content, android.widget.FrameLayout.LayoutParams(-1, -2))
+        layout.addView(scroll, lp(0, -1).apply { weight = 1f })
+        val categories = listOf("播放", "外观与操作", "账户", "应用与更新")
+        val entries = mutableListOf<View>()
+        fun setting(label: String, action: () -> Unit): TextView {
+            val view = SettingsValueView(this).apply {
+                text = label
+                textSize = 16f
+                minimumHeight = dp(46)
+                focusStyle(this)
+                setPadding(dp(20), dp(8), dp(18), dp(8))
+                background = TvVisual.row(this@MainActivity, false)
+                setOnFocusChangeListener { _, focused ->
+                    background = TvVisual.row(this@MainActivity, focused)
+                    invalidate()
                 }
-            group.addView(view, lp(-1, -2).apply { bottomMargin = dp(8) })
+                setOnClickListener { action() }
+            }
+            content.addView(view, lp(-1, -2).apply { bottomMargin = dp(4) })
+            entries += view
             return view
         }
-        heading(playback, "播放偏好", "所有剧集共用，播放中也可调整")
-        lateinit var qualityButton: TextView
-        qualityButton =
-            setting(playback, "默认清晰度  ·  ${library.maxQuality}P") {
-                showQualityPicker(qualityButton, false)
+        fun toggle(label: String, checked: Boolean, change: (Boolean) -> Unit) {
+            val view = row().apply {
+                focusStyle(this)
+                setPadding(dp(20), dp(11), dp(14), dp(11))
+                minimumHeight = dp(46)
+                background = TvVisual.row(this@MainActivity, false)
+                setOnFocusChangeListener { _, focused -> background = TvVisual.row(this@MainActivity, focused) }
             }
-        lateinit var defaultSpeed: TextView
-        defaultSpeed =
-            setting(playback, "默认倍速  ·  ${PlaybackSpeed.label(library.playbackSpeed)}") {
-                showSpeedPicker(defaultSpeed, false)
+            view.addView(text(label, 15f), lp(0, -2).apply { weight = 1f })
+            val control = SettingsSwitch(this).apply {
+                isChecked = checked
+                isClickable = false
+                isFocusable = false
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                thumbTintList = android.content.res.ColorStateList.valueOf(white)
+                trackTintList = android.content.res.ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(accent, TvStyle.outline))
             }
-        lateinit var frame: TextView
-        frame =
-            setting(playback, "画面模式  ·  ${library.frameMode.label}") {
-                showFramePicker(frame, false)
+            view.addView(control)
+            view.setOnFocusChangeListener { _, focused ->
+                view.background = TvVisual.row(this@MainActivity, focused)
+                (view.getChildAt(0) as? TextView)?.setTextColor(if (focused) Color.WHITE else TvVisual.primary)
+                control.rowFocused = focused
             }
-        lateinit var autoNextButton: TextView
-        autoNextButton =
-            setting(playback, "自动连播  ·  ${if(library.autoNext) "开启" else "关闭"}") {
-                library.autoNext = !library.autoNext
-                autoNextButton.text = "自动连播  ·  ${if(library.autoNext) "开启" else "关闭"}"
-            }
-        heading(device, "应用与更新", "检查新版、查看开源信息")
-        lateinit var updates: TextView
-        updates = setting(device, "版本与更新  ·  ${BuildConfig.VERSION_NAME}") { updater.show(updates) }
-        lateinit var about: TextView
-        about =
-            setting(device, "关于果映 TV") {
-                tvTools.info(
-                    "关于果映 TV",
-                    "hongguoTV · 非官方客户端\n作者：tsukiyo-zero\n版本：${BuildConfig.VERSION_NAME}\n项目：https://github.com/tsukiyo-zero/hongguoTV\n\n本应用与红果官方无隶属关系。",
-                    about,
-                )
-            }
-        val license =
-            setting(device, "开源许可") {
-                AlertDialog.Builder(this)
-                    .setTitle("开源许可")
-                    .setMessage(
-                        "本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\nBouncy Castle：MIT\n完整源码和许可证见 GitHub：tsukiyo-zero/hongguoTV。"
-                    )
-                    .setPositiveButton("关闭", null)
-                    .show()
-            }
-        heading(playback, "红果账户", "账户收藏、历史与预约随账号同步")
-        val account = setting(playback, "登录与账户管理") { cloudAccount.show() }
-        val left = listOf(qualityButton, defaultSpeed, frame, autoNextButton, account)
-        val right = listOf(updates, about, license)
-        listOf(left, right).forEach { items ->
-            items.forEachIndexed { index, view ->
-                view.nextFocusUpId = items.getOrNull(index - 1)?.id ?: nav[tab].id
-                view.nextFocusDownId = items.getOrNull(index + 1)?.id ?: view.id
+            fun describe() { view.contentDescription = "$label，${if (control.isChecked) "开启" else "关闭"}，按确定切换" }
+            describe()
+            view.setOnClickListener { control.isChecked = !control.isChecked; change(control.isChecked); describe() }
+            content.addView(view, lp(-1, -2).apply { bottomMargin = dp(8) })
+            entries += view
+        }
+        lateinit var render: (Int) -> Unit
+        val buttons = categories.mapIndexed { index, title ->
+            button(title, onClick = {
+                if (settingsGroup != index) render(index)
+                settingsRows.getOrNull(settingsPositions[index].coerceAtMost(settingsRows.lastIndex))?.requestFocus()
+            }).apply {
+                tag = "settings-category-$index"
+                minHeight = dp(52)
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(22), dp(10), dp(12), dp(10))
+                sidebar.addView(this, lp(-1, -2).apply { bottomMargin = dp(8) })
+                setOnFocusChangeListener { _, focused ->
+                    if (focused) render(index)
+                    background = TvVisual.row(this@MainActivity, focused, settingsGroup == index, category = true)
+                    setTextColor(if (focused || settingsGroup == index) TvVisual.focusedValue else muted)
+                }
             }
         }
-        left.forEachIndexed { i, v ->
-            v.nextFocusLeftId = v.id
-            v.nextFocusRightId = right[minOf(i, right.lastIndex)].id
+        settingsSidebar = buttons
+        render = { index ->
+            settingsGroup = index
+            entries.clear()
+            content.removeAllViews()
+            scroll.scrollTo(0, 0)
+            content.addView(text(categories[index], 20f).apply { setTypeface(null, Typeface.BOLD) })
+            content.addView(View(this).apply { setBackgroundColor(Color.argb(18, 255, 255, 255)) }, lp(-1, dp(1)).apply { topMargin = dp(12); bottomMargin = dp(10) })
+            when (index) {
+                0 -> {
+                    lateinit var qualityButton: TextView
+                    qualityButton = setting("默认清晰度  ·  ${library.maxQuality}P") { showQualityPicker(qualityButton, false) }
+                    lateinit var speed: TextView
+                    speed = setting("默认倍速  ·  ${PlaybackSpeed.label(library.playbackSpeed)}") { showSpeedPicker(speed, false) }
+                    lateinit var frame: TextView
+                    frame = setting("画面模式  ·  ${library.frameMode.label}") { showFramePicker(frame, false) }
+                    toggle("自动连播", library.autoNext) { library.autoNext = it }
+                }
+                1 -> {
+                    val labels = listOf("首页", "找剧", "排行榜", "收藏", "观看历史", "账户预约", "设置")
+                    lateinit var startup: TextView
+                    startup = setting("启动页面  ·  ${labels[library.startupPage]}") {
+                        tvTools.choose("启动页面", labels, startup, { choice ->
+                            library.startupPage = choice
+                            startup.text = "启动页面  ·  ${labels[choice]}"
+                        }, selected = library.startupPage)
+                    }
+                    toggle("首页自动试播", library.homeAutoplay) { library.homeAutoplay = it }
+                    val clocks = listOf("关闭", "操作时显示", "始终显示")
+                    lateinit var clock: TextView
+                    clock = setting("播放时钟  ·  ${clocks[library.clockMode]}") {
+                        tvTools.choose("播放时钟", clocks, clock, { choice ->
+                            library.clockMode = choice
+                            clock.text = "播放时钟  ·  ${clocks[choice]}"
+                        }, selected = library.clockMode)
+                    }
+                }
+                2 -> {
+                    content.addView(text(if (cloudAccount.signedIn) "当前已登录红果账户" else "当前未登录，可继续使用本机收藏与历史", 15f, muted).apply { setPadding(0, 0, 0, dp(14)) })
+                    setting("登录与账户管理") { cloudAccount.show() }
+                }
+                3 -> {
+                    lateinit var updates: TextView
+                    updates = setting("版本与更新  ·  ${BuildConfig.VERSION_NAME}") { updater.show(updates) }
+                    lateinit var about: TextView
+                    about = setting("关于果映 TV") {
+                        tvTools.info("关于果映 TV", "hongguoTV · 非官方客户端\n作者：tsukiyo-zero\n版本：${BuildConfig.VERSION_NAME}\n项目：https://github.com/tsukiyo-zero/hongguoTV\n\n本应用与红果官方无隶属关系。", about)
+                    }
+                    lateinit var license: TextView
+                    license = setting("开源许可") {
+                        tvTools.info("开源许可", "本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\nBouncy Castle：MIT\n完整源码和许可证见 GitHub：tsukiyo-zero/hongguoTV。", license)
+                    }
+                }
+            }
+            settingsRows = entries.toList()
+            settingsRows.forEachIndexed { position, view ->
+                view.nextFocusLeftId = buttons[index].id
+                view.nextFocusRightId = view.id
+                view.nextFocusUpId = settingsRows.getOrNull(position - 1)?.id ?: nav[tab].id
+                view.nextFocusDownId = settingsRows.getOrNull(position + 1)?.id ?: view.id
+                val paint = view.onFocusChangeListener
+                view.setOnFocusChangeListener { target, focused ->
+                    paint?.onFocusChange(target, focused)
+                    if (focused) settingsPositions[index] = position
+                }
+            }
+            buttons.forEachIndexed { category, view ->
+                view.nextFocusRightId = settingsRows[settingsPositions[index].coerceAtMost(settingsRows.lastIndex)].id
+                view.nextFocusUpId = buttons.getOrNull(category - 1)?.id ?: nav[tab].id
+                view.nextFocusDownId = buttons.getOrNull(category + 1)?.id ?: view.id
+                view.background = TvVisual.row(this@MainActivity, view.hasFocus(), category == index, category = true)
+                view.setTextColor(if (view.hasFocus() || category == index) TvVisual.focusedValue else muted)
+            }
+            nav.forEach { it.nextFocusDownId = buttons[index].id }
         }
-        right.forEachIndexed { i, v ->
-            v.nextFocusLeftId = left[minOf(i, left.lastIndex)].id
-            v.nextFocusRightId = v.id
-        }
-        nav.forEach { it.nextFocusDownId = qualityButton.id }
-        parent.addView(
-            text("果映 TV  /  ${BuildConfig.VERSION_NAME}    ·    hongguoTV · 非官方客户端", 12f, muted)
-                .apply { setPadding(dp(2), dp(18), 0, dp(10)) }
-        )
-        nav[tab].requestFocus()
+        render(settingsGroup)
+        parent.addView(text("↑↓ 选择  ·  → 进入选项  ·  ← 返回分类  ·  返回：分类 / 顶部导航", 12f, Color.rgb(112, 122, 140)).apply { setPadding(0, dp(12), 0, 0) })
+        settingsRows.getOrNull(settingsPositions[settingsGroup].coerceAtMost(settingsRows.lastIndex))?.requestFocus()
     }
 
     private fun saveDiscoveryDraft() {
@@ -2490,7 +2536,8 @@ class MainActivity : Activity() {
         )
         val description = data.series.description.ifBlank { "选择剧集开始观看" }
         val synopsis =
-            text(description, 15f, muted).apply {
+            text(description, 14f, muted).apply {
+                setLineSpacing(dp(3).toFloat(), 1f)
                 maxLines = if (synopsisExpanded) 20 else 2
                 ellipsize = TextUtils.TruncateAt.END
             }
@@ -2805,8 +2852,6 @@ class MainActivity : Activity() {
             tvTools.close()
             episodePanel?.dismiss()
             episodePanel = null
-            speedDialog?.dismiss()
-            speedDialog = null
             playerListener?.let { player?.removeListener(it) }
             playerListener = null
             player?.stop()
@@ -2869,6 +2914,20 @@ class MainActivity : Activity() {
             playerView = view
             root.addView(view, FrameLayout.LayoutParams(-1, -1))
             social.attach(root)
+            playbackClock = TextClock(this).apply {
+                format12Hour = "HH:mm"
+                format24Hour = "HH:mm"
+                textSize = 18f
+                setTextColor(white)
+                setPadding(dp(10), dp(5), dp(10), dp(5))
+                background = rounded(Color.argb(150, 11, 15, 21))
+                isFocusable = false
+            }.also { clock ->
+                root.addView(clock, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
+                    topMargin = (resources.displayMetrics.heightPixels * .05f).toInt()
+                    rightMargin = dp(widthDp() * .05f)
+                })
+            }
             hud =
                 column().apply {
                     setPadding(
@@ -2900,7 +2959,7 @@ class MainActivity : Activity() {
                 }
             hud.addView(progressBar, lp(-1, dp(4)))
             hud.addView(
-                text("确认 暂停/播放    左右 快退/快进    ↓ 选集    ↑ 更多    返回 收起 / 退出", 13f, muted).apply {
+                text("确认 暂停/播放    左右 快退/快进    ↓ 选集    ↑ 操作菜单    菜单 更多", 13f, muted).apply {
                     setPadding(0, dp(12), 0, 0)
                 }
             )
@@ -3954,14 +4013,21 @@ class MainActivity : Activity() {
         controls.visibility = View.GONE
         controls.clearFocus()
         hud.visibility = View.GONE
+        updateClock()
+    }
+
+    private fun updateClock() {
+        playbackClock?.visibility = if (screen == "player" && library.clockMode != 0 &&
+            (library.clockMode == 2 || hud.visibility == View.VISIBLE)) View.VISIBLE else View.GONE
     }
 
     private fun showHud() {
         if (screen != "player") return
         hud.visibility = View.VISIBLE
+        updateClock()
         updatePlaybackText()
         main.removeCallbacks(hideHud)
-        if (!panel && player?.isPlaying == true) main.postDelayed(hideHud, 4500)
+        if (player?.isPlaying == true) main.postDelayed(hideHud, if (panel) 8000 else 4500)
     }
 
     private fun updatePlaybackText() {
@@ -4128,6 +4194,7 @@ class MainActivity : Activity() {
                 if (anchor.tag != "playback-settings")
                     anchor.text = (if (inPlayer) "画面 " else "画面模式  ·  ") + library.frameMode.label
             },
+            selected = library.frameMode.ordinal,
         )
     }
 
@@ -4176,7 +4243,7 @@ class MainActivity : Activity() {
                 isFocusable = enabled
                 alpha = if (enabled) 1f else .4f
             }
-        val options = row().apply { setPadding(0, dp(8), 0, 0) }
+        val options = row().apply { setPadding(0, dp(6), 0, 0) }
         controls.addView(options)
         lateinit var episodes: TextView
         episodes = addButton(options, "选集") { showEpisodePanel(episodes) }
@@ -4230,68 +4297,31 @@ class MainActivity : Activity() {
                 }
                 .apply { tag = "playback-settings" }
         play.requestFocus()
+        showHud()
     }
 
     private fun showSpeedPicker(anchor: TextView, inPlayer: Boolean = true) {
-        if (speedDialog != null) return
         val speeds = PlaybackSpeed.options
-        val selected = speeds.indexOf(library.playbackSpeed)
-        val dialog =
-            AlertDialog.Builder(this)
-                .setTitle("全局默认倍速")
-                .setSingleChoiceItems(speeds.map(PlaybackSpeed::label).toTypedArray(), selected) {
-                    popup,
-                    index ->
-                    library.playbackSpeed = speeds[index]
-                    if (inPlayer) player?.setPlaybackSpeed(library.playbackSpeed)
-                    if (anchor.tag != "playback-settings")
-                        anchor.text =
-                            (if (inPlayer) "倍速 " else "默认倍速  ·  ") +
-                                PlaybackSpeed.label(library.playbackSpeed)
-                    if (inPlayer) updatePlaybackText()
-                    popup.dismiss()
-                }
-                .setNegativeButton("取消", null)
-                .create()
-        speedDialog = dialog
-        dialog.setOnDismissListener {
-            speedDialog = null
-            if (anchor.isAttachedToWindow) {
-                anchor.requestFocus()
-                if (inPlayer) showHud()
-            }
-        }
-        dialog.show()
-        dialog.listView.setSelection(selected)
-        dialog.listView.requestFocus()
+        tvTools.choose("全局默认倍速", speeds.map(PlaybackSpeed::label), anchor, { index ->
+            library.playbackSpeed = speeds[index]
+            if (inPlayer) player?.setPlaybackSpeed(library.playbackSpeed)
+            if (anchor.tag != "playback-settings")
+                anchor.text = (if (inPlayer) "倍速 " else "默认倍速  ·  ") + PlaybackSpeed.label(library.playbackSpeed)
+            if (inPlayer) { updatePlaybackText(); showHud() }
+        }, selected = speeds.indexOf(library.playbackSpeed))
     }
 
     private fun showQualityPicker(anchor: TextView, inPlayer: Boolean) {
         val options = PlaybackQuality.options
-        val dialog =
-            AlertDialog.Builder(this)
-                .setTitle("全局默认清晰度")
-                .setSingleChoiceItems(
-                    options.map { "${it}P" }.toTypedArray(),
-                    options.indexOf(library.maxQuality),
-                ) { popup, index ->
-                    val target = options[index]
-                    val changed = library.maxQuality != target
-                    library.maxQuality = target
-                    popup.dismiss()
-                    if (anchor.tag != "playback-settings")
-                        anchor.text = (if (inPlayer) "清晰度 " else "默认清晰度  ·  ") + "${target}P"
-                    if (inPlayer && changed)
-                        playEpisode(
-                            episodeIndex,
-                            currentPosition(),
-                            player?.playWhenReady ?: requestedAutoplay,
-                        )
-                }
-                .setNegativeButton("取消", null)
-                .create()
-        dialog.setOnDismissListener { if (anchor.isAttachedToWindow) anchor.requestFocus() }
-        dialog.show()
+        tvTools.choose("全局默认清晰度", options.map { "${it}P" }, anchor, { index ->
+            val target = options[index]
+            val changed = library.maxQuality != target
+            library.maxQuality = target
+            if (anchor.tag != "playback-settings")
+                anchor.text = (if (inPlayer) "清晰度 " else "默认清晰度  ·  ") + "${target}P"
+            if (inPlayer && changed)
+                playEpisode(episodeIndex, currentPosition(), player?.playWhenReady ?: requestedAutoplay)
+        }, selected = options.indexOf(library.maxQuality))
     }
 
     private fun showEpisodePanel(anchor: View) {
@@ -4394,8 +4424,6 @@ class MainActivity : Activity() {
         episodePanel = null
         oldPanel?.dismiss()
         foreground = wasForeground
-        speedDialog?.dismiss()
-        speedDialog = null
         main.removeCallbacks(hideHud)
         main.removeCallbacks(seekRunnable)
         pendingSeek = null
@@ -4433,6 +4461,10 @@ class MainActivity : Activity() {
         if (!library.isLoaded) {
             finish()
             return
+        }
+        if (screen == "catalog" && tab == 6) {
+            if (settingsRows.any { it.hasFocus() }) { settingsSidebar.getOrNull(settingsGroup)?.requestFocus(); return }
+            if (settingsSidebar.any { it.hasFocus() }) { nav[6].requestFocus(); return }
         }
         if (screen == "catalog" && tab == 0 && homeFeed?.back() == true) return
         if (screen == "catalog" && tab == 1 && tvSearchPanel != null) {
@@ -4479,6 +4511,7 @@ class MainActivity : Activity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (screen == "player") {
+            if (panel && !playError && event.action == KeyEvent.ACTION_DOWN) showHud()
             val key = event.keyCode
             if (key == KeyEvent.KEYCODE_BACK) {
                 if (event.action == KeyEvent.ACTION_UP) goBack()

@@ -86,7 +86,7 @@ class DiscoveryScreenTest {
             val chosen =
                 views(first).filterIsInstance<TextView>().single { it.text.toString() == "测试设定29" }
             assertTrue(chosen.isSelected)
-            assertTrue(views(first).filterIsInstance<HorizontalScrollView>().any { it.scrollX > 0 })
+            assertTrue(views(first).filterIsInstance<TextView>().any { it.text.toString().startsWith("全部 ·") })
             val grid = views(first).filterIsInstance<ContinuousCatalogView>().single()
             grid.enter()
             grid.grid.setSelection(6)
@@ -110,7 +110,7 @@ class DiscoveryScreenTest {
                     .single { it.text.toString() == "测试设定29" }
                     .isSelected
             )
-            assertTrue(views(next).filterIsInstance<HorizontalScrollView>().any { it.scrollX > 0 })
+            assertTrue(views(next).filterIsInstance<TextView>().any { it.text.toString().startsWith("全部 ·") })
             assertEquals(offset, next.scrollY)
             next.backToTop()
             layout(next)
@@ -249,4 +249,31 @@ class DiscoveryScreenTest {
             controller.pause().stop().destroy()
         }
     }
+    @Test
+    fun allOptionsSelectsHiddenChoiceAndKeepsItVisible() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val options = (1..30).map { DiscoveryFilter("tag_$it", "题材$it") }
+        val group = DiscoveryGroup("category_dim_role", "设定", options)
+        val state = DiscoveryBrowserState().apply { loaded = true; groups = listOf(group) }
+        val screen = DiscoveryScreen(activity, state, TextView(activity), { _, _ -> }, {}, { _, _ -> },
+            { _, _, done -> done(FilteredDiscoveryPage(emptyList(), listOf(group), null), null) })
+        try {
+            activity.setContentView(screen)
+            layout(screen)
+            assertFalse(views(screen).filterIsInstance<TextView>().any { it.text == "题材30" })
+            views(screen).filterIsInstance<TextView>().single { it.text.toString().startsWith("全部 ·") }.performClick()
+            val dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
+            val panel = dialog.window!!.decorView
+            views(panel).filterIsInstance<TextView>().single { it.text == "题材30" }.performClick()
+            layout(screen)
+            assertEquals("tag_30", state.selection.values[group.type])
+            assertTrue(views(screen).filterIsInstance<TextView>().single { it.text == "题材30" }.isSelected)
+            assertFalse(dialog.isShowing)
+        } finally {
+            screen.close()
+            controller.pause().stop().destroy()
+        }
+    }
+
 }

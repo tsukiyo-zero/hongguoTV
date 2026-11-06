@@ -27,6 +27,7 @@ internal class HomeFeedScreen(
     private val favoriteLabel: (String) -> String,
     private val backend: FeedBackend,
     private val playback: TrialPlayback,
+    private val autoPreview: Boolean = true,
 ) : LinearLayout(activity), Closeable {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newFixedThreadPool(2)
@@ -49,6 +50,7 @@ internal class HomeFeedScreen(
     private var clip: TrialClip? = null
     private var closed = false
     private var active = false
+    private var manuallyStarted: String? = null
     private var loading = false
     private var failed = false
     private val exhaustedCursors = mutableSetOf<RecommendationCursor>()
@@ -97,7 +99,7 @@ internal class HomeFeedScreen(
         }
 
     private fun paintButton(button: TextView) {
-        button.background = TvStyle.card(activity, button.hasFocus())
+        button.background = TvStyle.card(activity, button.hasFocus(), button.isSelected)
         button.setTextColor(if (button.isSelected) TvStyle.accent else TvStyle.text)
         button.setTypeface(null, if (button.isSelected) Typeface.BOLD else Typeface.NORMAL)
     }
@@ -148,7 +150,7 @@ internal class HomeFeedScreen(
         stage.isFocusableInTouchMode = true
         stage.isClickable = true
         stage.setPadding(dp(3), dp(3), dp(3), dp(3))
-        stage.background = TvStyle.card(activity, false)
+        stage.background = TvStyle.shape(activity, Color.BLACK)
         stage.addView(playback.view, FrameLayout.LayoutParams(-1, -1))
         tag.setPadding(dp(12), dp(8), dp(12), dp(8))
         tag.background = TvStyle.shape(activity, Color.argb(210, 11, 15, 21))
@@ -244,7 +246,7 @@ internal class HomeFeedScreen(
                     .id
         }
         stage.setOnFocusChangeListener { _, focused ->
-            stage.background = TvStyle.card(activity, focused)
+            stage.background = TvStyle.shape(activity, Color.BLACK, if (focused) TvVisual.focusedValue else TvStyle.outline)
         }
         stage.setOnClickListener { showActions() }
         stage.setOnKeyListener { _, key, event ->
@@ -568,6 +570,7 @@ internal class HomeFeedScreen(
     }
 
     private fun attach(next: TrialClip) {
+        if (!autoPreview && manuallyStarted != next.detail.series.id) state.userPaused = true
         clip = next
         val series = next.detail.series
         val tags = series.tags.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""
@@ -741,6 +744,7 @@ internal class HomeFeedScreen(
 
     private fun toggle() {
         if (loading) return
+        manuallyStarted = state.current?.id
         if (failed || state.current == null || clip == null) {
             if (state.current == null) state.refresh()
             state.userPaused = false

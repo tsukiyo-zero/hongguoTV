@@ -174,7 +174,7 @@ class TvSocial(
             LinearLayout(activity).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(18), dp(12), dp(18), dp(12))
-                setBackgroundColor(TvStyle.background)
+                background = TvVisual.panel(activity)
             }
         body.addView(label("弹幕设置", 22f))
         fun option(title: () -> String, action: () -> Unit) {
@@ -249,7 +249,7 @@ class TvSocial(
             LinearLayout(activity).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(16), dp(12), dp(16), dp(12))
-                setBackgroundColor(TvStyle.background)
+                background = TvVisual.panel(activity)
             }
         body.addView(label("评论与剧评", 22f))
         val tabs = LinearLayout(activity)

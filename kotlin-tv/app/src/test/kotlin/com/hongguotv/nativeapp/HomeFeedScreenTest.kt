@@ -150,6 +150,33 @@ class HomeFeedScreenTest {
         else if (view is TextView) listOf(view) else emptyList()
 
     @Test
+    fun disabledAutoplayStaysPausedAcrossSwitchesButAllowsManualPlay() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val state = DramaFeedState()
+        val playback = Playback(activity)
+        val screen = HomeFeedScreen(activity, state, listOf(TextView(activity)), {}, { _, _ -> }, { "收藏" }, Backend(), playback, autoPreview = false)
+        try {
+            activity.setContentView(screen)
+            screen.start(true, false)
+            pump(screen)
+            assertFalse(playback.playing)
+            texts(screen).first { it.text == "继续试播" }.performClick()
+            assertTrue(playback.playing)
+            screen.pause()
+            screen.resume()
+            assertTrue(playback.playing)
+            screen.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN))
+            pump(screen)
+            assertEquals("2", playback.loaded)
+            assertFalse(playback.playing)
+            screen.pause()
+            screen.resume()
+            assertFalse(playback.playing)
+        } finally { screen.close(); controller.pause().stop().destroy() }
+    }
+
+    @Test
     fun refreshAfterExhaustionStartsFreshInsteadOfReusingStuckCursor() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val activity = controller.get()

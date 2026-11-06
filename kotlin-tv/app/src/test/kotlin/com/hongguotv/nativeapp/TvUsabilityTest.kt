@@ -107,19 +107,49 @@ class TvUsabilityTest {
                 .apply { isAccessible = true }
                 .invoke(activity, 6)
             val root = activity.findViewById<View>(android.R.id.content)
+            root.measure(View.MeasureSpec.makeMeasureSpec(960, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(540, View.MeasureSpec.EXACTLY))
+            root.layout(0, 0, 960, 540)
+            val quality = texts(root).first { it.text.toString().startsWith("默认清晰度") }
+            assertTrue(quality.hasFocus())
+            val card = quality.parent as View
+            assertTrue("Card=${card.height}, viewport=${(card.parent as View).height}, root=${root.height}, children=${(0 until (card as ViewGroup).childCount).map { card.getChildAt(it).height }}", card.height < (card.parent as View).height)
             val rows = texts(root)
-            listOf("播放偏好", "红果账户", "应用与更新").forEach { title ->
+            listOf("播放", "外观与操作", "账户", "应用与更新").forEach { title ->
                 assertTrue(rows.any { it.text == title })
             }
-            assertFalse(
-                rows.any {
-                    it.text.toString().contains("手机备份") ||
-                        it.text.toString().contains("恢复隐藏推荐") ||
-                        it.text == "数据管理"
-                }
-            )
-            val account = rows.first { it.text == "登录与账户管理" }
-            assertNotNull(root.findViewById<View>(account.nextFocusRightId))
+            val appearance = root.findViewWithTag<View>("settings-category-1")
+            appearance.requestFocus()
+            appearance.performClick()
+            val startup = texts(root).first { it.text.toString().startsWith("启动页面") }
+            assertTrue(startup.hasFocus())
+            assertEquals(appearance.id, startup.nextFocusLeftId)
+            val clock = texts(root).first { it.text.toString().startsWith("播放时钟") }
+            clock.requestFocus()
+            root.findViewWithTag<View>("settings-category-0").requestFocus()
+            assertTrue(texts(root).any { it.text.toString().startsWith("默认清晰度") })
+            appearance.requestFocus()
+            appearance.performClick()
+            assertTrue(texts(root).first { it.text.toString().startsWith("播放时钟") }.hasFocus())
+            val switches = mutableListOf<android.widget.Switch>()
+            fun findSwitches(view: View) {
+                if (view is android.widget.Switch) switches += view
+                if (view is ViewGroup) for (i in 0 until view.childCount) findSwitches(view.getChildAt(i))
+            }
+            findSwitches(root)
+            val preview = switches.single()
+            val previous = library.homeAutoplay
+            (preview.parent as View).performClick()
+            assertEquals(!previous, library.homeAutoplay)
+            assertEquals(!previous, preview.isChecked)
+            assertFalse(preview.isFocusable)
+            root.findViewWithTag<View>("settings-category-2").requestFocus()
+            val account = texts(root).first { it.text == "登录与账户管理" }
+            assertEquals(root.findViewWithTag<View>("settings-category-2").id, account.nextFocusLeftId)
+            assertFalse(texts(root).any { it.text.toString().startsWith("版本与更新") })
+            root.findViewWithTag<View>("settings-category-3").requestFocus()
+            assertTrue(texts(root).any { it.text.toString().startsWith("版本与更新") })
+            assertFalse(texts(root).any { it.text == "登录与账户管理" })
         } finally {
             controller.destroy()
         }

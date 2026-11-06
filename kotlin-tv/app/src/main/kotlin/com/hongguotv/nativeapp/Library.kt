@@ -50,6 +50,28 @@ class Library(context: Context) {
             failed = { Log.w("HongguoTV", "Home cache commit failed") },
         )
     private var index: LibraryIndex? = null
+    private var viewing = ViewingPreferences()
+
+    var startupPage: Int
+        get() = viewing.startupPage
+        set(value) {
+            viewing = viewing.copy(startupPage = value.coerceIn(0, 6))
+            put("startupTab", viewing.startupPage)
+        }
+    var homeAutoplay: Boolean
+        get() = viewing.homeAutoplay
+        set(value) {
+            viewing = viewing.copy(homeAutoplay = value)
+            put("homeAutoplay", value)
+        }
+    var clockMode: Int
+        get() = viewing.clockMode
+        set(value) {
+            viewing = viewing.copy(clockMode = value.coerceIn(0, 2))
+            put("clockMode", viewing.clockMode)
+        }
+    fun initialTab() = viewing.initialTab()
+
     private val homes = mutableMapOf<ContentType, CatalogPage>()
     private val homeSavedAt = mutableMapOf<ContentType, Long>()
     private var loading = false
@@ -102,7 +124,7 @@ class Library(context: Context) {
                 if (oldKeys.isNotEmpty() && migration.commit()) {
                     prefs.edit().also { edit -> oldKeys.forEach(edit::remove) }.commit()
                 }
-                Triple(loaded, cached, stamps)
+                Triple(loaded to ViewingPreferences.decode(values), cached, stamps)
             }
             main.post {
                 loading = false
@@ -117,7 +139,8 @@ class Library(context: Context) {
                 errorCallbacks.clear()
                 result
                     .onSuccess { (loaded, cached, stamps) ->
-                        index = loaded
+                        index = loaded.first
+                        viewing = loaded.second
                         homes.putAll(cached)
                         homeSavedAt.putAll(stamps)
                         ready.forEach { it() }

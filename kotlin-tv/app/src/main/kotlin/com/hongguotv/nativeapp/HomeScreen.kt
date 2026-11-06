@@ -20,7 +20,7 @@ class SeriesPreview(context: Context) : LinearLayout(context) {
         }
 
     private val title =
-        label(27f, TvStyle.text).apply {
+        label(22f, TvStyle.text).apply {
             minLines = 1
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
@@ -43,9 +43,9 @@ class SeriesPreview(context: Context) : LinearLayout(context) {
     }
 
     fun show(series: Series?, status: String) {
-        val nextTitle = series?.title ?: "下一段好故事，从这里开始"
+        val nextTitle = series?.title ?: "选择下方作品查看信息"
         val nextMeta =
-            if (series == null) "浏览片库，选择你想看的剧"
+            if (series == null) "方向键选择 · 确认打开作品"
             else
                 listOf(status, series.badge, series.tags)
                     .flatMap { it.split('·') }

@@ -628,7 +628,6 @@ class AccountController(private val activity: Activity, private val play: (Cloud
                     if (failure is PhoneLogin.Failure && !failure.canRetryCode)
                         phoneLoginFailure(failure)
                 },
-                announce = false,
             )
         }
 
@@ -668,7 +667,6 @@ class AccountController(private val activity: Activity, private val play: (Cloud
                     send.text = "获取验证码"
                     hint.text = safeError(failure)
                 },
-                announce = false,
             )
         }
     }
@@ -982,12 +980,10 @@ class AccountController(private val activity: Activity, private val play: (Cloud
         action: () -> T,
         success: (T) -> Unit,
         failure: (Throwable) -> Unit = { toast(safeError(it)) },
-        announce: Boolean = true,
     ) {
         if (busy || closed) return
         busy = true
         val token = generation
-        if (announce) toast("正在连接红果账号…")
         worker.execute {
             if (closed || token != generation) return@execute
             val result = runCatching(action)

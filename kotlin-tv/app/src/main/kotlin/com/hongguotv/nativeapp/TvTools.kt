@@ -64,6 +64,8 @@ class TvTools(private val activity: Activity) {
             }
         }
         next.show()
+        next.window?.setBackgroundDrawable(TvVisual.panel(activity, modal = true))
+        next.window?.setDimAmount(.6f)
     }
 
     fun close() {
@@ -106,22 +108,86 @@ class TvTools(private val activity: Activity) {
         onChoice: (Int) -> Unit,
         extra: String? = null,
         compact: Boolean = false,
+        selected: Int = -1,
         onExtra: () -> Unit = {},
     ) {
-        val builder =
-            AlertDialog.Builder(activity)
-                .setTitle(title)
-                .setItems(labels.toTypedArray()) { _, index -> onChoice(index) }
-                .setNegativeButton("取消", null)
-        if (extra != null) builder.setNeutralButton(extra) { _, _ -> onExtra() }
-        val next = builder.create()
+        require(labels.isNotEmpty())
+        val content = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(18), dp(20), dp(14))
+            background = TvVisual.panel(activity, modal = true)
+        }
+        content.addView(label(title, 21f).apply {
+            setTextColor(TvStyle.text)
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setPadding(dp(8), 0, dp(8), dp(14))
+        })
+        val scroll = ScrollView(activity).apply {
+            isVerticalScrollBarEnabled = false
+            isFillViewport = false
+        }
+        val list = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        scroll.addView(list)
+        content.addView(scroll)
+        val choices = mutableListOf<View>()
+        lateinit var next: AlertDialog
+        fun choice(value: String, checked: Boolean, action: () -> Unit) {
+            val row = LinearLayout(activity).apply {
+                id = View.generateViewId()
+                tag = "choice-${choices.size}"
+                gravity = Gravity.CENTER_VERTICAL
+                isFocusable = true
+                isFocusableInTouchMode = true
+                isClickable = true
+                minimumHeight = dp(48)
+                setPadding(dp(14), dp(10), dp(14), dp(10))
+                contentDescription = value + if (checked) "，当前已选" else ""
+            }
+            val name = label(value, 16f).apply { setPadding(0, 0, dp(8), 0) }
+            val marker = label(if (checked) "✓" else "", 18f).apply {
+                gravity = Gravity.CENTER
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                setPadding(0, 0, 0, 0)
+            }
+            row.addView(name, LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(marker, LinearLayout.LayoutParams(dp(26), -2))
+            fun paint(focused: Boolean) {
+                row.background = TvVisual.row(activity, focused, checked)
+                name.setTextColor(TvVisual.primary)
+                marker.setTextColor(TvVisual.accent)
+            }
+            paint(false)
+            row.setOnFocusChangeListener { _, focused -> paint(focused) }
+            row.setOnClickListener { next.dismiss(); action() }
+            list.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
+            choices += row
+        }
+        labels.forEachIndexed { index, value -> choice(value, index == selected) { onChoice(index) } }
+        if (extra != null) choice(extra, false, onExtra)
+        choices.forEachIndexed { index, view ->
+            view.nextFocusUpId = choices[maxOf(0, index - 1)].id
+            view.nextFocusDownId = choices[minOf(choices.lastIndex, index + 1)].id
+            view.nextFocusLeftId = view.id
+            view.nextFocusRightId = view.id
+        }
+        content.addView(label("确定选择 · 返回取消", 12f).apply {
+            setTextColor(TvStyle.muted)
+            setPadding(dp(8), dp(8), dp(8), 0)
+        })
+        next = AlertDialog.Builder(activity).create()
+        next.setView(content, 0, 0, 0, 0)
         open(next, anchor)
-        if (compact)
-            next.window?.setLayout(
-                minOf(dp(620), (activity.resources.displayMetrics.widthPixels * .78f).toInt()),
-                android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
-            )
-        next.listView.requestFocus()
+        next.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+        next.window?.setDimAmount(.6f)
+        val width = minOf(dp(if (compact) 440 else 480), (activity.resources.displayMetrics.widthPixels * .82f).toInt())
+        content.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+        val height = minOf(content.measuredHeight, (activity.resources.displayMetrics.heightPixels * .84f).toInt())
+        scroll.layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
+        next.window?.setLayout(width, height)
+        val target = choices[selected.takeIf { it in labels.indices } ?: 0]
+        target.requestFocus()
+        target.post { if (next.isShowing) scroll.requestChildFocus(list, target) }
     }
 
     fun chooseGrid(
@@ -156,13 +222,7 @@ class TvTools(private val activity: Activity) {
                         contentDescription = value
                         fun paint(focused: Boolean) {
                             setTextColor(if (index == selected) TvStyle.accent else TvStyle.text)
-                            background =
-                                TvStyle.shape(
-                                    activity,
-                                    if (index == selected) TvStyle.raised else TvStyle.surface,
-                                    if (focused) TvStyle.accent
-                                    else android.graphics.Color.TRANSPARENT,
-                                )
+                            background = TvStyle.card(activity, focused, index == selected)
                         }
                         paint(false)
                         setOnFocusChangeListener { _, focused -> paint(focused) }
@@ -244,7 +304,7 @@ class TvTools(private val activity: Activity) {
                             backgroundTintList =
                                 android.content.res.ColorStateList(
                                     arrayOf(intArrayOf(android.R.attr.state_focused), intArrayOf()),
-                                    intArrayOf(Color.rgb(255, 99, 76), Color.rgb(31, 36, 47)),
+                                    intArrayOf(TvStyle.accent, TvStyle.surface),
                                 )
                             setOnClickListener {
                                 when (key) {
