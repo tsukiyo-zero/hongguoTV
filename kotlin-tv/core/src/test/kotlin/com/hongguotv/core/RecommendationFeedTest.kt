@@ -75,6 +75,51 @@ class RecommendationFeedTest {
     }
 
     @Test
+    fun countsTheRecommendationTabEvenWhenAnotherTabComesFirst() {
+        val data = JSONObject(response())
+        val tabs = data.getJSONObject("data").getJSONArray("tab_item")
+        data.getJSONObject("data").put("tab_item", JSONArray()
+            .put(JSONObject().put("tab_type", 8).put("cell_data", JSONArray()))
+            .put(tabs.getJSONObject(0)))
+        assertEquals(2, RecommendationFeed.rawVideoCount(data))
+        assertEquals(listOf("101"), RecommendationFeed.parse(data).first.items.map { it.id })
+    }
+
+    @Test
+    fun oneLargeBatchDoesNotDiscardWorksAfterTheThirtieth() {
+        val data = JSONObject(response())
+        val rows = JSONArray()
+        repeat(45) { rows.put(JSONObject().put("series_id", "${101 + it}").put("series_title", "作品$it")) }
+        data.getJSONObject("data").getJSONArray("tab_item").getJSONObject(0)
+            .getJSONArray("cell_data").getJSONObject(0).getJSONArray("cell_data")
+            .getJSONObject(0).put("video_data", rows)
+        assertEquals(45, RecommendationFeed.parse(data).first.items.size)
+        assertEquals(45, RecommendationFeed.rawVideoCount(data))
+    }
+
+    @Test
+    fun restartingAnExhaustedSourceKeepsDeduplicationButDropsItsServerSession() {
+        val state = DramaFeedState()
+        state.recommendationCursor.session = "old-session"
+        state.recommendationCursor.offset = 30
+        state.recommendationCursor.markSeen("101")
+        state.refresh(restartCurrentSource = true)
+        assertEquals("", state.recommendationCursor.session)
+        assertEquals(0, state.recommendationCursor.offset)
+        assertEquals(setOf("101"), state.recommendationCursor.seenIds())
+        var calls = 0
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            calls++
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200)
+                .message("OK").body(response(if (calls == 1) "101" else "102").toResponseBody()).build()
+        }.build()
+        assertEquals("102", RecommendationFeed(http, cursor = state.recommendationCursor).page(1).items.single().id)
+        assertEquals(2, calls)
+        state.refresh(resetRecommendations = true)
+        assertTrue(state.recommendationCursor.seenIds().isEmpty())
+    }
+
+    @Test
     fun parsesBothCardShapesAndDoesNotMistakeHasMoreFalseForFeedEnd() {
         for (wrapped in listOf(false, true)) {
             val data = JSONObject(response(wrapped = wrapped))

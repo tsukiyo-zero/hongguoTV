@@ -16,7 +16,7 @@ class DramaFeedTest {
         state.recommend()
         state.refresh(restartCurrentSource = true)
         assertFalse(state.recommendationCursor.hasProgress)
-        assertEquals(0, org.json.JSONObject(state.recommendationCursor.snapshot()).getJSONArray("seen").length())
+        assertEquals(listOf("101"), state.recommendationCursor.seenIds().toList())
         state.select(DramaCategory.COMIC)
         assertSame(comic, state.recommendationCursor)
         assertEquals("202", state.current!!.id)

@@ -188,6 +188,7 @@ constructor(
     private var emptyPlaybackRotated = false
     private var playbackFailureGeneration = 0
     private var playbackRotationResult: Boolean? = null
+    private var playbackRotationAt = 0L
 
     // 榜单页偶发被 CDN 软拦截（空响应或挂起到超时）：收紧超时并单次重试，
     // 让整榜失败在最坏约 15 秒内暴露，而不是分钟级的全局超时。
@@ -875,16 +876,41 @@ constructor(
                     val previousIdentity = playbackSession.profile(transport())
                     // 后台不消耗前台失败额度，也不触发注册；前台按已知失效状态恢复一次。
                     fun refreshIdentity(previous: PlaybackDeviceSession.Profile): PlaybackDeviceSession.Profile {
+                        RequestScope.ensureActive()
                         val rotationGeneration = synchronized(playbackIdentityLock) {
+                            // 失败注册五秒后允许后续前台调用再试；替代身份仍失败则至少冷却三十秒。
+                            // 只在后续请求中重新开放额度，不新增后台定时循环。
+                            val cooldown = if (playbackRotationResult == false) 5_000L else 30_000L
+                            if (emptyPlaybackRotated && playbackRotationResult != null &&
+                                clock() - playbackRotationAt >= cooldown) {
+                                emptyPlaybackRotated = false
+                                playbackRotationResult = null
+                            }
                             if (!speculative && !emptyPlaybackRotated) {
                                 emptyPlaybackRotated = true
+                                playbackRotationAt = clock()
                                 playbackFailureGeneration
                             } else null
                         }
                         if (rotationGeneration != null) {
-                            val ready = playbackSession.rotate(transport(), previous)
-                            synchronized(playbackIdentityLock) {
-                                if (playbackFailureGeneration == rotationGeneration) playbackRotationResult = ready
+                            try {
+                                val ready = playbackSession.rotate(transport(), previous)
+                                RequestScope.ensureActive()
+                                synchronized(playbackIdentityLock) {
+                                    if (playbackFailureGeneration == rotationGeneration) {
+                                        playbackRotationResult = ready
+                                        playbackRotationAt = clock()
+                                    }
+                                }
+                            } catch (error: IOException) {
+                                synchronized(playbackIdentityLock) {
+                                    if (playbackFailureGeneration == rotationGeneration) {
+                                        emptyPlaybackRotated = false
+                                        playbackRotationResult = null
+                                        playbackFailureGeneration++
+                                    }
+                                }
+                                throw error
                             }
                         }
                         return playbackSession.profile(transport())
@@ -947,12 +973,13 @@ constructor(
                             if (model == null || (model.optJSONArray("video_list")?.length() ?: 0) == 0 && !model.has("fallback_api"))
                                 throw IOException("播放信息格式异常")
                             current = row
+                            RequestScope.ensureActive()
                             identity.offerModel(id, row, playbackModelOwner, clock())
                             identity.routes.success(route, clock())
                             if (!speculative) resetPlaybackFailures()
                             break
                         } catch (error: IOException) {
-                            if (Thread.currentThread().isInterrupted) throw error
+                            RequestScope.ensureActive()
                             lastError = error
                             val empty = error is EmptyPlaybackResponseException
                             allEmpty = allEmpty && empty
@@ -965,6 +992,7 @@ constructor(
                         }
                     }
                     if (current == null) {
+                        RequestScope.ensureActive()
                         if (!speculative) synchronized(playbackIdentityLock) {
                             emptyPlaybackRounds = if (allEmpty || postCount > 0 && emptyPosts == postCount) emptyPlaybackRounds + 1 else 0
                         }

@@ -23,7 +23,9 @@ internal constructor(
     internal var lastPage = 0
     internal var lastResult: CatalogPage? = null
 
-    fun nextBatch() = RecommendationCursor(session, offset).also { it.remember(seenIds()) }
+    fun nextBatch(restartSession: Boolean = false) =
+        RecommendationCursor(if (restartSession) "" else session, if (restartSession) 0 else offset)
+            .also { it.remember(seenIds()) }
 
     // UI 展示记录与后台分页共用集合；单独锁集合，不能让 UI 等待 page() 的网络锁。
     internal fun seenIds(): Set<String> = synchronized(seen) { seen.toSet() }
@@ -101,7 +103,7 @@ internal constructor(
 }
 
 /** 有效推荐批次耗尽或连续重复，需要用户主动重新获取当前来源。 */
-class NoNewRecommendationsException : IOException("暂时没有新的推荐，请稍后换一批")
+class NoNewRecommendationsException(val rememberedCount: Int = 0) : IOException("推荐接口未返回新作品，请稍后再试")
 
 /** Official App feed, not the public website's sorted category list. No behavior reporting. */
 class RecommendationFeed(
@@ -283,7 +285,7 @@ class RecommendationFeed(
                 cursor.lastResult = fresh
                 return@synchronized fresh
             }
-            throw NoNewRecommendationsException()
+            throw NoNewRecommendationsException(cursor.seenIds().size)
         }
 
     companion object {
@@ -353,7 +355,8 @@ class RecommendationFeed(
         /** 一次响应里实际下发的视频条数，用于推进服务端的按条 offset。 */
         internal fun rawVideoCount(result: JSONObject): Int {
             val tab =
-                result.optJSONObject("data")?.optJSONArray("tab_item")?.optJSONObject(0) ?: return 0
+                result.optJSONObject("data")?.optJSONArray("tab_item")?.objects()
+                    ?.firstOrNull { it.str("tab_type") == "16" } ?: return 0
             val cells = tab.optJSONArray("cell_data") ?: return 0
             var count = 0
             for (i in 0 until cells.length()) {
@@ -405,7 +408,6 @@ class RecommendationFeed(
                             )
                     }
                     .distinctBy { it.id }
-                    .take(30)
             if (items.isEmpty()) throw IOException("推荐未返回可播放的剧集，请刷新重试")
             val hints =
                 rows

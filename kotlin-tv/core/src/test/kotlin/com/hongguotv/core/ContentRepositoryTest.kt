@@ -186,6 +186,67 @@ class ContentRepositoryTest {
     }
 
     @Test
+    fun failedRotationCanRecoverAfterCooldownWithoutRecreatingRepository() {
+        var now = 1000L
+        var registrations = 0
+        val session = PlaybackDeviceSession {
+            registrations++
+            if (registrations == 2) null else DeviceRegister.Registered("$registrations", "444")
+        }
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            fixtureResponse(chain.request(), if (registrations >= 3) videoTabModel else "")
+        }.build()
+        val repo = ContentRepository(http, clock = { now }, playbackSession = session)
+        repeat(4) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") } }
+        assertEquals(2, registrations)
+        now += 4999
+        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+        assertEquals(2, registrations)
+        now++
+        assertEquals(1, repo.streamLadder("123").renditions.size)
+        assertEquals(3, registrations)
+    }
+
+    @Test
+    fun cancelledRotationDoesNotConsumeNextForegroundRecovery() {
+        var registrations = 0
+        val scope = RequestScope()
+        val session = PlaybackDeviceSession {
+            registrations++
+            if (registrations == 2) { scope.cancel(); null }
+            else DeviceRegister.Registered("$registrations", "444")
+        }
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            fixtureResponse(chain.request(), if (registrations >= 3) videoTabModel else "")
+        }.build()
+        val repo = ContentRepository(http, playbackSession = session)
+        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+        assertThrows(java.io.InterruptedIOException::class.java) { scope.run { repo.streamLadder("123") } }
+        assertEquals(1, repo.streamLadder("123").renditions.size)
+        assertEquals(3, registrations)
+    }
+
+    @Test
+    fun successfulRegistrationWithEmptyModelsCanRearmOnlyAfterThirtySeconds() {
+        var now = 1000L
+        var registrations = 0
+        val session = PlaybackDeviceSession {
+            registrations++
+            DeviceRegister.Registered("$registrations", "444")
+        }
+        val http = OkHttpClient.Builder().addInterceptor { chain -> fixtureResponse(chain.request(), "") }.build()
+        val repo = ContentRepository(http, clock = { now }, playbackSession = session)
+        repeat(3) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") } }
+        assertEquals(2, registrations)
+        now += 29999
+        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+        assertEquals(2, registrations)
+        now++
+        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+        assertEquals(3, registrations)
+    }
+
+    @Test
     fun rotatedIdentityRetriesPreferredEndpointAndSuccessResetsFailurePeriod() {
         var registrations = 0
         var allowPreferred = true
@@ -261,9 +322,10 @@ class ContentRepositoryTest {
         available = true
         now += 31_000
         assertEquals(1, repo.streamLadder("123").renditions.size)
+        assertEquals(3, registrations.get())
         available = false
         repeat(2) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") } }
-        assertEquals(3, registrations.get())
+        assertEquals(4, registrations.get())
     }
 
     private val videoTabModel =
