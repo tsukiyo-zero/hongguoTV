@@ -17,6 +17,19 @@ class PlaybackDeviceSessionTest {
         """{"data":{"123":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}}"""
 
     @Test
+    fun repositoriesShareOneSignerUntilRegisteredIdentityChanges() {
+        var count = 0
+        val session = PlaybackDeviceSession { DeviceRegister.Registered((333 + ++count).toString(), "444") }
+        val http = OkHttpClient()
+        val initial = session.profile(http)
+        val signer = initial.signer({ 1000L }, initial.values)
+        assertSame(signer, session.profile(http).signer({ 9000L }, initial.values))
+        assertTrue(session.rotate(http, initial))
+        val replacement = session.profile(http)
+        assertNotSame(signer, replacement.signer({ 9000L }, replacement.values))
+    }
+
+    @Test
     fun concurrentRotationsOfOneFailingProfileRegisterOnlyOneReplacement() {
         val registrations = AtomicInteger()
         val entered = CountDownLatch(1)
@@ -89,7 +102,8 @@ class PlaybackDeviceSessionTest {
         ContentRepository(http, playbackSession = session).streamLadder("123")
         ContentRepository(http, playbackSession = session).streamLadder("123")
         assertEquals(1, registrations)
-        assertEquals(3, models)
+        // 第二个仓库接收首页刚取到的同集模型，不重复请求。
+        assertEquals(2, models)
         assertEquals(1, requests.map { it.url.queryParameter("cdid") }.distinct().size)
     }
 

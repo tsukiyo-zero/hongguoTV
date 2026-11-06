@@ -47,6 +47,8 @@ internal class HomeFeedScreen(
     private val attemptedPrefetch = mutableSetOf<String>()
     private var prefetchGeneration = 0
     private var attemptedBatch = 0
+    private var prefetchSeries: String? = null
+    private var prefetchReadyAt = 0L
     private var clip: TrialClip? = null
     private var closed = false
     private var active = false
@@ -54,6 +56,7 @@ internal class HomeFeedScreen(
     private var loading = false
     private var failed = false
     private var trialRecoveryAttempts = 0
+    private var trialPreparationUntil = 0L
     private var trialRecovery: Runnable? = null
     private val trialRecoveryDelays = listOf(2000L, 5000L)
     private val exhaustedCursors = mutableSetOf<RecommendationCursor>()
@@ -424,6 +427,8 @@ internal class HomeFeedScreen(
         prefetchTarget = null
         attemptedPrefetch.clear()
         attemptedBatch = 0
+        prefetchSeries = null
+        prefetchReadyAt = 0
     }
 
     private fun closeCached(cached: CachedTrial) {
@@ -493,6 +498,7 @@ internal class HomeFeedScreen(
     private fun recoverEmptyTrial(problem: Throwable): Boolean {
         if (generateSequence(problem) { it.cause }.take(8).none { it is EmptyPlaybackResponseException }) return false
         val delay = trialRecoveryDelays.getOrNull(trialRecoveryAttempts) ?: return false
+        if (trialPreparationUntil - android.os.SystemClock.elapsedRealtime() <= delay) return false
         val target = state.current?.id ?: return false
         val token = generation
         val attempt = ++trialRecoveryAttempts
@@ -535,7 +541,13 @@ internal class HomeFeedScreen(
         job =
             worker.submit {
                 try {
-                    val result = requestScope.run(action)
+                    val result = requestScope.run {
+                        if (!recoverTrial) action() else {
+                            val remaining = trialPreparationUntil - android.os.SystemClock.elapsedRealtime()
+                            if (remaining <= 0) throw java.net.SocketTimeoutException("试播准备超时")
+                            RequestScope.withDeadline(System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(remaining), action)
+                        }
+                    }
                     main.post {
                         if (closed || token != generation || !active) discard(result)
                         else {
@@ -599,7 +611,10 @@ internal class HomeFeedScreen(
     private fun loadCurrent(statusHint: String? = null, recovering: Boolean = false) {
         val series = state.current ?: return
         if (!active || closed) return
-        if (!recovering) trialRecoveryAttempts = 0
+        if (!recovering) {
+            trialRecoveryAttempts = 0
+            trialPreparationUntil = android.os.SystemClock.elapsedRealtime() + 15_000
+        }
         // 记下展示过的作品：冷启动时用它跳过重复内容，而不是每次都从同一部开始。
         noteDisplayed(series)
         clearCurrent(keepPrefetch = prefetchTarget == series.id)
@@ -655,7 +670,7 @@ internal class HomeFeedScreen(
             state.items
                 .subList(
                     (state.index - 1).coerceAtLeast(0),
-                    minOf(state.index + 2, state.items.size),
+                    minOf(state.index + 4, state.items.size),
                 )
                 .map { it.id }
                 .toSet()
@@ -668,7 +683,7 @@ internal class HomeFeedScreen(
         stale.forEach { cachedTrials.remove(it)?.let(::closeCached) }
     }
 
-    /** 当前试播就绪后只准备下一部，减少尚未观看作品的播放信息请求。 */
+    /** 保留前一部与后三部缓存；当前就绪后先准备下一部，稳定三秒、六秒后再扩展。 */
     private fun prefetchUpcoming() {
         if (
             closed ||
@@ -676,16 +691,29 @@ internal class HomeFeedScreen(
                 clip == null ||
                 failed ||
                 loading ||
-                prefetchJob != null ||
-                !playback.canPrefetch()
+                prefetchJob != null
         )
             return
+        if (!playback.canPrefetch()) {
+            prefetchReadyAt = android.os.SystemClock.elapsedRealtime()
+            return
+        }
         trimCache()
-        val upcoming = state.items.drop(state.index + 1).take(1)
-        val next = upcoming.firstOrNull { it.id !in cachedTrials && it.id !in attemptedPrefetch }
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (prefetchSeries != state.current?.id) {
+            prefetchSeries = state.current?.id
+            prefetchReadyAt = now
+        }
+        val depth = when {
+            now - prefetchReadyAt >= 6000 -> 3
+            now - prefetchReadyAt >= 3000 -> 2
+            else -> 1
+        }
+        val upcoming = state.items.drop(state.index + 1).take(3)
+        val next = upcoming.take(depth).firstOrNull { it.id !in cachedTrials && it.id !in attemptedPrefetch }
         if (next == null) {
             if (
-                upcoming.isEmpty() &&
+                upcoming.size < depth &&
                     state.hasMore &&
                     state.page < 100 &&
                     attemptedBatch != state.page + 1
@@ -701,7 +729,11 @@ internal class HomeFeedScreen(
         prefetchJob =
             worker.submit {
                 val prepared =
-                    runCatching { requestScope.run { backend.preload(next) } }.getOrNull()
+                    runCatching { requestScope.run {
+                        RequestScope.withDeadline(System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)) {
+                            backend.preload(next)
+                        }
+                    } }.getOrNull()
                 main.post {
                     if (closed || !active || token != prefetchGeneration) prepared?.close()
                     else {
@@ -710,7 +742,7 @@ internal class HomeFeedScreen(
                         prefetchTarget = null
                         if (state.current?.id == next.id && clip == null) {
                             loading = false
-                            if (prepared != null) attach(prepared) else loadCurrent()
+                            if (prepared != null) attach(prepared) else loadCurrent(recovering = true)
                         } else if (prepared != null) {
                             cachedTrials.put(next.id, CachedTrial(prepared))?.let(::closeCached)
                             queueCached(prepared)

@@ -471,8 +471,12 @@ internal class Signer(
     /** Playback uses the registered profile, no legacy ts query parameter, and branch 0.
      * Keep the existing branch-0 signing algorithm for deterministic compatibility.
      */
-    fun signPlayback(base: String, values: Map<String, String>, body: ByteArray? = null): Request {
-        val now = clock()
+    fun signPlayback(
+        base: String,
+        values: Map<String, String>,
+        body: ByteArray? = null,
+        now: Long = clock(),
+    ): Request {
         val ts = (now / 1000).toInt()
         for (offset in 0..127) {
             val ticket = now + offset

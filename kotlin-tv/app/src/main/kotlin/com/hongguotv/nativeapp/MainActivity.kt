@@ -207,6 +207,11 @@ class MainActivity : Activity() {
     private var startPosition = 0L
     private var retryPosition = 0L
     private var requestedAutoplay = true
+    private var waitingForFirstFrame = false
+    private var recoveryDisplayActive = false
+    private var allowSlowRecovery = false
+    private var playbackPreparationUntil = 0L
+    private var recoveryAction: TextView? = null
     private var retryAutoplay = true
     private var foreground = false
     private lateinit var connectivity: ConnectivityManager
@@ -244,6 +249,7 @@ class MainActivity : Activity() {
         retryPending = false
         if (foreground && screen == "player" && playError && autoRecovery) {
             if (!networkAvailable()) scheduleRecovery()
+            else if (!allowSlowRecovery && android.os.SystemClock.elapsedRealtime() >= playbackPreparationUntil) scheduleRecovery()
             else if (recovery.consume()) {
                 android.util.Log.i(
                     "HongguoTV",
@@ -337,7 +343,7 @@ class MainActivity : Activity() {
             }
         }
     private val hideHud = Runnable {
-        if (screen == "player" && player?.isPlaying == true && !playError && root.hasWindowFocus())
+        if (screen == "player" && player?.isPlaying == true && !playError && !waitingForFirstFrame && root.hasWindowFocus())
             hidePlaybackOverlay()
     }
     private val seekRunnable = Runnable {
@@ -2820,8 +2826,9 @@ class MainActivity : Activity() {
         social.reset()
         val data = detail ?: return
         var playbackStarted = android.os.SystemClock.elapsedRealtime()
+        val keepRecoveryStatus = recovering || (screen == "player" && playError && index == episodeIndex)
         val reuse =
-            screen == "player" && player != null && playerView != null && !recovering && !playError
+            screen == "player" && player != null && playerView != null && (!playError || recovering)
         library.setWatched(data.series.id, false)
         val selectedIndex = index.coerceIn(0, data.episodes.lastIndex)
         if (
@@ -2883,6 +2890,8 @@ class MainActivity : Activity() {
         var firstFrame = true
         if (!recovering) {
             recovery.reset()
+            allowSlowRecovery = false
+            playbackPreparationUntil = android.os.SystemClock.elapsedRealtime() + 20_000
             autoRecoveredPlay = false
         }
         autoRecovery = false
@@ -2895,6 +2904,8 @@ class MainActivity : Activity() {
         group = episodeIndex / 20
         panel = false
         playError = false
+        waitingForFirstFrame = true
+        recoveryDisplayActive = keepRecoveryStatus
         relayAttempted = false
         relaySlowHintShown = false
         stopRelaySpeedWatch()
@@ -2990,12 +3001,18 @@ class MainActivity : Activity() {
             )
         }
         playbackTitle.text = "${data.series.title}  ·  第 ${episodeIndex+1} 集"
-        playbackText.text = "正在获取播放地址…"
+        playbackText.text = preparingPlaybackText(recoveryDisplayActive, lastPlaybackFailure, false) +
+            (if (recoveryDisplayActive) diagnosticSuffix() else "")
         progressBar.progress = 0
         progressBar.visibility = View.VISIBLE
-        hidePlaybackOverlay()
+        main.removeCallbacks(hideHud)
+        hud.visibility = View.VISIBLE
         controls.removeAllViews()
-        controls.visibility = View.GONE
+        controls.visibility = if (recoveryDisplayActive) View.VISIBLE else View.GONE
+        if (recoveryDisplayActive) {
+            addButton(controls, "取消恢复") { stopPreparingPlayback() }
+            addButton(controls, "返回选集") { returnToDetail(true) }
+        }
         transportPlay = null
         sleepButton = null
         syncMediaSession()
@@ -3005,23 +3022,28 @@ class MainActivity : Activity() {
         var usedPending = false
         work(
             {
-                val prepared =
-                    prefetched
-                        ?: pending?.let {
-                            awaitPreparedEpisode(it).also { ready -> usedPending = ready != null }
+                val remaining = if (allowSlowRecovery) 20_000L else
+                    playbackPreparationUntil - android.os.SystemClock.elapsedRealtime()
+                if (remaining <= 0) throw java.net.SocketTimeoutException("播放准备超时")
+                RequestScope.withDeadline(System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(remaining)) {
+                    val prepared =
+                        prefetched
+                            ?: pending?.let {
+                                awaitPreparedEpisode(it, remaining).also { ready -> usedPending = ready != null }
+                            }
+                    prepared?.let { OpenedStream(it, null, emptyList(), it.trackInfo()) }
+                        ?: openStream(
+                            repository.http,
+                            repository,
+                            requestedId,
+                            maxQuality,
+                            CodecCapabilities::supports,
+                            metadataAhead = data.episodes.drop(selectedIndex + 1).take(2),
+                        ) {
+                            it == null || CodecCapabilities.supports(it)
                         }
-                prepared?.let { OpenedStream(it, null, emptyList(), it.trackInfo()) }
-                    ?: openStream(
-                        repository.http,
-                        repository,
-                        requestedId,
-                        maxQuality,
-                        CodecCapabilities::supports,
-                        metadataAhead = data.episodes.drop(selectedIndex + 1).take(2),
-                    ) {
-                        it == null || CodecCapabilities.supports(it)
-                    }
-                    ?: throw java.io.IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
+                        ?: throw java.io.IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
+                }
             },
             { opened ->
                 if (promotedPreparation === pending) promotedPreparation = null
@@ -3060,12 +3082,6 @@ class MainActivity : Activity() {
                                 }
                                 playbackReady = true
                                 episodeDuration = p.duration.coerceAtLeast(0)
-                                // 自动恢复成功：轻提示一次，不打断续播。
-                                if (autoRecoveredPlay) {
-                                    autoRecoveredPlay = false
-                                    Toast.makeText(this@MainActivity, "已恢复播放", Toast.LENGTH_SHORT)
-                                        .show()
-                                }
                                 if (firstReady) {
                                     firstReady = false
                                     readySince = android.os.SystemClock.elapsedRealtime()
@@ -3103,6 +3119,7 @@ class MainActivity : Activity() {
                         override fun onRenderedFirstFrame() {
                             if (active() && firstFrame) {
                                 firstFrame = false
+                                playbackFirstFrame()
                                 android.util.Log.i(
                                     "HongguoTV",
                                     "Playback first frame episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime()-playbackStarted}",
@@ -3187,9 +3204,14 @@ class MainActivity : Activity() {
         return PendingEpisodePreparation(key, job, scope, http)
     }
 
-    private fun awaitPreparedEpisode(pending: PendingEpisodePreparation): RemoteVideo? {
+    private fun awaitPreparedEpisode(pending: PendingEpisodePreparation, remainingMillis: Long): RemoteVideo? {
         try {
-            pending.job.get()
+            pending.job.get(remainingMillis.coerceAtLeast(1), java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (_: java.util.concurrent.TimeoutException) {
+            pending.scope.cancel()
+            pending.job.cancel(true)
+            closeTransport(pending.http)
+            throw java.net.SocketTimeoutException("预加载等待超时")
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
             throw java.io.InterruptedIOException("播放准备已取消")
@@ -3300,6 +3322,7 @@ class MainActivity : Activity() {
                                     CodecCapabilities::supports,
                                     initialBytes = 32 * 1024,
                                     metadataAhead = metadataAhead,
+                                    speculative = true,
                                 ) {
                                     it == null || CodecCapabilities.supports(it)
                                 } ?: throw java.io.IOException("没有电视可播放的清晰度")
@@ -3467,7 +3490,7 @@ class MainActivity : Activity() {
                 autoplay = retryAutoplay,
                 slow = recovery.slow,
                 attempt = recovery.attempts + 1,
-                total = recovery.total,
+                total = if (allowSlowRecovery) recovery.total else RecoveryBudget.FAST_ATTEMPTS,
                 remainingMillis = remainingMillis,
                 positionText = formatTime(retryPosition),
             ) + diagnosticSuffix()
@@ -3475,9 +3498,16 @@ class MainActivity : Activity() {
 
     private fun scheduleRecovery() {
         if (!foreground || !playError || !autoRecovery || retryPending) return
-        if (!recovery.remaining) {
+        if (!recovery.remaining || (!allowSlowRecovery &&
+            (recovery.slow || android.os.SystemClock.elapsedRealtime() >= playbackPreparationUntil))) {
             autoRecovery = false
-            playbackText.text = recoveryExhaustedText(lastPlaybackFailure) + diagnosticSuffix()
+            playbackText.text = (if (recovery.remaining)
+                "$lastPlaybackFailure\n快速恢复暂未成功，可立即重试、换集或选择继续等待。"
+                else recoveryExhaustedText(lastPlaybackFailure)) + diagnosticSuffix()
+            recoveryAction?.apply {
+                text = if (recovery.remaining) "继续等待恢复" else "恢复次数已用尽"
+                isEnabled = recovery.remaining
+            }
             return
         }
         if (!networkAvailable()) {
@@ -3486,7 +3516,9 @@ class MainActivity : Activity() {
                     diagnosticSuffix()
             return
         }
-        val delay = recovery.delayMillis ?: return
+        val plannedDelay = recovery.delayMillis ?: return
+        val delay = if (allowSlowRecovery) plannedDelay else minOf(plannedDelay,
+            (playbackPreparationUntil - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0))
         recoveryScheduledAt = android.os.SystemClock.uptimeMillis()
         recoveryDelayMillis = delay
         showRecoveryStatus(delay)
@@ -3675,6 +3707,10 @@ class MainActivity : Activity() {
                             player === p &&
                                 generation == ticket &&
                                 p.currentMediaItem?.mediaId == requestedId
+
+                        override fun onRenderedFirstFrame() {
+                            if (active() && waitingForFirstFrame) playbackFirstFrame()
+                        }
 
                         override fun onPlaybackStateChanged(state: Int) {
                             if (!active()) return
@@ -3923,6 +3959,12 @@ class MainActivity : Activity() {
     }
 
     private fun playerFailure(problem: Throwable) {
+        // 已稳定出画面后的新故障开启新的快速恢复窗口，不能沿用几分钟前的启动截止时间。
+        if (!waitingForFirstFrame && !playError) {
+            playbackPreparationUntil = android.os.SystemClock.elapsedRealtime() + 20_000
+            allowSlowRecovery = false
+            recovery.reset()
+        }
         lastPlaybackFailure = playbackFailureSummary(problem)
         lastPlaybackDetail = diagnosticDetail(problem)
         retryPosition = currentPosition().coerceAtLeast(0)
@@ -4001,8 +4043,8 @@ class MainActivity : Activity() {
             } + diagnosticSuffix()
         val actions = row()
         controls.addView(actions)
-        addButton(actions, "立即重试") { playEpisode(episodeIndex, retryPosition, retryAutoplay) }
-            .requestFocus()
+        val retryButton = addButton(actions, "立即重试") { playEpisode(episodeIndex, retryPosition, retryAutoplay) }
+        if (recovery.attempts == 0) retryButton.requestFocus()
         lowerTier?.let { lower ->
             addButton(actions, "尝试 ${lower}P") {
                 library.maxQuality = lower
@@ -4011,9 +4053,17 @@ class MainActivity : Activity() {
         }
         addButton(actions, "返回选集") { returnToDetail(true) }
         if (retryable && !sleepStopped) {
-            addButton(controls, "停止自动重试") {
-                cancelRecovery()
-                playbackText.text = "自动重试已停止，观看位置已保留。"
+            recoveryAction = addButton(controls, "停止自动重试") {
+                if (autoRecovery) {
+                    cancelRecovery()
+                    playbackText.text = "$lastPlaybackFailure\n自动恢复已停止，观看位置已保留。" + diagnosticSuffix()
+                    recoveryAction?.text = "继续等待恢复"
+                } else {
+                    allowSlowRecovery = true
+                    autoRecovery = true
+                    recoveryAction?.text = "停止自动重试"
+                    scheduleRecovery()
+                }
             }
             autoRecovery = true
             scheduleRecovery()
@@ -4027,11 +4077,46 @@ class MainActivity : Activity() {
 
     private fun hidePlaybackOverlay() {
         main.removeCallbacks(hideHud)
+        if (waitingForFirstFrame && !playError) {
+            hud.visibility = View.VISIBLE
+            return
+        }
         panel = false
         controls.visibility = View.GONE
         controls.clearFocus()
         hud.visibility = View.GONE
         updateClock()
+    }
+
+    // 只有真正输出首帧才清除恢复原因，READY 不代表屏幕已经出画面。
+    private fun playbackFirstFrame() {
+        waitingForFirstFrame = false
+        recoveryDisplayActive = false
+        allowSlowRecovery = false
+        controls.removeAllViews()
+        controls.visibility = View.GONE
+        panel = false
+        if (autoRecoveredPlay) {
+            autoRecoveredPlay = false
+            Toast.makeText(this, "已恢复播放", Toast.LENGTH_SHORT).show()
+        }
+        showHud()
+    }
+
+    private fun stopPreparingPlayback() {
+        invalidatePage()
+        cancelRecovery()
+        player?.stop()
+        video?.close()
+        video = null
+        waitingForFirstFrame = false
+        recoveryDisplayActive = false
+        playError = true
+        progressBar.visibility = View.GONE
+        playbackText.text = "$lastPlaybackFailure\n恢复已取消，观看位置已保留。" + diagnosticSuffix()
+        controls.removeAllViews()
+        addButton(controls, "立即重试") { playEpisode(episodeIndex, retryPosition, retryAutoplay) }
+        addButton(controls, "返回选集") { returnToDetail(true) }
     }
 
     private fun updateClock() {
@@ -4052,6 +4137,13 @@ class MainActivity : Activity() {
         transportPlay?.text = if (player?.playWhenReady == true) "暂停" else "播放"
         sleepButton?.text = "定时 ${sleepTimer.label()}"
         if (screen != "player" || playError) return
+        if (waitingForFirstFrame && !sleepStopped) {
+            playbackText.text = if (!requestedAutoplay && playbackReady)
+                (if (recoveryDisplayActive) "$lastPlaybackFailure\n" else "") + "已准备好 · 保持暂停，按播放开始"
+                else preparingPlaybackText(recoveryDisplayActive, lastPlaybackFailure, video != null) +
+                    (if (recoveryDisplayActive) diagnosticSuffix() else "")
+            return
+        }
         if (sleepStopped) {
             playbackText.text = "定时停止已生效 · 观看位置已保存 · 按播放可继续"
             return
@@ -4569,7 +4661,8 @@ class MainActivity : Activity() {
         }
         when (screen) {
             "player" ->
-                if (hud.visibility == View.VISIBLE && !playError) hidePlaybackOverlay()
+                if (waitingForFirstFrame) returnToDetail()
+                else if (hud.visibility == View.VISIBLE && !playError) hidePlaybackOverlay()
                 else returnToDetail()
             "detail" -> {
                 val previous = detailTrail.pollLast()

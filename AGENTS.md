@@ -11,6 +11,7 @@
 - The initial migration of the existing working features into this repository's `main` is authorized directly by the user.
 - The active Android client is `kotlin-tv/`. Keep historical React Native sources unless the task specifically concerns their removal.
 - Keep README.md in sync whenever adding, changing, or removing user-facing features. Update platform-specific README and usage/limitations documents when relevant; describe only implemented behavior and distinguish unverified or unavailable capabilities. Include documentation updates in the same change.
+- 本地检查通过后交付测试包并推送 PR，不等待 GitHub Actions 编译结束；远端检查如有问题，单独排查处理。
 - Run relevant checks. Native changes normally require `:core:test :app:testDebugUnitTest :app:assembleDebug :app:lintDebug`; documentation-only changes do not need Android builds.
 - APKs, build output, account sessions, phone numbers, verification codes, passwords, and signing keys must not be committed. Credentials must not appear in logs or documentation.
 - 用户已授权将 TV 客户端更名为「果映 TV」，applicationId 从 `com.hongguotv.nativeapp` 改为 `io.github.tsukiyo_zero.guoyingtv`。新包是独立应用，旧版不能覆盖升级，本机数据与登录态不自动迁移；保留旧包历史发布记录和签名基线。后续保持新包名和原签名连续性。

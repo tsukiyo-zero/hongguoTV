@@ -437,7 +437,7 @@ class HomeFeedScreenTest {
     }
 
     @Test
-    fun prebuffersOnlyNextWorkAndReusesCachedNextAndPrevious() {
+    fun progressivelyPrebuffersThreeWorksAndReusesCachedNextAndPrevious() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val activity = controller.get()
         val state = DramaFeedState()
@@ -463,13 +463,20 @@ class HomeFeedScreenTest {
             finishPrefetch(screen)
             assertEquals(2, backend.prepares)
             assertEquals(setOf("2"), (get(screen, "cachedTrials") as Map<*, *>).keys)
+            ShadowLooper.idleMainLooper(4, TimeUnit.SECONDS)
+            finishPrefetch(screen)
+            assertEquals(setOf("2", "3"), (get(screen, "cachedTrials") as Map<*, *>).keys)
+            ShadowLooper.idleMainLooper(4, TimeUnit.SECONDS)
+            finishPrefetch(screen)
+            assertEquals(4, backend.prepares)
+            assertEquals(setOf("2", "3", "4"), (get(screen, "cachedTrials") as Map<*, *>).keys)
             val clears = player.clears
             val loads = player.loads
             val stage = get(screen, "stage") as View
             stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN))
             pump(screen)
             assertEquals("2", player.loaded)
-            assertEquals(2, backend.prepares)
+            assertEquals(4, backend.prepares)
             assertEquals(clears, player.clears)
             assertEquals(loads, player.loads)
             assertEquals(1, player.selections)
@@ -477,7 +484,7 @@ class HomeFeedScreenTest {
             stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_UP))
             pump(screen)
             assertEquals("1", player.loaded)
-            assertEquals(2, backend.prepares)
+            assertEquals(4, backend.prepares)
             assertEquals(clears, player.clears)
             assertEquals(loads, player.loads)
             assertEquals(2, player.selections)
