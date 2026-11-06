@@ -17,7 +17,7 @@ import com.hongguotv.core.*
 import java.io.Closeable
 import java.util.concurrent.Executors
 
-/** A separate trial player. Never calls Library.save or AccountController.upload. */
+/** 独立首页试播，不写入本机观看记录，也不上传账户进度。 */
 internal class HomeFeedScreen(
     private val activity: Activity,
     private val state: DramaFeedState,
@@ -53,6 +53,9 @@ internal class HomeFeedScreen(
     private var manuallyStarted: String? = null
     private var loading = false
     private var failed = false
+    private var trialRecoveryAttempts = 0
+    private var trialRecovery: Runnable? = null
+    private val trialRecoveryDelays = listOf(2000L, 5000L)
     private val exhaustedCursors = mutableSetOf<RecommendationCursor>()
     private var lastPlaybackError: androidx.media3.common.PlaybackException? = null
     private var healTarget: String? = null
@@ -363,6 +366,8 @@ internal class HomeFeedScreen(
     private fun paintActions() {
         pauseButton.text =
             when {
+                trialRecovery != null -> "立即重试试播"
+                loading -> "正在准备试播…"
                 failed || state.current == null -> "重试试播"
                 state.ended -> "重新试播"
                 state.userPaused -> "继续试播"
@@ -400,6 +405,8 @@ internal class HomeFeedScreen(
     }
 
     private fun cancelRequest() {
+        trialRecovery?.let(main::removeCallbacks)
+        trialRecovery = null
         generation++
         scope?.cancel()
         scope = null
@@ -481,8 +488,44 @@ internal class HomeFeedScreen(
         return true
     }
 
+    // 只对当前作品的播放信息空响应恢复两次，不重试目录、确定性错误或后台预加载。
+    // 每次仍沿用 Repository 的有界请求；切换、暂停和关闭通过 cancelRequest 取消倒计时。
+    private fun recoverEmptyTrial(problem: Throwable): Boolean {
+        if (generateSequence(problem) { it.cause }.take(8).none { it is EmptyPlaybackResponseException }) return false
+        val delay = trialRecoveryDelays.getOrNull(trialRecoveryAttempts) ?: return false
+        val target = state.current?.id ?: return false
+        val token = generation
+        val attempt = ++trialRecoveryAttempts
+        val deadline = android.os.SystemClock.elapsedRealtime() + delay
+        loading = true
+        failed = false
+        val retry = object : Runnable {
+            override fun run() {
+                if (closed || !active || token != generation || state.current?.id != target) return
+                val remaining = deadline - android.os.SystemClock.elapsedRealtime()
+                if (remaining <= 0) {
+                    trialRecovery = null
+                    loadCurrent("正在恢复试播 · 第 $attempt/${trialRecoveryDelays.size} 次", recovering = true)
+                } else {
+                    status.visibility = View.VISIBLE
+                    status.text = "播放信息暂时为空 · ${(remaining + 999) / 1000} 秒后自动恢复 $attempt/${trialRecoveryDelays.size}"
+                    main.postDelayed(this, minOf(1000L, remaining))
+                }
+            }
+        }
+        trialRecovery = retry
+        retry.run()
+        paintActions()
+        return true
+    }
+
     // 后台发起请求，主线程更新界面；页面关闭、切换或暂停后丢弃过期结果。
-    private fun <T> request(action: () -> T, discard: (T) -> Unit = {}, done: (T) -> Unit) {
+    private fun <T> request(
+        action: () -> T,
+        discard: (T) -> Unit = {},
+        recoverTrial: Boolean = false,
+        done: (T) -> Unit,
+    ) {
         cancelRequest()
         loading = true
         val token = generation
@@ -504,6 +547,7 @@ internal class HomeFeedScreen(
                     main.post {
                         if (closed || token != generation || !active) return@post
                         loading = false
+                        if (recoverTrial && recoverEmptyTrial(error)) return@post
                         failed = true
                         status.visibility = View.VISIBLE
                         val message =
@@ -511,6 +555,10 @@ internal class HomeFeedScreen(
                         if (error is NoNewRecommendationsException) {
                             exhaustedCursors += requestedCursor
                             status.text = "暂时没有新的推荐 · 按“换一批”重新获取，可能出现旧作品"
+                        } else if (recoverTrial && trialRecoveryAttempts > 0) {
+                            val detail = diagnosticDetail(error)?.take(180)
+                            status.text = "试播恢复未成功 · ${playbackFailureSummary(error)}\n可重试试播或按 ↑ ↓ 换一部" +
+                                (detail?.let { "\n$it" } ?: "")
                         } else status.text = "暂时无法加载 · ${message.ifBlank { "请重试或换一部" }}"
                         paintActions()
                     }
@@ -548,9 +596,10 @@ internal class HomeFeedScreen(
     }
 
     // 优先复用缓存或正在进行的预加载，避免为同一部作品重复请求。
-    private fun loadCurrent(statusHint: String? = null) {
+    private fun loadCurrent(statusHint: String? = null, recovering: Boolean = false) {
         val series = state.current ?: return
         if (!active || closed) return
+        if (!recovering) trialRecoveryAttempts = 0
         // 记下展示过的作品：冷启动时用它跳过重复内容，而不是每次都从同一部开始。
         noteDisplayed(series)
         clearCurrent(keepPrefetch = prefetchTarget == series.id)
@@ -562,11 +611,10 @@ internal class HomeFeedScreen(
         val cached = takeCached(series.id)
         if (cached != null) attach(cached)
         else if (prefetchTarget == series.id && prefetchJob != null) {
-            // Promote the in-flight download instead of cancelling and resolving the same URL
-            // again.
+            // 将正在进行的预加载转为当前试播，不取消后再重复请求地址。
             loading = true
             android.util.Log.i("HongguoTV", "Home promoted in-flight preload")
-        } else request({ backend.trial(series) }, { it.close() }, ::attach)
+        } else request({ backend.trial(series) }, { it.close() }, recoverTrial = true, done = ::attach)
     }
 
     private fun attach(next: TrialClip) {
@@ -607,7 +655,7 @@ internal class HomeFeedScreen(
             state.items
                 .subList(
                     (state.index - 1).coerceAtLeast(0),
-                    minOf(state.index + 4, state.items.size),
+                    minOf(state.index + 2, state.items.size),
                 )
                 .map { it.id }
                 .toSet()
@@ -620,7 +668,7 @@ internal class HomeFeedScreen(
         stale.forEach { cachedTrials.remove(it)?.let(::closeCached) }
     }
 
-    /** One speculative download at a time, after the current player is ready. */
+    /** 当前试播就绪后只准备下一部，减少尚未观看作品的播放信息请求。 */
     private fun prefetchUpcoming() {
         if (
             closed ||
@@ -633,11 +681,11 @@ internal class HomeFeedScreen(
         )
             return
         trimCache()
-        val upcoming = state.items.drop(state.index + 1).take(3)
+        val upcoming = state.items.drop(state.index + 1).take(1)
         val next = upcoming.firstOrNull { it.id !in cachedTrials && it.id !in attemptedPrefetch }
         if (next == null) {
             if (
-                upcoming.size < 3 &&
+                upcoming.isEmpty() &&
                     state.hasMore &&
                     state.page < 100 &&
                     attemptedBatch != state.page + 1
@@ -743,7 +791,9 @@ internal class HomeFeedScreen(
     }
 
     private fun toggle() {
-        if (loading) return
+        if (loading && trialRecovery == null) return
+        // 倒计时期间允许主动立即重试；取消旧定时任务，避免随后再次重复读取。
+        if (trialRecovery != null) cancelRequest()
         manuallyStarted = state.current?.id
         if (failed || state.current == null || clip == null) {
             if (state.current == null) state.refresh()

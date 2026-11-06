@@ -149,6 +149,138 @@ class HomeFeedScreenTest {
         if (view is ViewGroup) (0 until view.childCount).flatMap { texts(view.getChildAt(it)) }
         else if (view is TextView) listOf(view) else emptyList()
 
+    private inner class TrialRecoveryFixture(
+        autoPreview: Boolean = true,
+        failure: (String, Int) -> Throwable?,
+    ) : java.io.Closeable {
+        private val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        private val activity = controller.get()
+        private val counts = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+        val state = DramaFeedState()
+        val player = Playback(activity)
+        private val backend = object : Backend() {
+            override fun trial(series: Series): TrialClip {
+                val count = counts.computeIfAbsent(series.id) { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
+                failure(series.id, count)?.let { throw it }
+                return super.trial(series)
+            }
+        }
+        val screen = HomeFeedScreen(activity, state, listOf(TextView(activity)), {}, { _, _ -> }, { "收藏" }, backend, player, autoPreview)
+
+        init {
+            activity.setContentView(screen)
+            screen.start(true, false)
+            pump(screen)
+        }
+
+        fun reads(id: String = "1") = counts[id]?.get() ?: 0
+        fun advance(seconds: Long) {
+            ShadowLooper.idleMainLooper(seconds, TimeUnit.SECONDS)
+            pump(screen)
+        }
+        fun hasText(part: String) = texts(screen).any { it.text.contains(part) }
+        fun click(label: String) {
+            texts(screen).first { it.text == label }.performClick()
+            pump(screen)
+        }
+        override fun close() {
+            screen.close()
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun emptyTrialAutomaticallyRecoversTwiceWithoutManualClicks() {
+        TrialRecoveryFixture { _, count -> if (count <= 2) EmptyPlaybackResponseException() else null }.use { f ->
+            assertEquals(1, f.reads())
+            assertTrue(f.hasText("2 秒后自动恢复 1/2"))
+            assertEquals("", f.player.loaded)
+            f.advance(2)
+            assertEquals(2, f.reads())
+            assertTrue(f.hasText("5 秒后自动恢复 2/2"))
+            f.advance(5)
+            assertEquals(3, f.reads())
+            assertEquals("1", f.player.loaded)
+            assertTrue(f.player.playing)
+            f.advance(20)
+            assertEquals(3, f.reads())
+        }
+    }
+
+    @Test
+    fun persistentEmptyTrialStopsAfterTwoRecoveriesAndManualRetryStartsNewBudget() {
+        TrialRecoveryFixture { _, _ -> EmptyPlaybackResponseException("G:b=200/0B/h2") }.use { f ->
+            f.advance(2)
+            f.advance(5)
+            assertEquals(3, f.reads())
+            assertTrue(f.hasText("试播恢复未成功"))
+            assertTrue(f.hasText("G:b=200/0B/h2"))
+            f.advance(60)
+            assertEquals(3, f.reads())
+            f.click("重试试播")
+            assertEquals(4, f.reads())
+            assertTrue(f.hasText("自动恢复 1/2"))
+        }
+    }
+
+    @Test
+    fun switchingWorksCancelsPendingTrialRecovery() {
+        TrialRecoveryFixture { id, _ -> if (id == "1") EmptyPlaybackResponseException() else null }.use { f ->
+            f.screen.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN))
+            pump(f.screen)
+            assertEquals("2", f.player.loaded)
+            f.advance(20)
+            assertEquals(1, f.reads("1"))
+            assertEquals(1, f.reads("2"))
+        }
+    }
+
+    @Test
+    fun pausingAndClosingCancelTrialRecoveryAndResumingGetsNewBudget() {
+        TrialRecoveryFixture { _, _ -> EmptyPlaybackResponseException() }.use { f ->
+            f.screen.pause()
+            f.advance(20)
+            assertEquals(1, f.reads())
+            f.screen.resume()
+            pump(f.screen)
+            assertEquals(2, f.reads())
+            assertTrue(f.hasText("自动恢复 1/2"))
+            f.screen.close()
+            f.advance(20)
+            assertEquals(2, f.reads())
+        }
+    }
+
+    @Test
+    fun recoveredTrialHonorsDisabledAutoplay() {
+        TrialRecoveryFixture(autoPreview = false) { _, count -> if (count == 1) EmptyPlaybackResponseException() else null }.use { f ->
+            f.advance(2)
+            assertEquals("1", f.player.loaded)
+            assertFalse(f.player.playing)
+            assertTrue(f.hasText("继续试播"))
+        }
+    }
+
+    @Test
+    fun immediateManualRetryCancelsOldCountdown() {
+        TrialRecoveryFixture { _, count -> if (count == 1) EmptyPlaybackResponseException() else null }.use { f ->
+            f.click("立即重试试播")
+            assertEquals("1", f.player.loaded)
+            f.advance(20)
+            assertEquals(2, f.reads())
+        }
+    }
+
+    @Test
+    fun nonEmptyResponseErrorsDoNotTriggerTrialRecovery() {
+        TrialRecoveryFixture { _, _ -> ContentHttpException(403) }.use { f ->
+            f.advance(20)
+            assertEquals(1, f.reads())
+            assertFalse(f.hasText("自动恢复"))
+            assertTrue(f.hasText("重试试播"))
+        }
+    }
+
     @Test
     fun disabledAutoplayStaysPausedAcrossSwitchesButAllowsManualPlay() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
@@ -285,7 +417,7 @@ class HomeFeedScreenTest {
             pump(screen)
             assertEquals("1", player.loaded)
             assertTrue(player.playing)
-            // Next metadata may load, but only the current work prepares a video stream.
+            // 可以提前读取推荐元数据，但此时只准备当前作品的视频。
             assertEquals(1, backend.prepares)
             val stage = get(screen, "stage") as View
             stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN))
@@ -305,7 +437,7 @@ class HomeFeedScreenTest {
     }
 
     @Test
-    fun prebuffersThreeWorksAndReusesCachedNextAndPrevious() {
+    fun prebuffersOnlyNextWorkAndReusesCachedNextAndPrevious() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val activity = controller.get()
         val state = DramaFeedState()
@@ -329,15 +461,15 @@ class HomeFeedScreenTest {
             assertEquals(1, backend.prepares)
             player.status?.invoke(TrialStatus.READY)
             finishPrefetch(screen)
-            assertEquals(4, backend.prepares)
-            assertEquals(setOf("2", "3", "4"), (get(screen, "cachedTrials") as Map<*, *>).keys)
+            assertEquals(2, backend.prepares)
+            assertEquals(setOf("2"), (get(screen, "cachedTrials") as Map<*, *>).keys)
             val clears = player.clears
             val loads = player.loads
             val stage = get(screen, "stage") as View
             stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN))
             pump(screen)
             assertEquals("2", player.loaded)
-            assertEquals(4, backend.prepares)
+            assertEquals(2, backend.prepares)
             assertEquals(clears, player.clears)
             assertEquals(loads, player.loads)
             assertEquals(1, player.selections)
@@ -345,7 +477,7 @@ class HomeFeedScreenTest {
             stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_UP))
             pump(screen)
             assertEquals("1", player.loaded)
-            assertEquals(4, backend.prepares)
+            assertEquals(2, backend.prepares)
             assertEquals(clears, player.clears)
             assertEquals(loads, player.loads)
             assertEquals(2, player.selections)
@@ -596,8 +728,8 @@ class HomeFeedScreenTest {
             assertTrue(recommended.isSelected)
             assertFalse(comic.isSelected)
             assertFalse(real.isSelected)
-            // resume() starts background work for other series. Only current-player reloads
-            // indicate an incorrect repeated category selection, regardless of worker timing.
+            // resume 会启动其他作品的后台准备；仅统计当前播放器重载，
+            // 避免后台任务的完成时机影响重复选择分类的断言。
             val loadsBefore = player.loads
             recommended.performClick()
             pump(screen)
