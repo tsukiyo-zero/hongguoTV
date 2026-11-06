@@ -405,6 +405,10 @@ internal class Signer(
      * （服务端核对两者一致性）。`playback` 切换官方播放器的头集合：不携带
      * `x-tt-request-tag` / `passport-sdk-version` / `x-ss-stub`，改带
      * `x-tt-store-region(-src)`（对齐 jackotom/hongguo-drama 的 playbackRequest）。
+     *
+     * 注意：该形态 2026-11-05 实测可通过播放接口，但 2026-11-06 `--signmatrix` 复测
+     * 0/12 被拒（补 version_code 73932 也不恢复）；当日对照实测服务端要求完整官方
+     * 形态（Cookie 与 x-ss-stub 缺一即拒）。此形态仅作头形态基线保留，勿用于线上。
      */
     fun sign(
         base: String,

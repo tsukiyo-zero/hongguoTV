@@ -689,12 +689,16 @@ constructor(
     /**
      * 官方 App 现行的播放模型接口：`GET /reading/bookapi/video_tab/multi_video_model/v1/`。
      *
-     * 2026-11-05 实测：该 GET 接口对注册身份返回空正文（无签名请求被验签阶段短路），而旧的
-     * `POST /novel/player/multi_video_model/v1/` 在带完整签名头（x-gorgon/x-helios/x-medusa 且
-     * medusa 内嵌注册身份）后恢复出五档 `video_list`——2026-11-02 的「旧接口对所有请求 200+0
-     * 字节」实测是在**无签名**形态下做的，签名形态不受影响。官方 APK（classes5.dex 的
-     * `RpcOperation`）仍保留这条 GET 路径，参数取自 `GetVideoModelRequest` 的
-     * `@SerializedName`（snake_case）；缺任一字段服务端回 `100103 PARAM_INVALID`。
+     * 服务端对播放模型的放行策略按时间窗与「身份 × 路径」波动，注释结论均须带日期快照：
+     * - 2026-11-02：旧 `POST /novel/player` 全域名 200+0 字节（无签名形态），GET video_tab 出五档。
+     * - 2026-11-05：无签名请求（含本 GET）被验签阶段短路返回空；带签名 POST 曾恢复五档。
+     * - 2026-11-06 `--signmatrix` 复测：无签名 GET 稳定空；签名 GET/POST 均可出五档但随身份
+     *   波动（同一身份×路径连续空、全新身份即时恢复，即线上偶发空响应机制，由下方身份轮换
+     *   兜底）；POST 缺 Cookie 或缺 x-ss-stub 任一项即稳定被拒，故官方 playbackRequest 的
+     *   完整形态（Cookie + x-ss-stub + 签名族）是当前唯一已知可用形态。
+     * 官方 APK（classes5.dex 的 `RpcOperation`）仍保留这条 GET 路径，参数取自
+     * `GetVideoModelRequest` 的 `@SerializedName`（snake_case）；缺任一字段服务端回
+     * `100103 PARAM_INVALID`。
      *
      * 失败（非 0 code、空正文、结构不符、网络异常）一律返回 null，由调用方回退签名 POST 旧接口，
      * 不改变既有的空响应恢复与身份轮换语义。

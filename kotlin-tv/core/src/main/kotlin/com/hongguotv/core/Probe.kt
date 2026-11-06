@@ -380,6 +380,59 @@ fun main(args: Array<String>) {
         }
         return
     }
+    if (args.contains("--signmatrix")) {
+        // 2026-11-06 结论仲裁：main 注释称旧 POST 接口「带完整签名头也全空」，2026-11-05 实测
+        // 却是「带 x-gorgon/x-helios/x-medusa 签名 POST 恢复五档」，且 0.1.22 线上仍偶发空响应。
+        // 四形态同窗口交织对照（轮次按 form 展开使同一时间窗覆盖全部形态，避免时段波动误判）：
+        // get_unsigned（无签名 GET，2026-11-05 起被验签短路）/ get_signed（官方 0.1.22 主路径）/
+        // post_signed（官方 playbackRequest 形态，带 Cookie 与 x-ss-stub）/ post_playback
+        // （fork 备用形态，无 Cookie/stub，带 store-region 头）。末轮换全新身份复测，
+        // 区分「形态差异」与「身份屏蔽」。输出仅含档位元数据，不含地址与凭据。
+        val session = PlaybackDeviceSession()
+        val repo = ContentRepository(playbackSession = session)
+        val forms =
+            listOf(
+                "get_unsigned", "get_signed", "post_signed", "post_playback",
+                "post_nocookie", "post_nostub", "post_playback_v",
+            )
+        try {
+            val ids = args.filter { it.matches(Regex("[0-9]{1,30}")) }
+            val episodes =
+                if (ids.isNotEmpty()) {
+                    ids
+                } else {
+                    listOfNotNull(
+                        repo.home().items.getOrNull(0)?.id?.let { repo.detail(it).episodes.firstOrNull() },
+                        repo.home().items.getOrNull(1)?.id?.let { repo.detail(it).episodes.firstOrNull() },
+                    )
+                }
+            check(episodes.isNotEmpty()) { "用法: --signmatrix [episodeId...]（缺省取首页前两部剧的首集）" }
+            for (round in 1..3) {
+                val episode = episodes[(round - 1) % episodes.size]
+                for (form in forms) {
+                    println(
+                        "signmatrix round=$round; form=$form; episode=$episode; " +
+                            signedProbe(repo.http, session, form, episode),
+                    )
+                    Thread.sleep(2000)
+                }
+            }
+            val fresh = PlaybackDeviceSession()
+            for (form in forms) {
+                println(
+                    "signmatrix fresh; form=$form; episode=${episodes.first()}; " +
+                        signedProbe(repo.http, fresh, form, episodes.first()),
+                )
+                Thread.sleep(2000)
+            }
+        } finally {
+            repo.http.connectionPool.evictAll()
+            repo.http.dispatcher.executorService.shutdown()
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
     if (args.contains("--novel-batch")) {
         // 2026-11-02 逆向发现（红果 7.3.9.32 classes8）：官方 PlayerApiService.getVideoModelRx
         // 现行使用 `POST /novel/player/video_model/v1/`（KMP 批量 body：biz_param + 
@@ -806,6 +859,149 @@ private fun tabBaseParams() =
         "source" to "0",
         "from_video_id" to "",
     )
+
+/** --signmatrix 单发请求：四种请求形态各按其线上实现复刻，返回仅含元数据的摘要行。 */
+private fun signedProbe(
+    http: OkHttpClient,
+    session: PlaybackDeviceSession,
+    form: String,
+    episodeId: String,
+): String {
+    val identity = session.profile(http)
+    val host = PlayRetryPlan.hosts.first()
+    // 官方 playbackRequest 的版本字段覆盖；fork 备用形态按其原始实现不带覆盖。
+    val overrides =
+        mapOf(
+            "version_code" to "73932", "manifest_version_code" to "73932",
+            "update_version_code" to "73932", "pv_player" to "73932",
+            "version_name" to "7.3.9.32",
+        )
+    val getExtra = tabBaseParams() + ("video_id" to episodeId)
+    val payload =
+        """{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":${org.json.JSONArray(listOf(episodeId))}}}"""
+            .toByteArray()
+    fun fromSigned(signed: Signer.Request): okhttp3.Request.Builder {
+        val builder = okhttp3.Request.Builder().url(signed.url)
+        for ((key, value) in signed.headers) builder.header(key, value)
+        return builder
+    }
+    val request =
+        when (form) {
+            "get_unsigned" ->
+                okhttp3.Request.Builder()
+                    .url(
+                        "https://$host/reading/bookapi/video_tab/multi_video_model/v1/?" +
+                            Signer.encode(identity.values + ("_rticket" to System.currentTimeMillis().toString())) +
+                            "&" + getExtra.entries.joinToString("&") { (key, value) -> "${Signer.encode(key)}=${Signer.encode(value)}" },
+                    )
+                    .header("User-Agent", VendorConstants.PLAYER_UA)
+                    .header("Accept", "application/json; charset=utf-8")
+                    .apply { if (identity.cookie.isNotBlank()) header("Cookie", identity.cookie) }
+                    .get()
+                    .build()
+            "get_signed" -> {
+                val profile = identity.values + overrides
+                val signed =
+                    Signer(device = profile).signPlayback(
+                        "https://$host/reading/bookapi/video_tab/multi_video_model/v1/",
+                        profile + getExtra, null,
+                    )
+                fromSigned(signed)
+                    .apply { if (identity.cookie.isNotBlank()) header("Cookie", identity.cookie) }
+                    .get()
+                    .build()
+            }
+            "post_signed" -> {
+                val profile = identity.values + overrides
+                val signed =
+                    Signer(device = profile).signPlayback(
+                        "https://$host/novel/player/multi_video_model/v1/", profile, payload,
+                    )
+                fromSigned(signed)
+                    .apply { if (identity.cookie.isNotBlank()) header("Cookie", identity.cookie) }
+                    .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+            }
+            "post_playback" -> {
+                val signed =
+                    Signer().sign(
+                        "https://$host/novel/player/multi_video_model/v1/",
+                        identity.values, payload, identity = identity.values, playback = true,
+                    )
+                fromSigned(signed)
+                    .post(payload.toRequestBody("application/json; charset=UTF-8".toMediaType()))
+                    .build()
+            }
+            "post_nocookie" -> {
+                // 二分：官方形态去掉 Cookie，验证 Cookie 是否为现行必需项。
+                val profile = identity.values + overrides
+                val signed =
+                    Signer(device = profile).signPlayback(
+                        "https://$host/novel/player/multi_video_model/v1/", profile, payload,
+                    )
+                fromSigned(signed)
+                    .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+            }
+            "post_nostub" -> {
+                // 二分：官方形态去掉 x-ss-stub，验证签名体摘要是否为现行必需项。
+                val profile = identity.values + overrides
+                val signed =
+                    Signer(device = profile).signPlayback(
+                        "https://$host/novel/player/multi_video_model/v1/", profile, payload,
+                    )
+                fromSigned(signed)
+                    .apply { if (identity.cookie.isNotBlank()) header("Cookie", identity.cookie) }
+                    .removeHeader("x-ss-stub")
+                    .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+            }
+            "post_playback_v" -> {
+                // 二分：fork 形态补上 version_code 73932 覆盖，验证版本字段是否为被拒原因。
+                val profile = identity.values + overrides
+                val signed =
+                    Signer().sign(
+                        "https://$host/novel/player/multi_video_model/v1/",
+                        profile, payload, identity = profile, playback = true,
+                    )
+                fromSigned(signed)
+                    .post(payload.toRequestBody("application/json; charset=UTF-8".toMediaType()))
+                    .build()
+            }
+            else -> error("unknown form $form")
+        }
+    return try {
+        RequestScope.execute(http.newCall(request)) { response ->
+            val body = response.body?.string().orEmpty()
+            if (body.isBlank()) return@execute "http=${response.code}; body=EMPTY"
+            val json = runCatching { org.json.JSONObject(body) }.getOrNull()
+                ?: return@execute "http=${response.code}; body=NOT_JSON(${body.length})"
+            val code = json.optInt("code", json.optInt("Code", -1))
+            if (code != 0)
+                return@execute "http=${response.code}; code=$code; message=${json.optString("message").take(50)}"
+            val data = json.optJSONObject("data")
+            val rows = data?.optJSONObject("video_model_data") ?: data
+            val row =
+                rows?.optJSONObject(episodeId)
+                    ?: rows?.keys()?.asSequence()?.mapNotNull { rows.optJSONObject(it) }?.firstOrNull()
+                    ?: return@execute "http=${response.code}; code=$code; row=MISSING"
+            val model =
+                row.opt("video_model")?.let { value ->
+                    runCatching {
+                        (value as? org.json.JSONObject) ?: org.json.JSONObject(value.toString())
+                    }.getOrNull()
+                }
+            val renditions =
+                model?.optJSONArray("video_list")?.objects().orEmpty().mapNotNull { entry ->
+                    val meta = entry.optJSONObject("video_meta") ?: return@mapNotNull null
+                    "${meta.optString("codec_type")}/${meta.optString("definition")}/${meta.optInt("vwidth")}x${meta.optInt("vheight")}"
+                }
+            "http=${response.code}; renditions=${renditions.joinToString(",")}; bytes=${body.length}"
+        }
+    } catch (problem: Exception) {
+        "error=${problem.javaClass.simpleName}: ${problem.message?.take(80)}"
+    }
+}
 
 /** 取 video_tab 原始 video_model 对象（对象或字符串两种形态都兼容），失败返回 null。 */
 private fun tabModelRaw(
