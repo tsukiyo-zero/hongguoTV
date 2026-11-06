@@ -27,7 +27,8 @@ internal fun playbackFailureSummary(problem: Throwable): String {
         ?.let {
             return it
         }
-    if (causes.any { it is java.net.SocketTimeoutException }) return "网络请求超时"
+    if (causes.any { it is java.net.SocketTimeoutException ||
+        it is java.io.InterruptedIOException && it.message in setOf("timeout", "deadline reached") }) return "网络请求超时"
     if (causes.any { it is java.net.UnknownHostException }) return "无法解析服务器域名"
     if (causes.any { it is java.io.EOFException }) return "视频分段提前断开"
     val known =
@@ -73,7 +74,7 @@ internal fun diagnosticDetail(problem: Throwable): String? =
         }
         .distinct()
         .joinToString(" · ")
-        .take(60)
+        .take(180)
         .ifEmpty { null }
 
 internal class OpenedStream(
@@ -126,9 +127,10 @@ internal fun openStream(
     supportsRendition: (Rendition) -> Boolean,
     initialBytes: Int = 256 * 1024,
     metadataAhead: List<String> = emptyList(),
+    speculative: Boolean = false,
     supportsTrack: (VideoTracks.Track?) -> Boolean,
 ): OpenedStream? {
-    val ladder = repository.streamLadder(id, metadataAhead)
+    val ladder = repository.streamLadder(id, metadataAhead, speculative)
     for (rendition in ladder.playbackOrder(maxQuality, supportsRendition)) {
         val video = RemoteVideo(http, rendition.toStreamInfo())
         try {

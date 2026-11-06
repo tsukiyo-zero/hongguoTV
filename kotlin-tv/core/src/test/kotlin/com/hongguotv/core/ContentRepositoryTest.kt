@@ -17,6 +17,175 @@ class ContentRepositoryTest {
         """{"data":{"123":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}}"""
 
     @Test
+    fun previewModelCanBeHandedToAnotherRepositoryOnceWithoutDuplicatingRequest() {
+        var reads = 0
+        val session = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            reads++
+            fixtureResponse(chain.request(), videoTabModel)
+        }.build()
+        val preview = ContentRepository(http, playbackSession = session)
+        val fullscreen = ContentRepository(http, playbackSession = session)
+        preview.streamLadder("123")
+        assertEquals(1, reads)
+        fullscreen.streamLadder("123")
+        assertEquals(1, reads)
+        fullscreen.streamLadder("123")
+        assertEquals(2, reads)
+        preview.streamLadder("123")
+        assertEquals(3, reads)
+    }
+
+    @Test
+    fun modelHandoffExpiresAndDoesNotHideSameRepositoryManualRefresh() {
+        var reads = 0
+        var now = 1000L
+        val session = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            reads++
+            fixtureResponse(chain.request(), videoTabModel)
+        }.build()
+        val preview = ContentRepository(http, clock = { now }, playbackSession = session)
+        preview.streamLadder("123")
+        preview.streamLadder("123")
+        assertEquals(2, reads)
+        now += 15_001
+        ContentRepository(http, clock = { now }, playbackSession = session).streamLadder("123")
+        assertEquals(3, reads)
+    }
+
+    @Test
+    fun sharedSessionPrefersWorkingPostBeforeRepeatingAnEmptyGet() {
+        val requests = mutableListOf<Request>()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            requests += request
+            fixtureResponse(request, if (request.method == "GET") "" else batchPlaybackFixture(playbackRequestIds(request)))
+        }.build()
+        val session = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }
+        ContentRepository(http, playbackSession = session).streamLadder("123")
+        ContentRepository(http, playbackSession = session).streamLadder("456")
+        assertEquals(listOf("GET", "POST", "POST"), requests.map { it.method })
+        assertEquals("456", playbackRequestIds(requests.last()).single())
+    }
+
+    @Test
+    fun learnsFailingPathsAndRecoversWithinTheSameForegroundBudget() {
+        var registrations = 0
+        var calls = 0
+        val hits = mutableMapOf<String, Int>()
+        val session = PlaybackDeviceSession {
+            registrations++
+            DeviceRegister.Registered((333 + registrations).toString(), "444")
+        }
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val r = chain.request()
+            calls++
+            val key = r.url.queryParameter("device_id") + r.url.host + r.url.encodedPath
+            val hit = (hits[key] ?: 0) + 1
+            hits[key] = hit
+            val body = if (hit > 1 || r.url.host == PlayRetryPlan.host(2)) ""
+                else if (r.method == "GET") videoTabModel else playbackModel
+            fixtureResponse(r, body)
+        }.build()
+        val repo = ContentRepository(http, playbackSession = session)
+        repeat(4) { assertEquals(1, repo.streamLadder("123").renditions.size) }
+        assertEquals(2, registrations)
+        assertEquals(8, calls)
+    }
+
+    @Test
+    fun backgroundOnlySamplesOnceAndStopsAtCooldownWithoutRegisteringAgain() {
+        var registrations = 0
+        var calls = 0
+        val session = PlaybackDeviceSession {
+            registrations++
+            DeviceRegister.Registered((333 + registrations).toString(), "444")
+        }
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            calls++
+            fixtureResponse(chain.request(), if (registrations > 1) videoTabModel else "")
+        }.build()
+        val repo = ContentRepository(http, playbackSession = session)
+        repeat(5) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123", speculative = true) } }
+        assertEquals(4, calls)
+        assertEquals(1, registrations)
+        assertEquals(1, repo.streamLadder("123").renditions.size)
+        assertEquals(5, calls)
+        assertEquals(2, registrations)
+    }
+
+    @Test
+    fun foregroundCallsShareOneDeadlineAndBackgroundHasSmallerBudget() {
+        val budgets = mutableListOf<Long>()
+        val deadlines = mutableListOf<Long>()
+        val session = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            budgets += chain.call().timeout().timeoutNanos()
+            assertTrue(chain.call().timeout().hasDeadline())
+            deadlines += chain.call().timeout().deadlineNanoTime()
+            Thread.sleep(5)
+            fixtureResponse(chain.request(), "")
+        }.build()
+        val repo = ContentRepository(http, playbackSession = session)
+        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+        assertEquals(4, budgets.size)
+        assertEquals(1, deadlines.distinct().size)
+        assertTrue(budgets.first() <= java.util.concurrent.TimeUnit.SECONDS.toNanos(8))
+        assertTrue(budgets.zipWithNext().all { (a, b) -> b < a })
+        budgets.clear()
+        val fresh = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("555", "666") })
+        assertThrows(EmptyPlaybackResponseException::class.java) { fresh.streamLadder("123", speculative = true) }
+        assertEquals(1, budgets.size)
+        assertTrue(budgets.single() <= java.util.concurrent.TimeUnit.SECONDS.toNanos(2))
+    }
+
+    @Test
+    fun mixedTimeoutAndEmptyRoundsDoNotRotateAsAllEmpty() {
+        var registrations = 0
+        var now = 1000L
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            when (request.url.encodedPath) {
+                "/service/2/device_register/" -> {
+                    registrations++
+                    fixtureResponse(request, """{"device_id":"333","install_id":"444"}""")
+                }
+                "/reading/bookapi/video_tab/multi_video_model/v1/" -> fixtureResponse(request, "")
+                else -> {
+                    if (request.url.host == PlayRetryPlan.host(0)) throw java.net.SocketTimeoutException("test-only")
+                    fixtureResponse(request, "")
+                }
+            }
+        }.build()
+        val repo = ContentRepository(http, clock = { now })
+        repeat(4) {
+            val error = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+            assertTrue(error.detail.orEmpty().contains("G:b=200/0B/h1"))
+            assertTrue(error.detail.orEmpty().contains("P:b=timeout"))
+            assertFalse(error.detail.orEmpty().contains("rotated"))
+            now += 31_000
+        }
+        assertEquals(1, registrations)
+    }
+
+    @Test
+    fun failedRegistrationIsDistinguishedAndNotRepeatedInOneFailurePeriod() {
+        var registrations = 0
+        val session = PlaybackDeviceSession {
+            if (++registrations == 1) DeviceRegister.Registered("333", "444") else null
+        }
+        val http = OkHttpClient.Builder().addInterceptor { chain -> fixtureResponse(chain.request(), "") }.build()
+        val repo = ContentRepository(http, playbackSession = session, sleep = {})
+        repeat(2) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") } }
+        repeat(2) {
+            val error = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+            assertTrue(error.detail.orEmpty().contains("rotated=1 reg=failed"))
+        }
+        assertEquals(2, registrations)
+    }
+
+    @Test
     fun rotatedIdentityRetriesPreferredEndpointAndSuccessResetsFailurePeriod() {
         var registrations = 0
         var allowPreferred = true
@@ -34,11 +203,11 @@ class ContentRepositoryTest {
             }
         }.build()
         val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession(), sleep = {})
-        repeat(2) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") } }
+        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
         assertEquals(1, registrations)
         assertEquals(1, repo.streamLadder("123").renditions.size)
         assertEquals(2, registrations)
-        assertEquals(8, legacyCalls)
+        assertEquals(3, legacyCalls)
         allowPreferred = false
         repeat(2) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") } }
         assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
@@ -63,9 +232,9 @@ class ContentRepositoryTest {
         val first = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
         assertFalse(first.detail.orEmpty().contains("rotated"))
         val second = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
-        assertFalse(second.detail.orEmpty().contains("rotated"))
-        assertEquals(1, registrations.get())
-        // 第三轮开始前轮换一次身份，此后 detail 带标记且不再轮换
+        assertTrue(second.detail.orEmpty().contains("rotated=1"))
+        assertEquals(2, registrations.get())
+        // 全路径已知失效时提前轮换；此后同一失败期不再重复注册。
         val third = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
         assertTrue(third.detail.orEmpty().contains("rotated=1"))
         assertEquals(2, registrations.get())
@@ -77,38 +246,23 @@ class ContentRepositoryTest {
     @Test
     fun successfulPlaybackResetsIdentityRotationStateForTheNextIncident() {
         val registrations = AtomicInteger()
-        var playinfoCalls = 0
-        val http =
-            OkHttpClient.Builder()
-                .addInterceptor { chain ->
-                    val request = chain.request()
-                    if (request.url.encodedPath == "/service/2/device_register/") {
-                        registrations.incrementAndGet()
-                        return@addInterceptor fixtureResponse(request, """{"device_id":"333","install_id":"444"}""", setCookie = true)
-                    }
-                    // 本用例覆盖旧接口的轮换时序：新接口统一回 100103 让调用方回退，且不计次。
-                    if (request.url.encodedPath.startsWith("/reading/bookapi/video_tab/"))
-                        return@addInterceptor fixtureResponse(
-                            request,
-                            """{"code":100103,"message":"PARAM_INVALID","data":null}""",
-                        )
-                    playinfoCalls++
-                    // 1-8：两轮全空；9 起成功；10-17：再现两轮全空；18 起成功
-                    fixtureResponse(
-                        request,
-                        if (playinfoCalls in 1..8 || playinfoCalls in 10..17) "" else playbackModel,
-                    )
-                }
-                .build()
-        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession(), sleep = {})
-        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
-        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
-        assertEquals(1, registrations.get())
-        repo.streamLadder("123") // 第三轮轮换身份后成功
+        var now = 1000L
+        var available = false
+        val session = PlaybackDeviceSession {
+            registrations.incrementAndGet()
+            DeviceRegister.Registered("333", "444")
+        }
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            fixtureResponse(chain.request(), if (available) videoTabModel else "")
+        }.build()
+        val repo = ContentRepository(http, clock = { now }, playbackSession = session)
+        repeat(2) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") } }
         assertEquals(2, registrations.get())
-        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
-        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
-        repo.streamLadder("123") // 成功复位后，新的连续失败期可再次轮换
+        available = true
+        now += 31_000
+        assertEquals(1, repo.streamLadder("123").renditions.size)
+        available = false
+        repeat(2) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") } }
         assertEquals(3, registrations.get())
     }
 
@@ -425,8 +579,8 @@ class ContentRepositoryTest {
         val error = assertThrows(IOException::class.java) { repo.stream("123") }
         assertTrue(error.message.orEmpty().contains("空响应"))
         assertFalse(error.message.orEmpty().contains("更新应用"))
-        // 首次尝试 + 三次换路重试（b→hl→lf→b）。
-        assertEquals(4, calls)
+        // 首选已由测试桩拒绝，备用接口各读取一条不同路径，不重复撞 b。
+        assertEquals(3, calls)
     }
 
     private fun inlinePlaybackFixture(): String =
@@ -556,9 +710,10 @@ class ContentRepositoryTest {
         }
         assertNotEquals(requests[0].header("x-gorgon"), requests[1].header("x-gorgon"))
         assertNotEquals(requests[0].header("x-medusa"), requests[1].header("x-medusa"))
-        // 重试强制新建连接，首拍不携带。
+        // HTTP/2 重试通过独立连接池隔离，不依赖 Connection 请求头。
+        // 实际连接序号由 PlaybackRetryConnectionTest 验证。
         assertNull(requests[0].header("Connection"))
-        assertEquals("close", requests[1].header("Connection"))
+        assertNull(requests[1].header("Connection"))
         val first = okio.Buffer().also { requests[0].body!!.writeTo(it) }.readUtf8()
         val second = okio.Buffer().also { requests[1].body!!.writeTo(it) }.readUtf8()
         assertEquals(first, second)

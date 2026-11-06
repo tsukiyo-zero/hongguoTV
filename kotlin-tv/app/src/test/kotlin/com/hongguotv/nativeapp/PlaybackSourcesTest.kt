@@ -5,6 +5,12 @@ import org.junit.Test
 
 class PlaybackSourcesTest {
     @Test
+    fun diagnosticDetailRetainsLastCandidateAndRegistrationResult() {
+        val detail = "G:b=200/0B/h2 P:b=200/0B/h2 P:hl=200/0B/h2 P:lf=200/0B/h2 rotated=1 reg=failed"
+        assertEquals(detail, diagnosticDetail(com.hongguotv.core.EmptyPlaybackResponseException(detail)))
+    }
+
+    @Test
     fun failureSummaryKeepsTheRealCauseWithoutLeakingAddressesOrResponseText() {
         val empty = com.hongguotv.core.EmptyPlaybackResponseException()
         assertEquals("播放信息接口返回空响应", playbackFailureSummary(empty))
@@ -92,9 +98,9 @@ class PlaybackSourcesTest {
     }
 
     @Test
-    fun diagnosticDetailCapsLengthAtSixtyChars() {
+    fun diagnosticDetailCapsLengthWithoutLosingLastPathAndRegistration() {
         val detail = diagnosticDetail(com.hongguotv.core.EmptyPlaybackResponseException("x".repeat(200)))
-        assertEquals(60, detail!!.length)
+        assertEquals(180, detail!!.length)
     }
 
     @Test

@@ -8,21 +8,12 @@ import org.junit.Test
 
 class PlayRetryPlanTest {
     @Test
-    fun `retries rotate hosts and force fresh connections after the first attempt`() {
-        assertEquals(4, PlayRetryPlan.maxAttempts)
-        assertEquals(
-            listOf("b", "hl", "lf", "b"),
-            (0 until PlayRetryPlan.maxAttempts).map { PlayRetryPlan.tag(PlayRetryPlan.host(it)) },
-        )
-        assertFalse(PlayRetryPlan.freshConnection(0))
-        assertTrue(PlayRetryPlan.freshConnection(1))
-        assertTrue(PlayRetryPlan.freshConnection(3))
-    }
-
-    @Test
-    fun `backoff stays within about seven seconds including four attempts`() {
-        assertEquals(listOf(700L, 1500L, 3000L), PlayRetryPlan.delaysMillis)
-        assertTrue(PlayRetryPlan.delaysMillis.sum() < 7000L)
+    fun `initial candidates contain one GET and three distinct POST routes`() {
+        val routes = PlaybackRoutes().plan(1000, false)
+        assertEquals(4, routes.size)
+        assertEquals(4, routes.distinct().size)
+        assertTrue(routes.first().get)
+        assertEquals(listOf("b", "hl", "lf"), routes.drop(1).map { PlayRetryPlan.tag(it.host) })
     }
 
     @Test
@@ -36,11 +27,4 @@ class PlayRetryPlanTest {
         assertFalse(PlayRetryPlan.temporary(java.io.EOFException("视频分段提前断开")))
     }
 
-    @Test
-    fun `exhausted empty ladder carries counts and host tags without addresses`() {
-        val error =
-            EmptyPlaybackResponseException("空响应x4 host=b,hl,lf,b")
-        assertEquals("空响应x4 host=b,hl,lf,b", error.detail)
-        assertFalse(error.detail!!.contains("https://"))
-    }
 }

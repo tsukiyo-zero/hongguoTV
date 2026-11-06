@@ -7,6 +7,18 @@ import org.junit.Test
 
 class SignerTest {
     @Test
+    fun playbackRequestTimeChangesWithoutChangingProcessContext() {
+        val signer = Signer({ 1000L })
+        val method = Signer::class.java.getDeclaredMethod("deviceProto", Map::class.java).apply { isAccessible = true }
+        val before = method.invoke(signer, null) as ByteArray
+        val first = signer.signPlayback("https://example.test/model", VendorConstants.device, now = 2000L)
+        val second = signer.signPlayback("https://example.test/model", VendorConstants.device, now = 9000L)
+        assertEquals("2", first.headers["x-khronos"])
+        assertEquals("9", second.headers["x-khronos"])
+        assertArrayEquals(before, method.invoke(signer, null) as ByteArray)
+    }
+
+    @Test
     fun matchesPinnedJavaScriptOracleAcrossTimestampVariants() {
         val rows = JSONArray(javaClass.getResource("/signing.json")!!.readText())
         for (i in 0 until rows.length()) {

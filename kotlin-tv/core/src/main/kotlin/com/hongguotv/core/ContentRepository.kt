@@ -9,6 +9,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import okhttp3.Cookie
 import okhttp3.CookieJar
+import okhttp3.ConnectionPool
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
@@ -156,11 +157,11 @@ class ContentHttpException(val statusCode: Int) : IOException("内容请求失�
 
 class SearchSessionExpiredException : IOException("搜索结果已过期，请从第 1 页重新搜索")
 
-/** `detail` 只携带重试计数与 host 短代号，供错误页诊断行展示，不含地址与凭据。 */
+/** `detail` 仅携带路径代号、HTTP/字节数/协议与注册结果，不含地址与凭据。 */
 class EmptyPlaybackResponseException(val detail: String? = null) :
     IOException("播放接口暂时返回空响应，请稍后重试")
 
-/** 连续整轮空响应达到该次数后轮换一次设备身份（两轮 = 8 发跨 3 域名全空，约 25 秒）。 */
+/** 连续前台空失败的恢复阈值；全路径已知为空时，还可在本轮剩余额度内提前恢复。 */
 private const val IDENTITY_ROTATE_ROUNDS = 2
 
 class ContentRepository
@@ -180,12 +181,13 @@ constructor(
     // 签名时钟与应用时钟同源：测试可注入，重签后的 ts/_rticket 保持在同一时间基上。
     private val signer = Signer(clock)
 
-    // 空响应身份屏蔽自愈状态（2026-11-01 事件实测：屏蔽按设备身份生效，换路无法逃逸，
-    // 全新身份即时恢复）。连续整轮空响应达到阈值时轮换一次身份；成功即复位。
+    // 有界恢复状态：部分采样中新会话可以恢复，但不能保证消除所有空响应。
     // prefetch/试播/正式播放可能并发，统一持锁；轮换的网络 I/O 在锁外执行。
     private val playbackIdentityLock = Any()
     private var emptyPlaybackRounds = 0
     private var emptyPlaybackRotated = false
+    private var playbackFailureGeneration = 0
+    private var playbackRotationResult: Boolean? = null
 
     // 榜单页偶发被 CDN 软拦截（空响应或挂起到超时）：收紧超时并单次重试，
     // 让整榜失败在最坏约 15 秒内暴露，而不是分钟级的全局超时。
@@ -212,6 +214,8 @@ constructor(
     private data class UpcomingPlaybackModel(val entry: JSONObject, val savedAt: Long)
 
     private val upcomingPlaybackModels = linkedMapOf<String, UpcomingPlaybackModel>()
+    private val playbackModelOwner = Any()
+    private val requestedPlaybackModels = linkedSetOf<String>()
 
     // 构造并执行内容请求，统一检查 HTTP 状态和响应大小；仅按规则重试临时故障。
     private fun text(
@@ -278,8 +282,8 @@ constructor(
             "update_version_code" to "73932", "pv_player" to "73932",
             "version_name" to "7.3.9.32",
         )
-        val signed = Signer(clock = clock, device = profile)
-            .signPlayback(base, profile + extra, body)
+        val signed = identity.signer(clock, profile)
+            .signPlayback(base, profile + extra, body, now = clock())
         return signedRequest(signed.url, signed).apply {
             if (identity.cookie.isNotBlank()) header("Cookie", identity.cookie)
         }
@@ -289,6 +293,7 @@ constructor(
     private fun fetchOnce(
         request: Request.Builder, client: OkHttpClient, refreshTicket: Boolean,
         rejectEmptyPlayback: Boolean = refreshTicket,
+        observed: ((Int, Int?, okhttp3.Protocol) -> Unit)? = null,
     ): String {
         val next =
             request.build().let { original ->
@@ -305,7 +310,10 @@ constructor(
                 else original
             }
         return RequestScope.execute(client.newCall(next)) { response ->
-            if (!response.isSuccessful) throw ContentHttpException(response.code)
+            if (!response.isSuccessful) {
+                observed?.invoke(response.code, null, response.protocol)
+                throw ContentHttpException(response.code)
+            }
             val body = response.body ?: throw IOException("内容响应为空")
             if (body.contentLength() > 16 * 1024 * 1024) throw IOException("内容响应过大")
             val input = body.byteStream()
@@ -318,10 +326,37 @@ constructor(
             }
             val bytes = out.toByteArray()
             if (bytes.size > 16 * 1024 * 1024) throw IOException("内容响应过大")
+            observed?.invoke(response.code, bytes.size, response.protocol)
             val content = String(bytes, Charsets.UTF_8)
             if (rejectEmptyPlayback && content.isBlank()) throw EmptyPlaybackResponseException()
             content
         }
+    }
+
+    private fun fetchPlaybackModel(
+        request: Request.Builder,
+        client: OkHttpClient,
+        trace: PlaybackRequestTrace,
+        stage: PlaybackRequestTrace.Stage,
+    ): String {
+        var recorded = false
+        val host = request.build().url.host
+        return try {
+            fetchOnce(request, client, refreshTicket = false, rejectEmptyPlayback = true) { code, bytes, protocol ->
+                recorded = true
+                trace.response(stage, host, code, bytes, protocol)
+            }
+        } catch (problem: IOException) {
+            if (!recorded) trace.failed(stage, host, problem)
+            throw problem
+        }
+    }
+
+    private fun resetPlaybackFailures() = synchronized(playbackIdentityLock) {
+        emptyPlaybackRounds = 0
+        emptyPlaybackRotated = false
+        playbackRotationResult = null
+        playbackFailureGeneration++
     }
 
     private fun router(url: String) = extractRouter(text(url)).getJSONObject("loaderData")
@@ -693,17 +728,23 @@ constructor(
      * - 2026-11-02：旧 `POST /novel/player` 全域名 200+0 字节（无签名形态），GET video_tab 出五档。
      * - 2026-11-05：无签名请求（含本 GET）被验签阶段短路返回空；带签名 POST 曾恢复五档。
      * - 2026-11-06 `--signmatrix` 复测：无签名 GET 稳定空；签名 GET/POST 均可出五档但随身份
-     *   波动（同一身份×路径连续空、全新身份即时恢复，即线上偶发空响应机制，由下方身份轮换
-     *   兜底）；POST 缺 Cookie 或缺 x-ss-stub 任一项即稳定被拒，故官方 playbackRequest 的
-     *   完整形态（Cookie + x-ss-stub + 签名族）是当前唯一已知可用形态。
+     *   波动；同日后续采样中，新连接仍空，同身份同一集静默一分钟后仍空，新会话首发可用。
+     *   尚不能区分频率限制、签名/请求指纹校验与身份/路径限制，轮换不保证恢复。
+     *   当日缺 Cookie 或 x-ss-stub 的 POST 形态均空，保留完整签名与会话形态。
      * 官方 APK（classes5.dex 的 `RpcOperation`）仍保留这条 GET 路径，参数取自
      * `GetVideoModelRequest` 的 `@SerializedName`（snake_case）；缺任一字段服务端回
      * `100103 PARAM_INVALID`。
      *
      * 失败（非 0 code、空正文、结构不符、网络异常）一律返回 null，由调用方回退签名 POST 旧接口，
-     * 不改变既有的空响应恢复与身份轮换语义。
+     * 调用方按会话健康度、次数和绝对截止时间选择后续路径。
      */
-    private fun tabVideoModel(id: String, identity: PlaybackDeviceSession.Profile): JSONObject? {
+    private fun tabVideoModel(
+        id: String,
+        identity: PlaybackDeviceSession.Profile,
+        trace: PlaybackRequestTrace = PlaybackRequestTrace(),
+        transport: OkHttpClient = http,
+        strict: Boolean = false,
+    ): JSONObject? {
         val extra = mapOf(
             "video_id" to id, "video_id_type" to "0", "device_level" to "1",
             "need_all_video_definition" to "1", "need_mp4_align" to "0",
@@ -715,21 +756,20 @@ constructor(
             val request = playbackRequest(
                 "https://$host/reading/bookapi/video_tab/multi_video_model/v1/",
                 identity, extra,
-            ).build()
+            )
             val text =
                 try {
-                    RequestScope.execute(http.newCall(request)) { response ->
-                        if (!response.isSuccessful) throw ContentHttpException(response.code)
-                        response.body?.string().orEmpty()
-                    }
+                    fetchPlaybackModel(request, transport, trace, PlaybackRequestTrace.Stage.GET)
                 } catch (problem: IOException) {
-                    if (Thread.currentThread().isInterrupted) throw problem
+                    if (strict || Thread.currentThread().isInterrupted) throw problem
                     continue
                 } catch (problem: RuntimeException) {
                     continue
                 }
-            val root = runCatching { JSONObject(text) }.getOrNull() ?: continue
-            if (root.optInt("code", root.optInt("Code", -1)) != 0) continue
+            val root = runCatching { JSONObject(text) }.getOrNull()
+            if (root == null) { trace.rejected(); continue }
+            val code = root.optInt("code", root.optInt("Code", -1))
+            if (code != 0) { trace.rejected(code); continue }
             val data = root.optJSONObject("data") ?: continue
             val rows = data.optJSONObject("video_model_data") ?: data
             val row =
@@ -797,119 +837,150 @@ constructor(
         else info
     }
 
-    /** Every playable rendition of one episode, best tier first; one player-API round trip. */
+    /** 读取一集的可播档位；前台按会话路径健康度选择，后台只轻量准备一次。 */
     @JvmOverloads
-    fun streamLadder(id: String, metadataAhead: List<String> = emptyList()): StreamLadder {
+    fun streamLadder(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder {
         require(id.matches(Regex("[0-9]{1,30}")))
         require(metadataAhead.size <= 2 && metadataAhead.all { it.matches(Regex("[0-9]{1,30}")) })
+        val firstRead = synchronized(requestedPlaybackModels) {
+            val first = requestedPlaybackModels.add(id)
+            while (requestedPlaybackModels.size > 64) requestedPlaybackModels.remove(requestedPlaybackModels.first())
+            first
+        }
         // 后续模型仅在内存保留 60 秒，领取即移除；失败重试不会反复复用同一个旧地址。
         val cached =
             synchronized(upcomingPlaybackModels) {
                 val now = clock()
                 upcomingPlaybackModels.entries.removeAll { now - it.value.savedAt !in 0..60_000 }
                 upcomingPlaybackModels.remove(id)?.entry
-            }
+            } ?: playbackSession.takeModel(id, playbackModelOwner, clock()).takeIf { firstRead }
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(if (speculative) 2000 else 8000)
         val entry =
             cached
-                ?: run {
+                ?: RequestScope.withDeadline(deadline) {
                     val ids = (listOf(id) + metadataAhead).distinct()
                     // GET video_tab 优先（官方 App 现行路径，2026-11-05 起对无签名请求短路返回
                     // 空正文）；失败时回退签名 POST 旧接口，两条路径共用同一注册身份。
-                    val rotated =
-                        synchronized(playbackIdentityLock) {
-                            emptyPlaybackRounds >= IDENTITY_ROTATE_ROUNDS && !emptyPlaybackRotated
-                        }
-                    if (rotated) {
-                        // 网络 I/O 在锁外；无论成败都视为本失败期已轮换，不重复尝试。
-                        playbackSession.rotate(http)
-                        synchronized(playbackIdentityLock) { emptyPlaybackRotated = true }
+                    val trace = PlaybackRequestTrace()
+                    fun transport(fresh: Boolean = false): OkHttpClient {
+                        val remaining = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())
+                        if (remaining <= 0) throw java.net.SocketTimeoutException("播放信息读取超时")
+                        return http.newBuilder()
+                            .connectTimeout(minOf(remaining, 4000), TimeUnit.MILLISECONDS)
+                            .readTimeout(minOf(remaining, 4000), TimeUnit.MILLISECONDS)
+                            .callTimeout(remaining, TimeUnit.MILLISECONDS)
+                            .apply { if (fresh) connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS)) }
+                            .build()
                     }
-                    val identity = playbackSession.profile(http)
-                    tabVideoModel(id, identity)?.let {
-                        synchronized(playbackIdentityLock) {
-                            emptyPlaybackRounds = 0
-                            emptyPlaybackRotated = false
+                    val previousIdentity = playbackSession.profile(transport())
+                    // 后台不消耗前台失败额度，也不触发注册；前台按已知失效状态恢复一次。
+                    fun refreshIdentity(previous: PlaybackDeviceSession.Profile): PlaybackDeviceSession.Profile {
+                        val rotationGeneration = synchronized(playbackIdentityLock) {
+                            if (!speculative && !emptyPlaybackRotated) {
+                                emptyPlaybackRotated = true
+                                playbackFailureGeneration
+                            } else null
                         }
-                        return@run it
+                        if (rotationGeneration != null) {
+                            val ready = playbackSession.rotate(transport(), previous)
+                            synchronized(playbackIdentityLock) {
+                                if (playbackFailureGeneration == rotationGeneration) playbackRotationResult = ready
+                            }
+                        }
+                        return playbackSession.profile(transport())
                     }
-                    // device_level=1 是服务端最保守的编码供给：level=3 会把部分剧集的 360P-720P
-                    // 档下发成 bytevc2（Android 提取器读不出视频轨，只能被过滤掉），该集便只剩
-                    // 1080P 一档，竖屏超出电视解码上限后降无可降；level=1 对正常集供给与 3 一致。
+                    val shouldRefresh = !speculative && (synchronized(playbackIdentityLock) {
+                        emptyPlaybackRounds >= IDENTITY_ROTATE_ROUNDS
+                    } || previousIdentity.routes.exhausted(clock()))
+                    var identity = if (shouldRefresh) refreshIdentity(previousIdentity) else previousIdentity
+                    val plan = identity.routes.plan(clock(), speculative)
+                    val pendingRoutes = java.util.ArrayDeque(plan)
                     val payload =
                         """{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":${JSONArray(ids)}}}"""
                             .toByteArray()
-                    // 批量接口同次读取当前集和至多后两集，减少连续手动切集时的播放信息请求。
-                    // 空响应按有界退避逐次换路恢复（换 host + 新连接）；只刷新请求时间戳。
-                    // 探针实测（2026-10-31）同连接同 host 的重试无法逃逸，见 issue #38 与
-                    // PlayRetryPlan；2026-11-01 事件进一步实测：空响应事件按设备身份选择性屏蔽
-                    //（被屏蔽身份全部路径 100% 空且贯穿事件全程，全新身份即时恢复），因此连续
-                    // 两轮换路全空后轮换一次匿名设备身份，详见规格
-                    // docs/superpowers/specs/2026-11-02-playinfo-identity-rotation-design.md。
-                    val requestIdentity = playbackSession.profile(http)
-                    var content: String? = null
+                    var current: JSONObject? = null
+                    var responseMap: JSONObject? = null
                     var lastError: IOException? = null
-                    val tried = mutableListOf<String>()
-                    for (attempt in 0 until PlayRetryPlan.maxAttempts) {
-                        if (attempt > 0) {
-                            try {
-                                sleep(PlayRetryPlan.delaysMillis[attempt - 1])
-                            } catch (_: InterruptedException) {
-                                Thread.currentThread().interrupt()
-                                throw java.io.InterruptedIOException("请求已取消")
+                    var allEmpty = plan.isNotEmpty()
+                    var postCount = 0
+                    var emptyPosts = 0
+                    var attempts = 0
+                    while (attempts < (if (speculative) 1 else 4)) {
+                        if (pendingRoutes.isEmpty()) {
+                            // 已知路径全部为空时，在本轮剩余额度内恢复身份，不先弹错误再重跑整轮。
+                            if (!speculative && identity.routes.exhausted(clock())) {
+                                val replacement = refreshIdentity(identity)
+                                if (replacement !== identity) {
+                                    identity = replacement
+                                    pendingRoutes.addAll(identity.routes.plan(clock(), false))
+                                }
                             }
+                            if (pendingRoutes.isEmpty()) break
                         }
-                        val host = PlayRetryPlan.host(attempt)
-                        tried += PlayRetryPlan.tag(host)
-                        val request = playbackRequest(
-                            "https://$host/novel/player/multi_video_model/v1/",
-                            requestIdentity, body = payload,
-                        ).apply {
-                            if (PlayRetryPlan.freshConnection(attempt)) header("Connection", "close")
-                        }
+                        val route = pendingRoutes.removeFirst()
+                        val attempt = attempts++
+                        val client = transport(fresh = attempt > 0)
+                        if (!route.get) postCount++
                         try {
-                            content = fetchOnce(request, http, refreshTicket = false, rejectEmptyPlayback = true)
+                            val row = if (route.get) {
+                                tabVideoModel(id, identity, trace, client, strict = true)
+                                    ?: throw IOException("首选播放信息格式或业务状态异常")
+                            } else {
+                                val request = playbackRequest(
+                                    "https://${route.host}/novel/player/multi_video_model/v1/",
+                                    identity, body = payload,
+                                )
+                                val body = fetchPlaybackModel(request, client, trace, PlaybackRequestTrace.Stage.POST)
+                                val data = try { JSONObject(body) } catch (_: Exception) {
+                                    throw IOException("播放信息格式异常")
+                                }
+                                val code = data.optInt("Code", data.optInt("code", 0))
+                                if (code != 0) throw IOException("播放接口暂不可用（错误码 $code）")
+                                val map = data.optJSONObject("data") ?: throw IOException("播放信息为空")
+                                responseMap = map
+                                map.optJSONObject(id) ?: (if (ids.size == 1)
+                                    map.keys().asSequence().mapNotNull { map.optJSONObject(it) }.firstOrNull() else null)
+                                    ?: throw IOException("播放信息为空")
+                            }
+                            // 只有模型结构有效才记为健康，HTTP 200 或非空正文不能代表播放成功。
+                            val model = row.optJSONObject("video_model") ?: runCatching { JSONObject(row.str("video_model")) }.getOrNull()
+                            if (model == null || (model.optJSONArray("video_list")?.length() ?: 0) == 0 && !model.has("fallback_api"))
+                                throw IOException("播放信息格式异常")
+                            current = row
+                            identity.offerModel(id, row, playbackModelOwner, clock())
+                            identity.routes.success(route, clock())
+                            if (!speculative) resetPlaybackFailures()
                             break
-                        } catch (e: IOException) {
-                            if (Thread.currentThread().isInterrupted) throw e
-                            lastError = e
-                            if (!PlayRetryPlan.temporary(e)) throw e
+                        } catch (error: IOException) {
+                            if (Thread.currentThread().isInterrupted) throw error
+                            lastError = error
+                            val empty = error is EmptyPlaybackResponseException
+                            allEmpty = allEmpty && empty
+                            if (!route.get && empty) emptyPosts++
+                            if (route.get || empty || PlayRetryPlan.temporary(error)) identity.routes.failed(route, clock(), empty)
+                            // GET 结构不符仍可换备用接口；POST 明确业务/格式错误不继续盲试。
+                            if (!route.get && !PlayRetryPlan.temporary(error)) throw error
+                        } finally {
+                            if (attempt > 0) client.connectionPool.evictAll()
                         }
                     }
-                    // 全部尝试耗尽时直接抛出（带计数与 host 代号），保持 response 为纯文本。
-                    // 空响应整轮耗尽计入身份屏蔽计数；拿到有效响应则复位轮换状态。
-                    if (content != null) {
-                        synchronized(playbackIdentityLock) {
-                            emptyPlaybackRounds = 0
-                            emptyPlaybackRotated = false
+                    if (current == null) {
+                        if (!speculative) synchronized(playbackIdentityLock) {
+                            emptyPlaybackRounds = if (allEmpty || postCount > 0 && emptyPosts == postCount) emptyPlaybackRounds + 1 else 0
                         }
+                        val error = lastError
+                        if (error == null || error is EmptyPlaybackResponseException) {
+                            val rotation = synchronized(playbackIdentityLock) {
+                                if (!emptyPlaybackRotated) "" else " rotated=1 reg=" +
+                                    when (playbackRotationResult) { true -> "ok"; false -> "failed"; null -> "pending" }
+                            }
+                            throw EmptyPlaybackResponseException(
+                                (if (plan.isEmpty()) "route=cooldown" else trace.summary()) + rotation,
+                            )
+                        }
+                        throw error
                     }
-                    val response =
-                        content
-                            ?: throw (lastError?.let { error ->
-                                if (error is EmptyPlaybackResponseException) {
-                                    synchronized(playbackIdentityLock) { emptyPlaybackRounds += 1 }
-                                    // 本失败期已轮换过身份（含本轮触发）即带标记，便于诊断区分
-                                    val rotatedInPeriod =
-                                        synchronized(playbackIdentityLock) { emptyPlaybackRotated }
-                                    EmptyPlaybackResponseException(
-                                        "空响应x${tried.size} host=${tried.joinToString(",")}" +
-                                            (if (rotatedInPeriod) " rotated=1" else ""),
-                                    )
-                                } else error
-                            } ?: IOException("播放信息请求失败"))
-                    val data = JSONObject(response)
-                    val code = data.optInt("Code", data.optInt("code", 0))
-                    if (code != 0) throw IOException("播放接口暂不可用（错误码 $code）")
-                    val map = data.optJSONObject("data") ?: throw IOException("播放信息为空")
-                    val current =
-                        map.optJSONObject(id)
-                            ?: (if (ids.size == 1)
-                                map.keys()
-                                    .asSequence()
-                                    .mapNotNull { map.optJSONObject(it) }
-                                    .firstOrNull()
-                            else null)
-                            ?: throw IOException("播放信息为空")
+                    val map = responseMap ?: JSONObject()
                     synchronized(upcomingPlaybackModels) {
                         ids.drop(1).forEach { next ->
                             map.optJSONObject(next)
@@ -932,6 +1003,7 @@ constructor(
                     current
                 }
         val model = entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
+        if (cached != null && !speculative) resetPlaybackFailures()
         // The current model already carries plain media URLs, dimensions and CENC keys.
         // Only use the legacy fallback endpoint when this shape has no usable rendition.
         val inline =

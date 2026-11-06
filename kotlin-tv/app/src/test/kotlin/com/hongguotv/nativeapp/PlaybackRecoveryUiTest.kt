@@ -79,7 +79,7 @@ class PlaybackRecoveryUiTest {
         // detail 的脱敏由 core 构造处保证（见 PlayRetryPlanTest）；app 层契约是限长展示。
         val line =
             diagnosticLine("Box", "9", "0.1.12", failure, 2, 8, "x".repeat(200))
-        assertTrue(line.endsWith("x".repeat(60)))
-        assertTrue(line.length < 160)
+        assertTrue(line.endsWith("x".repeat(180)))
+        assertTrue(line.length < 280)
     }
 }

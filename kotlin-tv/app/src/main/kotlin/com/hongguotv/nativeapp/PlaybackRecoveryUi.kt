@@ -39,7 +39,13 @@ internal fun diagnosticLine(
         "诊断: ${model.take(24)} / Android ${androidVersion.take(16)} / v${appVersion.take(16)} / ${failure.take(40)}"
     val rest = buildList {
         if (recoveryAttempts > 0) add("恢复$recoveryAttempts/$total")
-        if (!detail.isNullOrBlank()) add(detail.take(60))
+        if (!detail.isNullOrBlank()) add(detail.take(180))
     }
     return if (rest.isEmpty()) head else "$head · ${rest.joinToString(" · ")}"
+}
+
+/** 初次准备与恢复期间保持阶段和失败原因，直到首帧到达。 */
+internal fun preparingPlaybackText(recovering: Boolean, failure: String, hasVideo: Boolean): String {
+    val phase = if (hasVideo) "正在缓冲，等待画面…" else "正在获取播放信息…"
+    return if (recovering) "$failure\n正在恢复播放 · $phase" else phase
 }

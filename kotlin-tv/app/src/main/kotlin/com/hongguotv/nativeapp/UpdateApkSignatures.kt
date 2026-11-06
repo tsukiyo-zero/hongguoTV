@@ -6,7 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import java.io.IOException
 
-/** Keep archive certificate collection compatible with older framework implementations. */
+/** 同时请求新旧签名字段，兼容旧系统解析 APK 文件时的证书收集行为。 */
 @Suppress("DEPRECATION")
 internal object UpdateApkSignatures {
     fun flags(): Int = PackageManager.GET_SIGNATURES or
@@ -14,8 +14,8 @@ internal object UpdateApkSignatures {
 
     private fun signers(info: PackageInfo): Set<String> {
         val modern = if (Build.VERSION.SDK_INT >= 28) info.signingInfo?.apkContentsSigners else null
-        // Some OEM frameworks populate only the legacy field. Never replace a nonempty
-        // modern signer set with legacy signing history when the modern set mismatches.
+        // 部分电视系统只填充旧签名字段。新字段非空但签名不同时，
+        // 不得用旧字段中的签名历史替代当前签名并放行。
         val certificates = modern?.takeIf { it.isNotEmpty() } ?: info.signatures
         return certificates?.map { it.toCharsString() }?.toSet().orEmpty()
     }
