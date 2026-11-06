@@ -17,6 +17,37 @@ class PlaybackDeviceSessionTest {
         """{"data":{"123":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}}"""
 
     @Test
+    fun concurrentRotationsOfOneFailingProfileRegisterOnlyOneReplacement() {
+        val registrations = AtomicInteger()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val session = PlaybackDeviceSession {
+            val n = registrations.incrementAndGet()
+            if (n > 1) {
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+            }
+            DeviceRegister.Registered((333 + n).toString(), (444 + n).toString())
+        }
+        val http = OkHttpClient()
+        val failing = session.profile(http)
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val first = pool.submit<Boolean> { session.rotate(http, failing) }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            val second = pool.submit<Boolean> { session.rotate(http, failing) }
+            release.countDown()
+            assertTrue(first.get(5, TimeUnit.SECONDS))
+            assertTrue(second.get(5, TimeUnit.SECONDS))
+            assertEquals(2, registrations.get())
+            assertNotSame(failing, session.profile(http))
+        } finally {
+            release.countDown()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
     fun registersBeforePlaybackAndReusesIdentityAcrossRepositoriesAndRetries() {
         var registrations = 0
         var models = 0

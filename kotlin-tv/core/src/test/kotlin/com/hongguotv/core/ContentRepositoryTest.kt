@@ -17,6 +17,50 @@ class ContentRepositoryTest {
         """{"data":{"123":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}}"""
 
     @Test
+    fun mixedTimeoutAndEmptyRoundsDoNotRotateAsAllEmpty() {
+        var registrations = 0
+        var posts = 0
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            when (request.url.encodedPath) {
+                "/service/2/device_register/" -> {
+                    registrations++
+                    fixtureResponse(request, """{"device_id":"333","install_id":"444"}""")
+                }
+                "/reading/bookapi/video_tab/multi_video_model/v1/" -> fixtureResponse(request, "")
+                else -> {
+                    if (++posts % 4 == 1) throw java.net.SocketTimeoutException("test-only")
+                    fixtureResponse(request, "")
+                }
+            }
+        }.build()
+        val repo = ContentRepository(http, sleep = {})
+        repeat(4) {
+            val error = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+            assertTrue(error.detail.orEmpty().contains("G:b=200/0B/h1"))
+            assertTrue(error.detail.orEmpty().contains("P:b=timeout"))
+            assertFalse(error.detail.orEmpty().contains("rotated"))
+        }
+        assertEquals(1, registrations)
+    }
+
+    @Test
+    fun failedRegistrationIsDistinguishedAndNotRepeatedInOneFailurePeriod() {
+        var registrations = 0
+        val session = PlaybackDeviceSession {
+            if (++registrations == 1) DeviceRegister.Registered("333", "444") else null
+        }
+        val http = OkHttpClient.Builder().addInterceptor { chain -> fixtureResponse(chain.request(), "") }.build()
+        val repo = ContentRepository(http, playbackSession = session, sleep = {})
+        repeat(2) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") } }
+        repeat(2) {
+            val error = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+            assertTrue(error.detail.orEmpty().contains("rotated=1 reg=failed"))
+        }
+        assertEquals(2, registrations)
+    }
+
+    @Test
     fun rotatedIdentityRetriesPreferredEndpointAndSuccessResetsFailurePeriod() {
         var registrations = 0
         var allowPreferred = true
@@ -556,9 +600,10 @@ class ContentRepositoryTest {
         }
         assertNotEquals(requests[0].header("x-gorgon"), requests[1].header("x-gorgon"))
         assertNotEquals(requests[0].header("x-medusa"), requests[1].header("x-medusa"))
-        // 重试强制新建连接，首拍不携带。
+        // Fresh pools, not a Connection header, enforce HTTP/2 retry isolation.
+        // Real connection sequences are covered by PlaybackRetryConnectionTest.
         assertNull(requests[0].header("Connection"))
-        assertEquals("close", requests[1].header("Connection"))
+        assertNull(requests[1].header("Connection"))
         val first = okio.Buffer().also { requests[0].body!!.writeTo(it) }.readUtf8()
         val second = okio.Buffer().also { requests[1].body!!.writeTo(it) }.readUtf8()
         assertEquals(first, second)

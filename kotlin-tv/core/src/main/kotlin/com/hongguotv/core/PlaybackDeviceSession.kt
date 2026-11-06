@@ -48,14 +48,16 @@ class PlaybackDeviceSession(
     }
 
     /**
-     * 空响应身份屏蔽自愈（2026-11-01 事件实测：屏蔽按设备身份生效，换域名与新连接无法逃逸，
-     * 全新身份即时恢复）：立即重新注册一次匿名设备。成功则替换内存身份（cdid 一并换新）并返回
-     * true；注册失败、中断或结果非法保留原身份返回 false。沿用同一注册流程，不做指纹伪造；
-     * 频次由调用方约束（同一连续失败期至多一次）。
+     * Try one anonymous replacement, bounded by the caller's failure-period guard.
+     * A new profile helped some dated probes, but does not guarantee recovery.
+     * If another repository already replaced [expected], reuse it without registering again.
+     * Return true when a replacement is ready; on failure keep the existing profile.
      */
     @Synchronized
-    internal fun rotate(http: OkHttpClient): Boolean {
+    internal fun rotate(http: OkHttpClient, expected: Profile? = null): Boolean {
         if (Thread.currentThread().isInterrupted) return false
+        // Another repository sharing this session already replaced the failing profile.
+        if (expected != null && ready !== expected && ready != null) return true
         val device =
             try {
                 register(http) ?: return false
