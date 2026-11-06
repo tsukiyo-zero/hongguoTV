@@ -16,6 +16,9 @@ const context = vm.createContext({
   Buffer,
   URL,
   URLSearchParams,
+  // vendor 顶层读取 process.env（medusa 进程 nonce / 启动时间），生产沙箱给空 env 走随机生成分支；
+  // 对拍工具 signing-oracle.cjs 注入固定值复现测试向量。
+  process: { env: {} },
   axios: axios.create({
     maxContentLength: 16 * 1024 * 1024,
     maxBodyLength: 1024 * 1024,

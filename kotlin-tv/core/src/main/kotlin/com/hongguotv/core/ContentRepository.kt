@@ -177,7 +177,8 @@ constructor(
     private val playbackSession: PlaybackDeviceSession = PlaybackDeviceSession(),
     private val sleep: (Long) -> Unit = Thread::sleep,
 ) {
-    private val signer = Signer()
+    // 签名时钟与应用时钟同源：测试可注入，重签后的 ts/_rticket 保持在同一时间基上。
+    private val signer = Signer(clock)
 
     // 空响应身份屏蔽自愈状态（2026-11-01 事件实测：屏蔽按设备身份生效，换路无法逃逸，
     // 全新身份即时恢复）。连续整轮空响应达到阈值时轮换一次身份；成功即复位。
@@ -688,14 +689,19 @@ constructor(
     /**
      * 官方 App 现行的播放模型接口：`GET /reading/bookapi/video_tab/multi_video_model/v1/`。
      *
-     * 2026-11-02 实测：旧的 `POST /novel/player/multi_video_model/v1/` 在八个域名上对所有请求
-     * 返回 HTTP 200 + 0 字节（官方 UA、完整签名头、空 body、无 Cookie、h2/h1.1、Chrome 指纹
-     * 全部如此），而本接口同一时刻正常返回 `code 0` 与五档 `video_list`。官方 APK
-     * （classes5.dex 的 `RpcOperation`）仍保留这条路径，参数取自 `GetVideoModelRequest` 的
-     * `@SerializedName`（snake_case）；缺任一字段服务端回 `100103 PARAM_INVALID`。
+     * 服务端对播放模型的放行策略按时间窗与「身份 × 路径」波动，注释结论均须带日期快照：
+     * - 2026-11-02：旧 `POST /novel/player` 全域名 200+0 字节（无签名形态），GET video_tab 出五档。
+     * - 2026-11-05：无签名请求（含本 GET）被验签阶段短路返回空；带签名 POST 曾恢复五档。
+     * - 2026-11-06 `--signmatrix` 复测：无签名 GET 稳定空；签名 GET/POST 均可出五档但随身份
+     *   波动（同一身份×路径连续空、全新身份即时恢复，即线上偶发空响应机制，由下方身份轮换
+     *   兜底）；POST 缺 Cookie 或缺 x-ss-stub 任一项即稳定被拒，故官方 playbackRequest 的
+     *   完整形态（Cookie + x-ss-stub + 签名族）是当前唯一已知可用形态。
+     * 官方 APK（classes5.dex 的 `RpcOperation`）仍保留这条 GET 路径，参数取自
+     * `GetVideoModelRequest` 的 `@SerializedName`（snake_case）；缺任一字段服务端回
+     * `100103 PARAM_INVALID`。
      *
-     * 失败（非 0 code、空正文、结构不符、网络异常）一律返回 null，由调用方回退旧接口，不改变
-     * 既有的空响应恢复与身份轮换语义。
+     * 失败（非 0 code、空正文、结构不符、网络异常）一律返回 null，由调用方回退签名 POST 旧接口，
+     * 不改变既有的空响应恢复与身份轮换语义。
      */
     private fun tabVideoModel(id: String, identity: PlaybackDeviceSession.Profile): JSONObject? {
         val extra = mapOf(
@@ -807,8 +813,8 @@ constructor(
             cached
                 ?: run {
                     val ids = (listOf(id) + metadataAhead).distinct()
-                    // 官方 App 现行播放模型接口优先：2026-11-02 实测旧的 /novel/player 族在全部
-                    // 八个域名上对所有请求返回 200 + 0 字节，而这条 GET 接口同刻正常出五档。
+                    // GET video_tab 优先（官方 App 现行路径，2026-11-05 起对无签名请求短路返回
+                    // 空正文）；失败时回退签名 POST 旧接口，两条路径共用同一注册身份。
                     val identity = playbackSession.profile(http)
                     tabVideoModel(id, identity)?.let { return@run it }
                     // device_level=1 是服务端最保守的编码供给：level=3 会把部分剧集的 360P-720P

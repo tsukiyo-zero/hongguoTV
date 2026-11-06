@@ -11,7 +11,13 @@ internal class Signer(
     private val clock: () -> Long = System::currentTimeMillis,
     private val device: Map<String, String> = VendorConstants.device,
     private val random: () -> Double = Math::random,
+    // 官方 App 的 medusa 明文内嵌「进程 nonce」（每次冷启动随机生成一次）与
+    // 「进程启动时间」；测试对拍时注入固定值与 oracle 对齐。
+    private val processNonce: String = java.util.Base64.getUrlEncoder()
+        .withoutPadding()
+        .encodeToString(ByteArray(18).also(java.security.SecureRandom()::nextBytes)),
 ) {
+    private val processStarted: Long = clock()
     data class Request(val url: String, val headers: Map<String, String>, val body: ByteArray?)
 
     private fun rand() = (random() * 4294967296.0).toLong().toInt()
@@ -200,13 +206,15 @@ internal class Signer(
             .hex()
     }
 
-    private fun deviceProto() =
+    // medusa 内嵌的设备身份必须与 query 中的注册身份一致（服务端核对 medusa 明文里的
+    // device_id 与请求参数）；identity 为空时沿用构造时的静态占位身份。
+    private fun deviceProto(identity: Map<String, String>? = null) =
         proto(
             f(1, 1, "sint"),
             f(2, 2, "sint"),
             f(3, "8662"),
-            f(4, device.getValue("device_id")),
-            f(5, "Ai6svO3PyrwDOUSmO6ZcResxu"),
+            f(4, (identity ?: device).getValue("device_id")),
+            f(5, processNonce),
             f(6, "!noperm!"),
             f(7, -888888, "sint"),
             f(8, -888888, "sint"),
@@ -216,19 +224,19 @@ internal class Signer(
             f(12, "Asia/Shanghai,8"),
             f(13, "zh_CN"),
             f(14, 4, "sint"),
-            f(16, 255.24993896484375, "float"),
-            f(17, 35.58599090576172, "float"),
-            f(18, 3.467449188232422, "float"),
-            f(19, 3.467449188232422, "float"),
-            f(20, 255.1754913330078, "float"),
-            f(21, 42.17544174194336, "float"),
+            f(16, 0f, "float"),
+            f(17, 0f, "float"),
+            f(18, 0f, "float"),
+            f(19, 0f, "float"),
+            f(20, 0f, "float"),
+            f(21, 0f, "float"),
             f(22, "16"),
             f(23, 41, "sint"),
             f(24, 36, "sint"),
-            f(25, 1728388016635L, "sint"),
-            f(26, 1728388016635L, "sint"),
-            f(27, 1728388016635L, "sint"),
-            f(28, 1728388016637L, "sint"),
+            f(25, processStarted, "sint"),
+            f(26, processStarted, "sint"),
+            f(27, processStarted, "sint"),
+            f(28, processStarted, "sint"),
             f(29, -1, "sint"),
             f(30, "25053RT47C"),
             f(31, "Redmi"),
@@ -275,7 +283,8 @@ internal class Signer(
         return encoded.map { it.toByte() }.toByteArray()
     }
 
-    fun medusa(url: String, body: ByteArray?, ts: Int): String {
+    fun medusa(url: String, body: ByteArray?, ts: Int, identity: Map<String, String>? = null): String {
+        val who = identity ?: device
         val bodyMd5 = body?.let { digest("MD5", it) } ?: ByteArray(16)
         val query = url.substringAfter('?').toByteArray()
         val querySm3 = sm3(query)
@@ -290,7 +299,7 @@ internal class Signer(
         val messageRand = unsigned(rand())
         val envLaunch = (random() * 21).toInt() + 100
         val envPid = (random() * 2000).toInt() + 10001
-        val version = device.getValue("version_name")
+        val version = who.getValue("version_name")
         val env =
             proto(
                 f(1, envLaunch, "sint"),
@@ -299,7 +308,7 @@ internal class Signer(
                 f(5, 7, "sint"),
                 f(6, "v04.06.04.03-bugfix"),
                 f(7, envPid, "sint"),
-                f(12, deviceProto()),
+                f(12, deviceProto(who)),
                 f(13, proto(f(1, clock() / 1000, "sint"), f(2, -2, "sint"), f(4, 200, "sint"))),
                 f(14, version),
             )
@@ -310,7 +319,7 @@ internal class Signer(
                 f(2, 3, "sint"),
                 f(3, messageRand, "sint"),
                 f(4, "8662"),
-                f(5, device.getValue("device_id")),
+                f(5, who.getValue("device_id")),
                 f(6, "1588093228"),
                 f(7, version),
                 f(8, "v04.06.04-ml-android"),
@@ -320,7 +329,7 @@ internal class Signer(
                 f(13, queryBodyTs),
                 f(14, querySm3.copyOf(6)),
                 f(15, nested),
-                f(16, "AXYQOS6n2m60x1fVZHIrH3iol"),
+                f(16, processNonce),
                 f(17, ts, "sint"),
                 f(19, queryHash),
                 f(20, "none"),
@@ -389,7 +398,25 @@ internal class Signer(
         return output.base64()
     }
 
-    fun sign(base: String, values: Map<String, String>, body: ByteArray? = null): Request {
+    /**
+     * 生成带完整签名头的请求。
+     *
+     * `identity` 是播放接口的注册设备身份：除进入 query 外，还必须写进 medusa 明文
+     * （服务端核对两者一致性）。`playback` 切换官方播放器的头集合：不携带
+     * `x-tt-request-tag` / `passport-sdk-version` / `x-ss-stub`，改带
+     * `x-tt-store-region(-src)`（对齐 jackotom/hongguo-drama 的 playbackRequest）。
+     *
+     * 注意：该形态 2026-11-05 实测可通过播放接口，但 2026-11-06 `--signmatrix` 复测
+     * 0/12 被拒（补 version_code 73932 也不恢复）；当日对照实测服务端要求完整官方
+     * 形态（Cookie 与 x-ss-stub 缺一即拒）。此形态仅作头形态基线保留，勿用于线上。
+     */
+    fun sign(
+        base: String,
+        values: Map<String, String>,
+        body: ByteArray? = null,
+        identity: Map<String, String>? = null,
+        playback: Boolean = false,
+    ): Request {
         val now = clock()
         val ts = (now / 1000).toInt()
         var ticket = now
@@ -403,26 +430,37 @@ internal class Signer(
                 val headers =
                     linkedMapOf(
                         "User-Agent" to
-                            (if (body != null) VendorConstants.VIDEO_UA
-                            else VendorConstants.APP_UA),
+                            when {
+                                playback -> VendorConstants.PLAYER_UA
+                                body != null -> VendorConstants.VIDEO_UA
+                                else -> VendorConstants.APP_UA
+                            },
                         "Accept" to "application/json; charset=utf-8,application/x-protobuf",
                         "x-ss-req-ticket" to ticket.toString(),
-                        "x-tt-request-tag" to "t=0;n=0",
-                        "sdk-version" to "2",
-                        "passport-sdk-version" to "50561",
-                        "x-xs-from-web" to "0",
-                        "x-khronos" to ts.toString(),
-                        "x-ladon" to be32(ts).base64(),
-                        "x-argus" to le32(ts).base64(),
-                        "x-gorgon" to gorgon(query, body, ts, random),
-                        "x-helios" to helios(ts),
-                        "x-medusa" to medusa(url, body, ts),
-                        "x-tt-dt" to "",
                     )
+                if (!playback) {
+                    headers["x-tt-request-tag"] = "t=0;n=0"
+                    headers["passport-sdk-version"] = "50561"
+                }
+                headers["sdk-version"] = "2"
+                headers["x-xs-from-web"] = "0"
+                headers["x-khronos"] = ts.toString()
+                headers["x-ladon"] = be32(ts).base64()
+                headers["x-argus"] = le32(ts).base64()
+                headers["x-gorgon"] = gorgon(query, body, ts, random)
+                headers["x-helios"] = helios(ts)
+                headers["x-medusa"] = medusa(url, body, ts, identity)
+                headers["x-tt-dt"] = ""
+                if (playback) {
+                    headers["x-tt-store-region"] = "cn"
+                    headers["x-tt-store-region-src"] = "did"
+                }
                 if (body != null) {
                     headers["Content-Type"] = "application/json; charset=UTF-8"
-                    headers["x-vc-bdturing-sdk-version"] = "3.7.2.cn"
-                    headers["x-ss-stub"] = digest("MD5", body).hex().uppercase()
+                    if (!playback) {
+                        headers["x-vc-bdturing-sdk-version"] = "3.7.2.cn"
+                        headers["x-ss-stub"] = digest("MD5", body).hex().uppercase()
+                    }
                 }
                 return Request(url, headers, body)
             }
@@ -442,7 +480,7 @@ internal class Signer(
             if (branch(query, body, ts) != 0) continue
             val url = "$base?$query"
             val headers = linkedMapOf(
-                "User-Agent" to "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)",
+                "User-Agent" to VendorConstants.PLAYER_UA,
                 "Accept" to "application/json; charset=utf-8,application/x-protobuf",
                 "x-ss-req-ticket" to ticket.toString(), "sdk-version" to "2",
                 "x-xs-from-web" to "0", "x-khronos" to ts.toString(),

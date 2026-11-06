@@ -508,7 +508,8 @@ class ContentRepositoryTest {
             }
         assertEquals("https://example.com/video", repo.streamLadder("123").renditions.single().url)
         assertEquals(2, requests.size)
-        // 换路重试：host 轮换到备选，设备身份查询参数保持一致，仅时间戳单独刷新。
+        // 换路重试：host 轮换到备选，设备身份查询参数保持一致；
+        // ts/_rticket 参与签名，随整请求重签一并刷新。
         assertNotEquals(requests[0].url.host, requests[1].url.host)
         assertEquals(
             requests[0].url.newBuilder().host(requests[1].url.host).removeAllQueryParameters("_rticket").removeAllQueryParameters("ts").build(),
