@@ -58,6 +58,12 @@ class Library(context: Context) {
             viewing = viewing.copy(startupPage = value.coerceIn(0, 6))
             put("startupTab", viewing.startupPage)
         }
+    var seasonAutoplay: Boolean
+        get() = viewing.seasonAutoplay
+        set(value) {
+            viewing = viewing.copy(seasonAutoplay = value)
+            put("seasonAutoplay", value)
+        }
     var homeAutoplay: Boolean
         get() = viewing.homeAutoplay
         set(value) {

@@ -5,6 +5,11 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ViewingPreferencesTest {
+    @Test fun crossSeasonAutoplayIsOptInAndPersistsDecodedChoice() {
+        assertFalse(ViewingPreferences.decode(emptyMap<String, Any>()).seasonAutoplay)
+        assertTrue(ViewingPreferences.decode(mapOf("seasonAutoplay" to true)).seasonAutoplay)
+        assertFalse(ViewingPreferences.decode(mapOf("seasonAutoplay" to "true")).seasonAutoplay)
+    }
     @Test fun oldInstallKeepsHomeAndAutoplay() {
         val p = ViewingPreferences.decode(emptyMap<String, Any>())
         assertEquals(0, p.initialTab())

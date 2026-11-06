@@ -33,6 +33,57 @@ class RelatedWorksTest {
             .build()
 
     @Test
+    fun seasonSuffixMayOmitOrdinalMarkerWithoutSplittingSeriesOrSkippingSeasons() {
+        val stem = "谁说没灵根不能修仙的？之无灵证道"
+        val current = Series("39", stem + "第39季")
+        val next = RelatedWork(Series("40", stem + "40季"), "第40季", false, 40)
+        val fortyOne = RelatedWork(Series("41", stem + "41季"), "第41季", false, 41)
+        val fortyTwo = RelatedWork(Series("42", stem + "第42季"), "第42季", false, 42)
+        assertEquals(next, RelatedWorks.nextSeason(current, listOf(fortyTwo, next, fortyOne)))
+        assertEquals(fortyOne, RelatedWorks.nextSeason(next.series, listOf(fortyTwo, fortyOne)))
+        assertEquals(listOf("40", "41", "42"), RelatedWorks.ordered(current, listOf(fortyTwo, fortyOne, next)).map { it.series.id })
+        assertNull(RelatedWorks.nextSeason(current, listOf(fortyOne)))
+        assertNull(RelatedWorks.nextSeason(current, listOf(next, next.copy(series = Series("400", stem + "第四十季")))))
+        assertNull(RelatedWorks.nextSeason(current, listOf(next.copy(series = Series("400", "其他剧40季")))))
+        assertEquals(next.copy(series = Series("400", stem + "第四十季")),
+            RelatedWorks.nextSeason(current, listOf(next.copy(series = Series("400", stem + "第四十季")))))
+    }
+
+    @Test
+    fun currentSeriesStaysTogetherBeforeOtherIpSeriesRegardlessOfSeasonNumber() {
+        val current = Series("1", "谁说没灵根不能修仙的？之无灵证道")
+        val own3 = RelatedWork(Series("3", "谁说没灵根不能修仙的？之无灵证道第3季"), "第3季", false, 3)
+        val own2 = RelatedWork(Series("2", "谁说没灵根不能修仙的？之无灵证道第二季"), "第2季", false, 2)
+        val other = RelatedWork(Series("8", "砍仙"), "同IP", false, 1)
+        val other2 = RelatedWork(Series("9", "砍仙第二季"), "同IP", false, 2)
+        assertEquals(listOf("2", "3", "8", "9"), RelatedWorks.ordered(current, listOf(other, own3, other2, own2)).map { it.series.id })
+    }
+
+    @Test
+    fun keepsMoreThanThirtySeasonsAndSortsNumericSeasonOrder() {
+        val rows = (40 downTo 1).joinToString(",") {
+            """{"series_id":"${1000 + it}","title":"长剧第${it}季","content_type":1004,"episode_cnt":10,"season_index":$it}"""
+        }
+        val parsed = RelatedWorks.parse("""{"code":0,"data":[{"show_type":547,"video_data":[$rows]}]}""", "999")
+        assertEquals(40, parsed.size)
+        assertEquals((1..40).toList(), parsed.map { it.seasonIndex })
+    }
+
+    @Test
+    fun nextSeasonRequiresUniqueConsecutivePlayableTitleMatch() {
+        val current = Series("1", "长剧第三十四季")
+        val next = RelatedWork(Series("2", "长剧第35季"), "第35季", false, 35)
+        val unrelated = next.copy(series = Series("3", "其他剧第35季"))
+        assertEquals(next, RelatedWorks.nextSeason(current, listOf(unrelated, next)))
+        assertNull(RelatedWorks.nextSeason(current, listOf(next.copy(upcoming = true))))
+        assertNull(RelatedWorks.nextSeason(current, listOf(next.copy(seasonIndex = 36))))
+        assertNull(RelatedWorks.nextSeason(current, listOf(next, next.copy(series = Series("4", "长剧第三十五季")))))
+        assertNull(RelatedWorks.nextSeason(current, listOf(unrelated)))
+        assertEquals(RelatedWork(Series("5", "短剧第二季"), "", false, 2),
+            RelatedWorks.nextSeason(Series("6", "短剧"), listOf(RelatedWork(Series("5", "短剧第二季"), "", false, 2))))
+    }
+
+    @Test
     fun parsesOfficialSeasonTypesAndExcludesCurrentNovelBlockedAndDuplicates() {
         val rows = RelatedWorks.parse(data, "111")
         assertEquals(listOf("222", "333"), rows.map { it.series.id })

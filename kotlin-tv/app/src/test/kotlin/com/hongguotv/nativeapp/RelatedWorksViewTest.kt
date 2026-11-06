@@ -25,6 +25,30 @@ class RelatedWorksViewTest {
             else emptyList()
 
     @Test
+    fun allSeasonsGridCanOpenFortiethSeasonAndClosesOnDetach() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        var selected: RelatedWork? = null
+        val strip = RelatedWorksView(activity, emptyList(), { _, _ -> }, { "预约" }, { work, _ -> selected = work }, {})
+        try {
+            activity.setContentView(strip)
+            val rows = (1..40).map { RelatedWork(Series("$it", "长剧第${it}季"), "第${it}季", false, it) }
+            strip.show(rows)
+            val all = descendants(strip).filterIsInstance<TextView>().single { it.text.toString().startsWith("全部季 /") }
+            all.performClick()
+            val dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
+            descendants(dialog.window!!.decorView).filterIsInstance<TextView>()
+                .single { it.text.toString().startsWith("长剧第40季\n") }.performClick()
+            assertEquals("40", selected?.series?.id)
+            assertFalse(dialog.isShowing)
+            all.performClick()
+            val second = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
+            activity.setContentView(TextView(activity))
+            assertFalse(second.isShowing)
+        } finally { controller.pause().stop().destroy() }
+    }
+
+    @Test
     fun upcomingCardsUseReservationActionAndRemoteCanReachStripFromEpisodes() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup()
         try {
@@ -51,7 +75,7 @@ class RelatedWorksViewTest {
             assertEquals(released.id, episode.nextFocusDownId)
             assertEquals(future.id, released.nextFocusRightId)
             val refresh = views.filterIsInstance<TextView>().single { it.text.toString() == "刷新" }
-            assertEquals(refresh.id, future.nextFocusUpId)
+            assertEquals(views.filterIsInstance<TextView>().single { it.text.toString().startsWith("全部季 /") }.id, future.nextFocusUpId)
             assertEquals(episode.id, refresh.nextFocusUpId)
             future.performClick()
             assertEquals(upcoming, selected)

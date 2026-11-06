@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hongguotv.nativeapp
 
+import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Color
 import android.view.Gravity
@@ -17,6 +18,7 @@ internal class RelatedWorksView(
     private val open: (RelatedWork, View) -> Unit,
     private val reload: () -> Unit,
 ) : LinearLayout(context) {
+    private var allDialog: AlertDialog? = null
     private var refreshButton: TextView? = null
     private val labels = mutableListOf<Pair<RelatedWork, TextView>>()
 
@@ -82,6 +84,15 @@ internal class RelatedWorksView(
     fun show(rows: List<RelatedWork>) {
         reset(if (rows.isEmpty()) "暂无相关剧集" else "左右选择其他季；待上线作品可预约")
         if (rows.isEmpty()) return
+        val allButton = label("全部季 / 相关作品 · ${rows.size} 项 ›").apply {
+            id = View.generateViewId()
+            isFocusable = true
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = TvStyle.card(context, false)
+            setOnFocusChangeListener { v, focused -> v.background = TvStyle.card(context, focused) }
+            setOnClickListener { showAll(rows, this) }
+        }
+        addView(allButton)
         val scroll =
             HorizontalScrollView(context).apply {
                 isHorizontalScrollBarEnabled = false
@@ -135,13 +146,66 @@ internal class RelatedWorksView(
         cards.forEachIndexed { index, card ->
             card.nextFocusLeftId = cards.getOrNull(index - 1)?.id ?: card.id
             card.nextFocusRightId = cards.getOrNull(index + 1)?.id ?: card.id
-            card.nextFocusUpId = refreshButton?.id ?: upper.lastOrNull()?.id ?: card.id
+            card.nextFocusUpId = allButton.id
             card.nextFocusDownId = card.id
         }
-        refreshButton?.nextFocusDownId = cards.first().id
+        refreshButton?.nextFocusDownId = allButton.id
+        allButton.nextFocusUpId = refreshButton?.id ?: allButton.id
+        allButton.nextFocusDownId = cards.first().id
         upper.takeLast(10).forEachIndexed { index, view ->
             view.nextFocusDownId = cards[minOf(index, cards.lastIndex)].id
         }
+    }
+
+    private fun showAll(rows: List<RelatedWork>, anchor: View) {
+        allDialog?.dismiss()
+        val panel = LinearLayout(context).apply {
+            orientation = VERTICAL
+            setPadding(dp(18), dp(18), dp(18), dp(18))
+            background = TvVisual.panel(context, modal = true)
+        }
+        panel.addView(label("全部季 / 相关作品 · ${rows.size} 项", 20f))
+        val grid = GridLayout(context).apply { columnCount = 4 }
+        val cells = rows.map { work ->
+            label(work.series.title + "\n" + work.label, 13f).apply {
+                id = View.generateViewId()
+                isFocusable = true
+                maxLines = 3
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(10), dp(6), dp(10), dp(6))
+                background = TvStyle.card(context, false)
+                contentDescription = work.series.title + "，" + work.label
+                setOnFocusChangeListener { v, focused -> v.background = TvStyle.card(context, focused) }
+                setOnClickListener { allDialog?.dismiss(); open(work, anchor) }
+            }.also { cell -> grid.addView(cell, GridLayout.LayoutParams().apply {
+                width = dp(148); height = dp(76)
+                setMargins(dp(4), dp(4), dp(4), dp(4))
+            }) }
+        }
+        cells.forEachIndexed { i, cell ->
+            cell.nextFocusLeftId = if (i % 4 > 0) cells[i - 1].id else cell.id
+            cell.nextFocusRightId = if (i % 4 < 3) cells.getOrNull(i + 1)?.id ?: cell.id else cell.id
+            cell.nextFocusUpId = cells.getOrNull(i - 4)?.id ?: cell.id
+            cell.nextFocusDownId = cells.getOrNull(i + 4)?.id ?: cell.id
+        }
+        panel.addView(ScrollView(context).apply { addView(grid) }, LayoutParams(-1, 0, 1f))
+        val dialog = AlertDialog.Builder(context).setView(panel).create()
+        allDialog = dialog
+        dialog.setOnDismissListener {
+            if (allDialog === dialog) allDialog = null
+            if (anchor.isAttachedToWindow) anchor.requestFocus()
+        }
+        dialog.show()
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        dialog.window?.setLayout(dp(680), minOf(dp(420), (resources.displayMetrics.heightPixels * .85f).toInt()))
+        cells.firstOrNull()?.requestFocus()
+    }
+
+    override fun onDetachedFromWindow() {
+        allDialog?.dismiss()
+        allDialog = null
+        super.onDetachedFromWindow()
     }
 
     fun refreshLabels() {
