@@ -35,6 +35,7 @@ keystore.properties
 .mimosa/
 .v2c/
 .video_agent/
+.zcode/
 out/
 
 # Delivery artifacts, native intermediates, local runtime
@@ -44,3 +45,7 @@ out/
 .externalNativeBuild/
 /ios/Pods/
 /ios/build/
+
+# vvc-bench 预编译解码器产物（scripts/build-vvc-bench-deps.sh 生成，源码在仓库外固定 tag）
+kotlin-tv/native-vvc/libs/
+kotlin-tv/native-vvc/include/
