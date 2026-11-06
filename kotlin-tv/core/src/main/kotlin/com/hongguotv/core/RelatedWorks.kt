@@ -4,7 +4,7 @@ package com.hongguotv.core
 import java.io.IOException
 import org.json.JSONObject
 
-data class RelatedWork(val series: Series, val season: String, val upcoming: Boolean) {
+data class RelatedWork(val series: Series, val season: String, val upcoming: Boolean, val seasonIndex: Int = 0) {
     val label
         get() =
             listOf(season, if (upcoming) "待上线 · 预约" else "已上线")
@@ -17,6 +17,51 @@ data class RelatedWork(val series: Series, val season: String, val upcoming: Boo
  * are actionable; novels/audio are intentionally excluded.
  */
 object RelatedWorks {
+    private val seasonSuffix = Regex("第?([0-9零〇一二两三四五六七八九十百]+)季$")
+
+    private fun seasonNumber(value: String): Int? {
+        value.toIntOrNull()?.let { return it.takeIf { n -> n > 0 } }
+        val digits = "零一二三四五六七八九"
+        var total = 0
+        var digit = 0
+        for (c in value) when (c) {
+            '十', '百' -> { total += maxOf(1, digit) * if (c == '十') 10 else 100; digit = 0 }
+            '两' -> digit = 2
+            '〇' -> digit = 0
+            else -> { digit = digits.indexOf(c); if (digit < 0) return null }
+        }
+        return (total + digit).takeIf { it > 0 }
+    }
+
+    private fun stem(title: String) = title.trim().replace(seasonSuffix, "")
+        .replace(Regex("[\\p{P}\\p{Z}\\s]"), "")
+
+    fun ordered(current: Series, rows: List<RelatedWork>): List<RelatedWork> = rows.sortedWith(
+        compareBy<RelatedWork> { if (stem(it.series.title) == stem(current.title)) 0 else 1 }
+            .thenBy { stem(it.series.title) }
+            .thenBy { it.seasonIndex.takeIf { n -> n > 0 }
+                ?: seasonSuffix.find(it.series.title.trim())?.groupValues?.get(1)?.let(::seasonNumber)
+                ?: 1 }
+    )
+
+    /** Conservative: identical title stem, consecutive season, unique playable candidate. */
+    fun nextSeason(current: Series, rows: List<RelatedWork>): RelatedWork? {
+        val title = current.title.trim()
+        val suffix = seasonSuffix.find(title)
+        val number = suffix?.groupValues?.get(1)?.let(::seasonNumber) ?: if (suffix == null) 1 else return null
+        val currentStem = stem(title)
+        if (currentStem.isBlank()) return null
+        return rows.filter { row ->
+            val candidateTitle = row.series.title.trim()
+            val candidateSuffix = seasonSuffix.find(candidateTitle)
+            val fromTitle = candidateSuffix?.groupValues?.get(1)?.let(::seasonNumber)
+            val index = row.seasonIndex.takeIf { it > 0 } ?: fromTitle
+            !row.upcoming && row.series.id != current.id && index == number + 1 &&
+                (fromTitle == null || fromTitle == index) &&
+                stem(candidateTitle) == currentStem
+        }.singleOrNull()
+    }
+
     fun parse(raw: String, currentId: String): List<RelatedWork> {
         val root = JSONObject(raw)
         if (root.optInt("code", -1) != 0) throw IOException("相关作品接口暂不可用")
@@ -53,9 +98,10 @@ object RelatedWorks {
                     ),
                     season,
                     upcoming,
+                    row.optInt("season_index").coerceAtLeast(0),
                 )
             }
             .distinctBy { it.series.id }
-            .take(30)
+            .sortedWith(compareBy<RelatedWork> { it.seasonIndex.takeIf { n -> n > 0 } ?: Int.MAX_VALUE })
     }
 }

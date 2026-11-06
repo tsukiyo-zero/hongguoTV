@@ -6,6 +6,7 @@ internal data class ViewingPreferences(
     val startupPage: Int = 0,
     val homeAutoplay: Boolean = true,
     val clockMode: Int = 1,
+    val seasonAutoplay: Boolean = false,
 ) {
     fun initialTab(): Int = startupPage
     companion object {
@@ -15,6 +16,7 @@ internal data class ViewingPreferences(
             return ViewingPreferences(
                 number("startupTab", 0..6, if (values["startupPage"] == 1) 4 else 0),
                 values["homeAutoplay"] as? Boolean ?: true, number("clockMode", 0..2, 1),
+                values["seasonAutoplay"] as? Boolean ?: false,
             )
         }
     }

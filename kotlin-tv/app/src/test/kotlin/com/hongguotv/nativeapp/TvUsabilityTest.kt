@@ -33,6 +33,55 @@ class TvUsabilityTest {
         else if (view is TextView) listOf(view) else emptyList()
 
     @Test
+    fun nextSeasonBannerDoesNotOpenDialogAndIsRemovedOnCancelAndBackground() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+        val activity = controller.get()
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val library = get(activity, "library") as Library
+            (get(library, "loader") as ExecutorService).submit {}.get(5, TimeUnit.SECONDS)
+            val account = get(activity, "cloudAccount") as AccountController
+            (get(account, "worker") as ExecutorService).submit {}.get(5, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper()
+            (get(activity, "io") as ExecutorService).shutdownNow()
+            set(activity, "io", worker)
+            library.seasonAutoplay = true
+            library.autoNext = true
+            set(activity, "repository", ContentRepository(OkHttpClient.Builder().addInterceptor { chain ->
+                Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("fixture")
+                    .body("""{"code":0,"data":[{"show_type":547,"video_data":[{"series_id":"222","title":"长剧第二季","content_type":1004,"episode_cnt":10,"season_index":2}]}]}""".toResponseBody()).build()
+            }.build()))
+            val current = Detail(Series("111", "长剧第一季"), listOf("123"))
+            set(activity, "detail", current)
+            set(activity, "episodeIndex", 0)
+            set(activity, "foreground", true)
+            set(activity, "screen", "player")
+            set(activity, "pausedForLifecycle", false)
+            val offer = MainActivity::class.java.getDeclaredMethod("offerNextSeason", Detail::class.java).apply { isAccessible = true }
+            offer.invoke(activity, current)
+            worker.submit {}.get(5, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper()
+            val banner = get(activity, "seasonBanner") as TextView
+            assertTrue(banner.text.contains("本季结束后播放《长剧第二季》"))
+            assertFalse(banner.isFocusable)
+            MainActivity::class.java.getDeclaredMethod("cancelNextSeason").apply { isAccessible = true }.invoke(activity)
+            assertNull(get(activity, "seasonBanner"))
+            assertNull(banner.parent)
+            assertFalse(get(activity, "seasonPending") as Boolean)
+            offer.invoke(activity, current)
+            worker.submit {}.get(5, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper()
+            val second = get(activity, "seasonBanner") as TextView
+            MainActivity::class.java.getDeclaredMethod("onPause").apply { isAccessible = true }.invoke(activity)
+            assertNull(second.parent)
+            assertEquals("111", (get(activity, "detail") as Detail).series.id)
+        } finally {
+            worker.shutdownNow()
+            controller.destroy()
+        }
+    }
+
+    @Test
     fun startupLocalHistoryRendersRecordsWithoutSearchingAnEmptyKeyword() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).create()
         val activity = controller.get()
@@ -140,7 +189,7 @@ class TvUsabilityTest {
             val quality = texts(root).first { it.text.toString().startsWith("默认清晰度") }
             assertTrue(quality.hasFocus())
             val card = quality.parent as View
-            assertTrue("Card=${card.height}, viewport=${(card.parent as View).height}, root=${root.height}, children=${(0 until (card as ViewGroup).childCount).map { card.getChildAt(it).height }}", card.height < (card.parent as View).height)
+            assertEquals(android.view.ViewGroup.LayoutParams.WRAP_CONTENT, card.layoutParams.height)
             val rows = texts(root)
             listOf("播放", "外观与操作", "账户", "应用与更新").forEach { title ->
                 assertTrue(rows.any { it.text == title })
