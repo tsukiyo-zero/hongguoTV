@@ -22,10 +22,30 @@ internal constructor(
     internal var expectedPage = 1
     internal var lastPage = 0
     internal var lastResult: CatalogPage? = null
+    internal data class CellFlow(val cellId: String, val planId: String, val versionTag: String)
+    @Volatile internal var cellFlow: CellFlow? = null
+    internal var needsBootstrap = false
+    @Volatile internal var unsignedFallback = false
+    @Volatile internal var signedProfile: PlaybackDeviceSession.Profile? = null
+
+    internal fun restartServer() {
+        session = ""
+        offset = 0
+        cellFlow = null
+        needsBootstrap = false
+    }
 
     fun nextBatch(restartSession: Boolean = false) =
         RecommendationCursor(if (restartSession) "" else session, if (restartSession) 0 else offset)
-            .also { it.remember(seenIds()) }
+            .also {
+                it.remember(seenIds())
+                if (!restartSession) {
+                    it.cellFlow = cellFlow
+                    it.needsBootstrap = needsBootstrap
+                    it.unsignedFallback = unsignedFallback
+                    it.signedProfile = signedProfile
+                }
+            }
 
     // UI 展示记录与后台分页共用集合；单独锁集合，不能让 UI 等待 page() 的网络锁。
     internal fun seenIds(): Set<String> = synchronized(seen) { seen.toSet() }
@@ -40,11 +60,16 @@ internal constructor(
     /**
      * 冷启动续刷用的最小快照：分页会话、offset 与最近看过的 ID。不含任何凭据。
      *
-     * 服务端在无 `session_id` 时总是返回同一批冷启动内容（实测 offset 也会被忽略），
-     * 所以想「下次进来接着刷」只能把会话和 offset 带过去。
+     * 同进程可继续使用原服务端会话；跨进程或换注册身份后重读入口，
+     * 保留最近去重记录，避免重新播放同一批冷启动作品。
      */
     fun snapshot(): String =
         JSONObject()
+            .put("schema", 2)
+            .put("unsignedFallback", unsignedFallback)
+            .put("cellFlow", cellFlow?.let {
+                JSONObject().put("cellId", it.cellId).put("planId", it.planId).put("versionTag", it.versionTag)
+            })
             .put("session", session)
             .put("offset", offset)
             .put("seen", JSONArray(seenIds().toList()))
@@ -65,9 +90,25 @@ internal constructor(
         val saved = runCatching { JSONObject(value) }.getOrNull() ?: return false
         val savedSession = saved.optString("session")
         val savedOffset = saved.optInt("offset", 0)
-        if (savedSession.length > 4096 || savedOffset !in 0..1_000_000) return false
+        if (savedSession.length > 4096 || savedOffset !in 0..1_000_000 ||
+            savedSession.any { it == '\r' || it == '\n' || it == '\u0000' }) return false
+        val savedFlow = saved.optJSONObject("cellFlow")
+        val flow = savedFlow?.let {
+            val cellId = it.optString("cellId")
+            val planId = it.optString("planId")
+            val versionTag = it.optString("versionTag")
+            if (!cellId.matches(Regex("[1-9][0-9]{0,29}")) ||
+                !planId.matches(Regex("[1-9][0-9]{0,29}")) ||
+                versionTag.length > 4096 || versionTag.any { ch -> ch == '\r' || ch == '\n' || ch == '\u0000' }) return false
+            CellFlow(cellId, planId, versionTag)
+        }
         session = savedSession
         offset = savedOffset
+        cellFlow = flow
+        signedProfile = null
+        unsignedFallback = saved.optBoolean("unsignedFallback", false)
+        // 旧快照没有单列续刷信息，重新读取入口元数据但保留去重，不能一直沿用错误分页。
+        needsBootstrap = saved.optInt("schema", 1) < 2 && hasProgress
         synchronized(seen) {
             seen.clear()
             saved.optJSONArray("seen")?.let { rows ->
@@ -111,6 +152,7 @@ class RecommendationFeed(
     private val account: AccountCredentials? = null,
     private val cursor: RecommendationCursor = RecommendationCursor(),
     private val category: DramaCategory? = null,
+    private val playbackSession: PlaybackDeviceSession? = null,
 ) {
     private val accountHttp =
         http.newBuilder().followRedirects(false).followSslRedirects(false).build()
@@ -120,7 +162,19 @@ class RecommendationFeed(
             require(page in 1..100)
             if (page == cursor.lastPage) return@synchronized checkNotNull(cursor.lastResult)
             if (page != cursor.expectedPage) throw IOException("推荐已刷新，请重新获取")
+            if (category == null && cursor.needsBootstrap) cursor.restartServer()
             repeat(3) { attempt ->
+                val signed = category == null && playbackSession != null && !cursor.unsignedFallback
+                val identity = if (signed) {
+                    RequestScope.ensureActive()
+                    playbackSession!!.profile(accountHttp).also {
+                        RequestScope.ensureActive()
+                        // 服务端分页会话随注册身份使用；换身份或进程恢复后重读入口，保留去重。
+                        if (cursor.signedProfile !== it && cursor.hasProgress) cursor.restartServer()
+                        cursor.signedProfile = it
+                    }
+                } else null
+                val requestVersion = if (signed) "74332" else "73532"
                 val params =
                     linkedMapOf(
                             "aid" to "8662",
@@ -160,10 +214,10 @@ class RecommendationFeed(
                                 // 再塞登录用的固定设备号，feed 直接回 `110 ILLEGAL_ACCESS`；
                                 // 只带 Cookie 返回 `0 SUCCESS`。设备身份由会话自身体现。
                             }
-                            put("version_code", "73532")
-                            put("version_name", "7.3.5.32")
-                            put("manifest_version_code", "73532")
-                            put("update_version_code", "73532")
+                            put("version_code", requestVersion)
+                            put("version_name", if (signed) "7.4.3.32" else "7.3.5.32")
+                            put("manifest_version_code", requestVersion)
+                            put("update_version_code", requestVersion)
                             put("tab_type", "16")
                             put("bottom_tab_type", "7")
                             put("landing_bottom_tab_type", "7")
@@ -175,9 +229,22 @@ class RecommendationFeed(
                 // 主域之外再备两个可用的同族域名：110 一类校验/限流错误换路比反复打同一节点更容易
                 // 逃出去（与播放接口的换路策略一致）。
                 val host = FEED_HOSTS[attempt % FEED_HOSTS.size]
+                val flow = if (category == null) cursor.cellFlow else null
                 val request =
                     if (category == null) {
-                        val url = "$host/reading/bookapi/bookmall/tab/v1/".toHttpUrl().newBuilder()
+                        // 官方单列首屏允许无限流时，后续改走单元续刷接口，而非继续递增 tab 的 offset。
+                        val path = if (flow == null) "/reading/bookapi/bookmall/tab/v1/"
+                            else "/reading/bookapi/bookmall/cell/change/v1/"
+                        if (flow != null) {
+                            params["cell_id"] = flow.cellId
+                            params["plan_id"] = flow.planId
+                            params["version_tag"] = flow.versionTag
+                            params["client_template"] = "7"
+                            params["change_type"] = "0"
+                            params["client_req_type"] = "2"
+                            params["filter_ids"] = cursor.seenIds().joinToString(",")
+                        }
+                        val url = "$host$path".toHttpUrl().newBuilder()
                         params.forEach { (key, value) -> url.addQueryParameter(key, value) }
                         Request.Builder().url(url.build())
                     } else {
@@ -247,38 +314,64 @@ class RecommendationFeed(
                     .header("X-XS-From-Web", "0")
                     .header("Sdk-Version", "2")
                 account?.cookie?.takeIf { it.isNotBlank() }?.let { request.header("Cookie", it) }
+                if (identity != null) {
+                    RequestScope.ensureActive()
+                    val values = identity.values + params + mapOf("pv_player" to "74332")
+                    val base = request.build().url.newBuilder().query(null).build().toString()
+                    val signature = identity.recommendationSigner(System::currentTimeMillis, values)
+                        .signPlayback(base, values)
+                    request.url(signature.url)
+                    signature.headers.forEach { (key, value) -> request.header(key, value) }
+                    request.header("User-Agent", "com.phoenix.read/74332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)")
+                    request.header("Cookie", account?.cookie?.takeIf { it.isNotBlank() } ?: identity.cookie)
+                }
                 val result =
                     RequestScope.execute(accountHttp.newCall(request.build())) { response ->
                         JSONObject(feedResponse(response))
                     }
                 val parsed =
-                    runCatching { if (category == null) parse(result) else parseCategory(result) }
+                    runCatching {
+                        when {
+                            category != null -> parseCategory(result)
+                            flow != null -> parseCell(result)
+                            else -> parse(result)
+                        }
+                    }
                         .getOrElse { problem ->
                             // 110 一类错误多来自服务端判定旧分页会话不合法的限流/校验：丢掉旧
                             // session 与 offset 从头拉一次，否则用户只能等下次刷新才恢复。
                             val code = result.optInt("code", -1)
+                            // 账号推荐历史上存在设备校验 110；仅对此明确拒绝保留原 Cookie 只读兼容路径。
+                            if (signed && code == 110) {
+                                cursor.unsignedFallback = true
+                                cursor.restartServer()
+                                return@repeat
+                            }
                             if (code != 0 && cursor.session.isNotEmpty() && problem is IOException) {
-                                cursor.session = ""
-                                cursor.offset = 0
+                                cursor.restartServer()
                                 return@repeat
                             }
                             throw problem
                         }
-                cursor.session = parsed.second.ifBlank { cursor.session }
-                cursor.offset =
-                    if (category == null) {
-                        // 服务端 offset 的单位是「条」：一次返回 6 条时只前进 1 会与上一页重叠
-                        // 5 条，导致首页反复看到同样内容。按本次实际下发的条数前进。
-                        cursor.offset + maxOf(1, rawVideoCount(result))
+                val nextSession = parsed.second.ifBlank { cursor.session }
+                val discoveredFlow = if (category == null && flow == null) cellFlow(result) else null
+                cursor.offset = when {
+                    flow != null -> {
+                        val next = result.getJSONObject("data").optLong("next_offset", -1)
+                        if (next <= cursor.offset || next > 1_000_000)
+                            throw IOException("推荐续页游标未前进，请重新获取")
+                        next.toInt()
                     }
-                    else
-                        result
-                            .getJSONObject("data")
-                            .optInt("next_offset", cursor.offset + parsed.first.items.size)
+                    discoveredFlow != null -> 0
+                    category == null -> cursor.offset + maxOf(1, rawVideoCount(result))
+                    else -> result.getJSONObject("data").optInt("next_offset", cursor.offset + parsed.first.items.size)
+                }
+                cursor.session = nextSession
+                if (discoveredFlow != null) cursor.cellFlow = discoveredFlow
                 val seen = cursor.seenIds()
                 val fresh = parsed.first.copy(items = parsed.first.items.filter { it.id !in seen })
                 cursor.remember(parsed.first.items.map { it.id })
-                // offset 上面已按本次下发的条数推进，整页都被 seen 过滤掉时重试会自动落到下一批。
+                // 游标已经按对应协议推进，整页重复时继续读取下一批，不重复请求同一偏移。
                 if (fresh.items.isEmpty()) return@repeat
                 cursor.expectedPage = page + 1
                 cursor.lastPage = page
@@ -320,6 +413,37 @@ class RecommendationFeed(
             val text = String(bytes, Charsets.UTF_8)
             if (text.isBlank()) throw IOException("推荐接口返回空响应，请稍后重试")
             return text
+        }
+
+        /** 只接受服务端明确启用且标识完整的单列续刷上下文。 */
+        private fun cellFlow(result: JSONObject): RecommendationCursor.CellFlow? {
+            val tab = result.optJSONObject("data")?.optJSONArray("tab_item")?.objects()
+                ?.firstOrNull { it.str("tab_type") == "16" } ?: return null
+            if (!tab.optBoolean("bottom_unlimited") || tab.optInt("client_template", -1) != 7) return null
+            val cellId = tab.optJSONArray("cell_data")?.optJSONObject(0)?.let {
+                it.str("cell_id_str").ifBlank { it.str("cell_id") }
+            }.orEmpty()
+            val planId = tab.str("bookstore_id")
+            val version = tab.str("version_tag")
+            if (!cellId.matches(Regex("[1-9][0-9]{0,29}")) ||
+                !planId.matches(Regex("[1-9][0-9]{0,29}")) || version.length > 4096 ||
+                version.any { it == '\r' || it == '\n' || it == '\u0000' }) return null
+            return RecommendationCursor.CellFlow(cellId, planId, version)
+        }
+
+        /** 将单元续刷响应归一化成现有卡片结构，首集核验与本地去重保持一致。 */
+        internal fun parseCell(result: JSONObject): Pair<CatalogPage, String> {
+            if (result.optInt("code", -1) != 0)
+                throw IOException("推荐续刷暂不可用（错误码 ${result.optInt("code", -1)}）")
+            val data = result.optJSONObject("data") ?: throw IOException("推荐续刷数据格式已变化")
+            val view = data.optJSONObject("cell_view") ?: throw IOException("推荐续刷单元缺失")
+            val cell = if (view.has("cell_data")) view else JSONObject().put("cell_data", JSONArray().put(view))
+            val tab = JSONObject().put("tab_type", 16).put("session_id", data.str("session_id"))
+                .put("cell_data", JSONArray().put(cell))
+            val normalized = JSONObject().put("code", 0)
+                .put("data", JSONObject().put("tab_item", JSONArray().put(tab)))
+            // 单列响应的 has_more=false 仍可能带来新作品，由去重和最多三批尝试共同收敛。
+            return parse(normalized)
         }
 
         internal fun parseCategory(result: JSONObject): Pair<CatalogPage, String> {

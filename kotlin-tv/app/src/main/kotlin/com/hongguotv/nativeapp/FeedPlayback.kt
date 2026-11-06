@@ -75,7 +75,7 @@ internal class PublicFeedBackend(
             .build(),
     account: AccountCredentials? = null,
     private val startupCache: FeedStartupCache? = null,
-    playbackSession: PlaybackDeviceSession = PlaybackDeviceSession.shared,
+    private val playbackSession: PlaybackDeviceSession = PlaybackDeviceSession.shared,
 ) : FeedBackend {
     companion object {
         // Reuse idle public TLS connections across homepage visits. Dispatchers remain per backend,
@@ -161,7 +161,7 @@ internal class PublicFeedBackend(
     override fun recommendations(page: Int, cursor: RecommendationCursor) =
         timed("recommendations") {
             page("recommend", page, cursor) {
-                RecommendationFeed(http, recommendationAccount, cursor).page(page)
+                RecommendationFeed(http, recommendationAccount, cursor, playbackSession = playbackSession).page(page)
             }
         }
 

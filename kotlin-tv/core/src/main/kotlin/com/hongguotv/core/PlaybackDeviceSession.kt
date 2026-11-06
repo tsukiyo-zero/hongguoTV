@@ -39,6 +39,7 @@ class PlaybackDeviceSession(
         val routes: PlaybackRoutes = PlaybackRoutes(),
     ) {
         private var playbackSigner: Signer? = null
+        private var recommendationSigner: Signer? = null
         private data class Model(val entry: org.json.JSONObject, val owner: Any, val savedAt: Long)
         private val models = linkedMapOf<String, Model>()
 
@@ -64,6 +65,11 @@ class PlaybackDeviceSession(
         @Synchronized
         fun signer(clock: () -> Long, values: Map<String, String>): Signer =
             playbackSigner ?: Signer(clock, values).also { playbackSigner = it }
+
+        // 推荐使用另一版本请求上下文，不能借用已绑定播放器版本的签名器。
+        @Synchronized
+        fun recommendationSigner(clock: () -> Long, values: Map<String, String>): Signer =
+            recommendationSigner ?: Signer(clock, values).also { recommendationSigner = it }
     }
 
     private var cdid = UUID.randomUUID().toString()

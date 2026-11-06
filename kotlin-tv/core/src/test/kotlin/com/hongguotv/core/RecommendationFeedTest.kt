@@ -119,6 +119,179 @@ class RecommendationFeedTest {
         assertTrue(state.recommendationCursor.seenIds().isEmpty())
     }
 
+    private fun infiniteResponse(): String {
+        val result = JSONObject(response())
+        val tab = result.getJSONObject("data").getJSONArray("tab_item").getJSONObject(0)
+        tab.put("bookstore_id", "8001").put("client_template", 7).put("version_tag", "fixture-v7")
+        tab.getJSONArray("cell_data").getJSONObject(0).put("cell_id", "9001")
+        return result.toString()
+    }
+
+    private fun cellResponse(id: String, nextOffset: Int): String {
+        val tab = JSONObject(response(id)).getJSONObject("data").getJSONArray("tab_item").getJSONObject(0)
+        return JSONObject().put("code", 0).put("data", JSONObject()
+            .put("cell_view", tab.getJSONArray("cell_data").getJSONObject(0))
+            .put("next_offset", nextOffset).put("session_id", "cell-session")
+            .put("has_more", false)).toString()
+    }
+
+    @Test
+    fun signedRecommendationSharesRegisteredIdentityAndPreservesAccountCookieOnExplicitFallback() {
+        var registrations = 0
+        val session = PlaybackDeviceSession {
+            registrations++
+            DeviceRegister.Registered("333", "444", cookies = mapOf("install_id" to "444"))
+        }
+        val requests = mutableListOf<Request>()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val req = chain.request(); requests += req
+            val payload = if (requests.size == 1) """{"code":110}""" else response("102")
+            Response.Builder().request(req).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(payload.toResponseBody()).build()
+        }.build()
+        val cursor = RecommendationCursor()
+        val account = AccountCredentials("sessionid=test-only")
+        val result = RecommendationFeed(http, account, cursor, playbackSession = session).page(1)
+        assertEquals("102", result.items.single().id)
+        assertEquals(1, registrations)
+        assertEquals(2, requests.size)
+        assertNotNull(requests[0].header("x-medusa"))
+        assertEquals("333", requests[0].url.queryParameter("device_id"))
+        assertEquals("74332", requests[0].url.queryParameter("version_code"))
+        assertTrue(requests[0].header("User-Agent")!!.contains("74332"))
+        assertNull(requests[1].header("x-medusa"))
+        assertNull(requests[1].url.queryParameter("device_id"))
+        requests.forEach { assertEquals(account.cookie, it.header("Cookie")) }
+        assertTrue(cursor.unsignedFallback)
+        val restored = RecommendationCursor()
+        assertTrue(restored.restore(cursor.snapshot()))
+        assertTrue(restored.unsignedFallback)
+        assertFalse(restored.nextBatch(restartSession = true).unsignedFallback)
+    }
+
+    @Test
+    fun signedRecommendationReusesOneRegistrationAcrossPagesAndKeepsAnonymousCookie() {
+        var registrations = 0
+        val session = PlaybackDeviceSession {
+            registrations++
+            DeviceRegister.Registered("333", "444", cookies = mapOf("install_id" to "444"))
+        }
+        val requests = mutableListOf<Request>()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val req = chain.request(); requests += req
+            Response.Builder().request(req).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body((if (requests.size == 1) infiniteResponse() else cellResponse("102", 6)).toResponseBody()).build()
+        }.build()
+        val feed = RecommendationFeed(http, playbackSession = session)
+        feed.page(1);feed.page(2)
+        assertEquals(1, registrations)
+        requests.forEach {
+            assertNotNull(it.header("x-medusa"))
+            assertEquals("333", it.url.queryParameter("device_id"))
+            assertEquals("444", it.url.queryParameter("iid"))
+            assertEquals("install_id=444", it.header("Cookie"))
+        }
+        val profile = session.profile(http)
+        assertSame(profile.recommendationSigner({ 1000L }, profile.values), profile.recommendationSigner({ 2000L }, profile.values))
+        assertNotSame(profile.signer({ 1000L }, profile.values), profile.recommendationSigner({ 1000L }, profile.values))
+    }
+
+    @Test
+    fun signedCursorRebuildsAfterIdentityChangeWithoutLosingSeenWorks() {
+        var registrations = 0
+        val session = PlaybackDeviceSession { DeviceRegister.Registered("${333 + ++registrations}", "444") }
+        val requests = mutableListOf<Request>()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val req = chain.request(); requests += req
+            val payload = when (requests.size) {
+                1 -> infiniteResponse()
+                2 -> cellResponse("102", 6)
+                else -> infiniteResponse().replace("101", "103")
+            }
+            Response.Builder().request(req).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(payload.toResponseBody()).build()
+        }.build()
+        val cursor = RecommendationCursor()
+        val feed = RecommendationFeed(http, cursor = cursor, playbackSession = session)
+        feed.page(1);feed.page(2)
+        assertTrue(session.rotate(http, session.profile(http)))
+        assertEquals("103", feed.page(3).items.single().id)
+        assertEquals(2, registrations)
+        assertEquals("/reading/bookapi/bookmall/tab/v1/", requests[2].url.encodedPath)
+        assertEquals("0", requests[2].url.queryParameter("offset"))
+        assertNull(requests[2].url.queryParameter("session_id"))
+        assertEquals(setOf("101", "102", "103"), cursor.seenIds())
+    }
+
+    @Test
+    fun infiniteVideoFeedUsesCellContinuationAndPersistsItsActualServerCursor() {
+        val requests = mutableListOf<Request>()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val req = chain.request()
+            requests += req
+            val payload = when (requests.size) {
+                1 -> infiniteResponse()
+                2 -> cellResponse("102", 6)
+                else -> cellResponse("103", 12)
+            }
+            Response.Builder().request(req).protocol(Protocol.HTTP_1_1).code(200)
+                .message("OK").body(payload.toResponseBody()).build()
+        }.build()
+        val cursor = RecommendationCursor()
+        val feed = RecommendationFeed(http, cursor = cursor)
+        assertEquals("101", feed.page(1).items.single().id)
+        assertEquals("102", feed.page(2).items.single().id)
+        val restored = RecommendationCursor()
+        assertTrue(restored.restore(cursor.snapshot()))
+        assertEquals("103", RecommendationFeed(http, cursor = restored).page(1).items.single().id)
+        assertEquals(listOf("/reading/bookapi/bookmall/tab/v1/", "/reading/bookapi/bookmall/cell/change/v1/",
+            "/reading/bookapi/bookmall/cell/change/v1/"), requests.map { it.url.encodedPath })
+        assertEquals(listOf("0", "0", "6"), requests.map { it.url.queryParameter("offset") })
+        assertEquals("9001", requests[1].url.queryParameter("cell_id"))
+        assertEquals("8001", requests[1].url.queryParameter("plan_id"))
+        assertEquals("fixture-v7", requests[1].url.queryParameter("version_tag"))
+        assertEquals("2", requests[1].url.queryParameter("client_req_type"))
+        assertEquals("cell-session", requests[2].url.queryParameter("session_id"))
+        assertEquals(setOf("101", "102"), requests[2].url.queryParameter("filter_ids")!!.split(",").toSet())
+        assertNotNull(cursor.nextBatch().cellFlow)
+        assertNull(cursor.nextBatch(restartSession = true).cellFlow)
+    }
+
+    @Test
+    fun legacySnapshotRebuildsTheEntryButRetainsDeduplication() {
+        val cursor = RecommendationCursor()
+        assertTrue(cursor.restore("""{"session":"legacy-session","offset":51,"seen":["101"]}"""))
+        val requests = mutableListOf<Request>()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val req = chain.request(); requests += req
+            Response.Builder().request(req).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body((if (requests.size == 1) infiniteResponse() else cellResponse("102", 6)).toResponseBody()).build()
+        }.build()
+        assertEquals("102", RecommendationFeed(http, cursor = cursor).page(1).items.single().id)
+        assertNull(requests[0].url.queryParameter("session_id"))
+        assertEquals("0", requests[0].url.queryParameter("offset"))
+        assertTrue(requests[1].url.encodedPath.contains("cell/change"))
+    }
+
+    @Test
+    fun cellContinuationRejectsStalledOffsetsAndInvalidSavedContext() {
+        var calls = 0
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            calls++
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body((if (calls == 1) infiniteResponse() else cellResponse("102", 0)).toResponseBody()).build()
+        }.build()
+        val cursor = RecommendationCursor()
+        val feed = RecommendationFeed(http, cursor = cursor)
+        feed.page(1)
+        val error = assertThrows(IOException::class.java) { feed.page(2) }
+        assertTrue(error.message.orEmpty().contains("游标未前进"))
+        assertEquals(2, calls)
+        val saved = JSONObject(cursor.snapshot())
+        saved.getJSONObject("cellFlow").put("cellId", "invalid")
+        assertFalse(RecommendationCursor().restore(saved.toString()))
+    }
+
     @Test
     fun parsesBothCardShapesAndDoesNotMistakeHasMoreFalseForFeedEnd() {
         for (wrapped in listOf(false, true)) {
