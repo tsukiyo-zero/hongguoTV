@@ -8,7 +8,7 @@ Android TV 使用 `kotlin-tv/` 中的 Kotlin 原生客户端，支持 **Android 
 
 | 内容 | 状态 |
 | --- | --- |
-| 已发布 TV 正式版 | **0.1.27（versionCode 68）**，标签 `kotlin-v0.1.27`，包名 `io.github.tsukiyo_zero.guoyingtv` |
+| 已发布 TV 正式版 | **0.1.28（versionCode 69）**，标签 `kotlin-v0.1.28`，包名 `io.github.tsukiyo_zero.guoyingtv` |
 | 当前分支新增内容 | 显示名称「果映 TV」、新包名、C3 图标与 TV 横幅、遥控器三栏搜索；已实现并完成自动检查 |
 | 稳定分支 | `main`；功能合并、生成测试包和发布 Release 是不同步骤 |
 
@@ -16,7 +16,7 @@ Android TV 使用 `kotlin-tv/` 中的 Kotlin 原生客户端，支持 **Android 
 
 ## Android TV 下载、安装与更新
 
-[GitHub TV 0.1.27 下载](https://github.com/tsukiyo-zero/hongguoTV/releases/tag/kotlin-v0.1.27) · [GitCode 发布记录](https://gitcode.com/tsukiyo-zero/hongguoTV/releases)
+[GitHub TV 0.1.28 下载](https://github.com/tsukiyo-zero/hongguoTV/releases/tag/kotlin-v0.1.28) · [GitCode 发布记录](https://gitcode.com/tsukiyo-zero/hongguoTV/releases)
 
 正式 TV 安装包通过 GitHub 和 GitCode 双平台发布；**应用内更新读取 GitCode**。首次安装从正式 Release 下载 APK，在电视上确认安装。后续同包名版本可在「设置 → 版本与更新」检查、下载并校验更新包，最后交给 Android 系统确认安装；无需每次手动到 GitHub 下载，也不支持静默安装。 Android 6/7 会依次尝试标准安装入口与 APK 查看入口，无法打开时尝试系统安全设置；厂商 ROM 兼容性仍需实机确认。若旧版更新入口无法打开，可从正式 Release 下载同包名、同签名 APK 手动覆盖一次，保留本机数据。
 
