@@ -337,20 +337,27 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
             val opened = runCatching { activity.startActivity(candidate) }.isSuccess
             if (opened) return true
         }
-        // 记录隐式匹配情况：0 代表系统里没有可用的安装器 UI，非 0 代表入口存在但被拦。
+        // 只记录「尝试了几个入口、有几个能隐式匹配」。Android 11+ 的包可见性会让查询结果
+        // 偏少，不能据 0 判定系统没有安装器。
         installerMatch = "$matched/${sources.size}"
+        installerTried = sources.size
         return false
     }
 
     private var installerMatch = "0/0"
+    /** 本轮尝试过的安装入口数量，用于失败提示。 */
+    private var installerTried = 0
 
     companion object {
         /** 常见电视/手机安装器的组件名；隐式匹配失败时按组件直达。 */
         private val INSTALLER_COMPONENTS =
             listOf(
-                "com.android.packageinstaller" to "com.android.packageinstaller.PackageInstallerActivity",
-                "com.google.android.packageinstaller" to "com.google.android.packageinstaller.PackageInstallerActivity",
+                // Android 7+ 的公开入口是 InstallStart，PackageInstallerActivity 多为内部页面，
+                // 只在少数厂商 ROM 上可直接拉起，放在后面兜底。
+                "com.android.packageinstaller" to "com.android.packageinstaller.InstallStart",
+                "com.google.android.packageinstaller" to "com.google.android.packageinstaller.InstallStart",
                 "com.miui.packageinstaller" to "com.miui.packageinstaller.PackageInstallerActivity",
+                "com.android.packageinstaller" to "com.android.packageinstaller.PackageInstallerActivity",
                 "com.android.packageinstaller" to "com.android.packageinstaller.InstallAppProgress",
             )
 
@@ -390,18 +397,30 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         if (busy || !active || !ready) return
         work({ validateApk(update) }) {
             try {
+                // Android 8+ 未授权时先尝试打开授权页；但很多电视没有这个页面，
+                // 打不开时不能直接放弃——继续走安装入口，由系统安装器自己提示未知来源。
                 if (
                     Build.VERSION.SDK_INT >= 26 &&
                         !activity.packageManager.canRequestPackageInstalls()
                 ) {
-                    permissionRequested = true
-                    activity.startActivity(
-                        Intent(
-                            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                            Uri.parse("package:${activity.packageName}"),
-                        )
-                    )
-                } else {
+                    val opened =
+                        runCatching {
+                                activity.startActivity(
+                                    Intent(
+                                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                        Uri.parse("package:${activity.packageName}"),
+                                    )
+                                )
+                                true
+                            }
+                            .getOrDefault(false)
+                    if (opened) {
+                        permissionRequested = true
+                        updateStatus("已打开安装权限设置，允许后返回这里再次点安装新版")
+                        return@work
+                    }
+                }
+                run {
                     val uri =
                         FileProvider.getUriForFile(activity, "${activity.packageName}.updates", apk)
                     // 为 Android 6/7 增加标准安装 action；厂商 ROM 是否提供对应入口仍需实机验证。
@@ -422,7 +441,7 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
                             )
                         } else {
                             updateStatus(
-                                "电视未提供安装入口（匹配 $installerMatch），请用系统文件管理器安装新版"
+                                "电视未提供安装入口（已尝试 $installerTried 个），请用系统文件管理器安装新版"
                             )
                         }
                     }
