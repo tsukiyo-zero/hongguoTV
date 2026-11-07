@@ -24,16 +24,26 @@ class AndroidCompatibilityTest {
     class InstallerActivity : Activity() {
         val attempts = mutableListOf<Intent>()
         var acceptedAction: String? = null
+        var acceptedScheme: String? = null
+        var requireComponent = false
+        var rejectWithSecurity = false
 
         override fun startActivity(intent: Intent, options: Bundle?) {
             attempts += intent
-            if (intent.action != acceptedAction) throw ActivityNotFoundException()
+            if (rejectWithSecurity) throw SecurityException("测试拒绝")
+            if (intent.action != acceptedAction ||
+                (acceptedScheme != null && intent.data?.scheme != acceptedScheme) ||
+                (requireComponent && intent.component == null)) throw ActivityNotFoundException()
         }
 
         override fun startActivity(intent: Intent) = startActivity(intent, null)
     }
 
-    private fun checkInstaller(acceptedAction: String?, expected: List<String>, opened: Boolean) {
+    /**
+     * 安装入口在候选集里按顺序尝试；这里只断言「该试的都试过、该带的权限都带」，
+     * 不锁定候选数量（组件直达与 file:// 兜底会随系统版本增减）。
+     */
+    private fun checkInstaller(acceptedAction: String?, opened: Boolean) {
         val controller = Robolectric.buildActivity(InstallerActivity::class.java).setup()
         val activity = controller.get()
         activity.acceptedAction = acceptedAction
@@ -43,13 +53,21 @@ class AndroidCompatibilityTest {
             val launch = AppUpdater::class.java.getDeclaredMethod("launchInstaller", Uri::class.java)
             launch.isAccessible = true
             assertEquals(opened, launch.invoke(updater, uri))
-            assertEquals(expected, activity.attempts.map { it.action })
+            val actions = activity.attempts.map { it.action }
+            assertTrue(actions.isNotEmpty())
+            if (!opened) {
+                // 只有全部失败时才会走完整个候选集。
+                if (Build.VERSION.SDK_INT < 26)
+                    assertTrue(actions.contains(Intent.ACTION_INSTALL_PACKAGE))
+                assertTrue(actions.contains(Intent.ACTION_VIEW))
+            }
             activity.attempts.forEach {
-                assertEquals(uri, it.data)
-                assertEquals(uri, it.clipData!!.getItemAt(0).uri)
                 assertTrue(it.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
-                if (it.action == Intent.ACTION_VIEW)
-                    assertEquals("application/vnd.android.package-archive", it.type)
+                assertEquals("application/vnd.android.package-archive", it.type)
+                if (it.data?.scheme == "content") {
+                    assertEquals(uri, it.data)
+                    assertEquals(uri, it.clipData!!.getItemAt(0).uri)
+                }
             }
         } finally {
             updater.destroy()
@@ -60,21 +78,62 @@ class AndroidCompatibilityTest {
     @Test
     fun installerUsesAvailableEntryAndGrantsReadAccess() {
         val action = if (Build.VERSION.SDK_INT < 26) Intent.ACTION_INSTALL_PACKAGE else Intent.ACTION_VIEW
-        checkInstaller(action, listOf(action), true)
+        checkInstaller(action, true)
     }
 
     @Test
     fun legacyInstallerFallsBackWhenInstallActionIsMissing() {
-        val expected = if (Build.VERSION.SDK_INT < 26)
-            listOf(Intent.ACTION_INSTALL_PACKAGE, Intent.ACTION_VIEW) else listOf(Intent.ACTION_VIEW)
-        checkInstaller(Intent.ACTION_VIEW, expected, true)
+        checkInstaller(Intent.ACTION_VIEW, true)
     }
 
     @Test
     fun missingInstallerIsReportedAfterTryingAllEntries() {
-        val expected = if (Build.VERSION.SDK_INT < 26)
-            listOf(Intent.ACTION_INSTALL_PACKAGE, Intent.ACTION_VIEW) else listOf(Intent.ACTION_VIEW)
-        checkInstaller(null, expected, false)
+        checkInstaller(null, false)
+    }
+
+    @Test
+    fun legacyExternalCopyCanReachExplicitFileInstallerOnlyOnApi23() {
+        val controller = Robolectric.buildActivity(InstallerActivity::class.java).setup()
+        val activity = controller.get()
+        val updater = AppUpdater(activity) { false }
+        try {
+            val source = java.io.File(activity.cacheDir, "installer-test.apk").apply { writeText("校验后的测试内容") }
+            val directory = activity.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)!!
+            val staged = AppUpdater.stageLegacyApk(source, directory) { it.readBytes().contentEquals(source.readBytes()) }
+            AppUpdater::class.java.getDeclaredField("legacyApk").apply { isAccessible = true }.set(updater, staged)
+            activity.acceptedAction = Intent.ACTION_VIEW
+            activity.acceptedScheme = "file"
+            activity.requireComponent = true
+            val launch = AppUpdater::class.java.getDeclaredMethod("launchInstaller", Uri::class.java).apply { isAccessible = true }
+            assertEquals(Build.VERSION.SDK_INT == 23, launch.invoke(updater, Uri.parse("content://${activity.packageName}.updates/updates/update.apk")))
+            if (Build.VERSION.SDK_INT == 23) {
+                val opened = activity.attempts.last()
+                assertEquals(staged.readText(), java.io.File(opened.data!!.path!!).readText())
+                assertFalse(staged.path.startsWith(activity.cacheDir.path))
+            } else assertTrue(activity.attempts.none { it.data?.scheme == "file" })
+        } finally {
+            updater.destroy()
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun rejectedInstallerReportsFailureCategoryWithoutExceptionDetails() {
+        val controller = Robolectric.buildActivity(InstallerActivity::class.java).setup()
+        val activity = controller.get()
+        val updater = AppUpdater(activity) { false }
+        try {
+            activity.rejectWithSecurity = true
+            val launch = AppUpdater::class.java.getDeclaredMethod("launchInstaller", Uri::class.java).apply { isAccessible = true }
+            assertEquals(false, launch.invoke(updater, Uri.parse("content://${activity.packageName}.updates/updates/update.apk")))
+            val failure = AppUpdater::class.java.getDeclaredField("installerFailure").apply { isAccessible = true }.get(updater) as String
+            assertTrue(failure.contains("系统拒绝"))
+            assertFalse(failure.contains("测试拒绝"))
+            assertEquals(AppUpdater.installerIntents(Uri.parse("content://test/update.apk"), null).size, activity.attempts.size)
+        } finally {
+            updater.destroy()
+            controller.pause().stop().destroy()
+        }
     }
 
     @Test
