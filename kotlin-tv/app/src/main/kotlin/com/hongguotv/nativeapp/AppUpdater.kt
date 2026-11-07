@@ -324,22 +324,65 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
 
     /** 依次尝试电视上可能存在的安装入口；返回 true 表示已拉起某个界面。 */
     private fun launchInstaller(uri: Uri): Boolean {
-        val sources = mutableListOf<Intent>()
-        if (Build.VERSION.SDK_INT < 26)
-            sources +=
-                Intent(Intent.ACTION_INSTALL_PACKAGE)
-                    .setData(uri)
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        sources +=
-            Intent(Intent.ACTION_VIEW)
-                .setDataAndType(uri, "application/vnd.android.package-archive")
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        // Android 7 起禁止 file:// 外发，只有 6.0/6.0.1 还需要这条路。
+        val fileUri = if (Build.VERSION.SDK_INT < 24) Uri.fromFile(apk) else null
+        val sources = installerIntents(uri, fileUri)
+        var matched = 0
         for (intent in sources) {
-            intent.clipData = ClipData.newRawUri("更新安装包", uri)
-            val opened = runCatching { activity.startActivity(intent) }.isSuccess
+            val candidate =
+                intent
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    .apply { clipData = ClipData.newRawUri("更新安装包", uri) }
+            if (activity.packageManager.queryIntentActivities(candidate, 0).isNotEmpty()) matched++
+            val opened = runCatching { activity.startActivity(candidate) }.isSuccess
             if (opened) return true
         }
+        // 记录隐式匹配情况：0 代表系统里没有可用的安装器 UI，非 0 代表入口存在但被拦。
+        installerMatch = "$matched/${sources.size}"
         return false
+    }
+
+    private var installerMatch = "0/0"
+
+    companion object {
+        /** 常见电视/手机安装器的组件名；隐式匹配失败时按组件直达。 */
+        private val INSTALLER_COMPONENTS =
+            listOf(
+                "com.android.packageinstaller" to "com.android.packageinstaller.PackageInstallerActivity",
+                "com.google.android.packageinstaller" to "com.google.android.packageinstaller.PackageInstallerActivity",
+                "com.miui.packageinstaller" to "com.miui.packageinstaller.PackageInstallerActivity",
+                "com.android.packageinstaller" to "com.android.packageinstaller.InstallAppProgress",
+            )
+
+        /**
+         * 电视上可能存在的安装入口，按兼容性从高到低排列：
+         * 标准 action + type → 旧 action + type → 常见安装器的显式组件 → Android 6 的 file:// 形式。
+         * 小米/海信等定制电视常把安装器 Activity 从隐式匹配里摘掉，只保留组件可直达。
+         */
+            internal fun installerIntents(uri: Uri, fileUri: Uri?): List<Intent> {
+            val type = "application/vnd.android.package-archive"
+            val sources = mutableListOf<Intent>()
+            if (Build.VERSION.SDK_INT < 26)
+                sources += Intent(Intent.ACTION_INSTALL_PACKAGE).setDataAndType(uri, type)
+            sources += Intent(Intent.ACTION_VIEW).setDataAndType(uri, type)
+            for ((pkg, cls) in INSTALLER_COMPONENTS) {
+                sources +=
+                    Intent(Intent.ACTION_VIEW)
+                        .setClassName(pkg, cls)
+                        .setDataAndType(uri, type)
+                if (Build.VERSION.SDK_INT < 26)
+                    sources +=
+                        Intent(Intent.ACTION_INSTALL_PACKAGE)
+                            .setClassName(pkg, cls)
+                            .setDataAndType(uri, type)
+            }
+            if (fileUri != null) {
+                sources += Intent(Intent.ACTION_VIEW).setDataAndType(fileUri, type)
+                sources += Intent(Intent.ACTION_INSTALL_PACKAGE).setDataAndType(fileUri, type)
+            }
+            return sources
+        }
+
     }
 
     private fun install() {
@@ -378,7 +421,9 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
                                 "已打开系统安全设置，请查找并允许「未知来源」，返回后再次点安装新版"
                             )
                         } else {
-                            updateStatus("电视未提供安装或授权入口，请通过系统文件管理器安装新版")
+                            updateStatus(
+                                "电视未提供安装入口（匹配 $installerMatch），请用系统文件管理器安装新版"
+                            )
                         }
                     }
                 }
