@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -322,31 +323,41 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         UpdateApkSignatures.verify(installed, candidate)
     }
 
-    /** 依次尝试电视上可能存在的安装入口；返回 true 表示已拉起某个界面。 */
-    private fun launchInstaller(uri: Uri): Boolean {
-        // Android 7 起禁止 file:// 外发，只有 6.0/6.0.1 还需要这条路。
-        val fileUri = if (Build.VERSION.SDK_INT < 24) Uri.fromFile(apk) else null
-        val sources = installerIntents(uri, fileUri)
-        var matched = 0
-        for (intent in sources) {
-            val candidate =
-                intent
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    .apply { clipData = ClipData.newRawUri("更新安装包", uri) }
-            if (activity.packageManager.queryIntentActivities(candidate, 0).isNotEmpty()) matched++
-            val opened = runCatching { activity.startActivity(candidate) }.isSuccess
-            if (opened) return true
-        }
-        // 只记录「尝试了几个入口、有几个能隐式匹配」。Android 11+ 的包可见性会让查询结果
-        // 偏少，不能据 0 判定系统没有安装器。
-        installerMatch = "$matched/${sources.size}"
-        installerTried = sources.size
-        return false
+    private var legacyApk: File? = null
+    private var installerFailure = ""
+
+    /** 仅 Android 6 准备旧式入口；外部目录不可用时仍保留内容授权入口。 */
+    private fun prepareLegacyApk(update: AppUpdate) {
+        legacyApk = null
+        if (Build.VERSION.SDK_INT >= 24) return
+        legacyApk = runCatching {
+            val directory = activity.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?: throw IOException("外部目录不可用")
+            stageLegacyApk(apk, directory) { UpdateFiles.verify(it, update) }
+        }.onFailure {
+            android.util.Log.w("HongguoTV", "Legacy update copy failed: ${installerError(it)}")
+        }.getOrNull()
     }
 
-    private var installerMatch = "0/0"
-    /** 本轮尝试过的安装入口数量，用于失败提示。 */
-    private var installerTried = 0
+    /** 依次尝试安装入口；查询结果不能作为是否允许启动的依据。 */
+    private fun launchInstaller(uri: Uri): Boolean {
+        val fileUri = if (Build.VERSION.SDK_INT < 24) legacyApk?.let(Uri::fromFile) else null
+        val sources = installerIntents(uri, fileUri)
+        val failures = mutableMapOf<String, Int>()
+        sources.forEachIndexed { index, candidate ->
+            candidate.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            candidate.clipData = ClipData.newRawUri("更新安装包", uri)
+            val result = runCatching { activity.startActivity(candidate) }
+            if (result.isSuccess) return true
+            val reason = installerError(result.exceptionOrNull()!!)
+            failures[reason] = (failures[reason] ?: 0) + 1
+            // 只记录入口序号、传递方式和异常类别，不输出文件地址或异常正文。
+            android.util.Log.w("HongguoTV", "Update installer entry=${index + 1} scheme=${candidate.data?.scheme} failure=$reason")
+        }
+        installerFailure = "已尝试 ${sources.size} 个入口：" +
+            failures.entries.joinToString("，") { "${it.key} ${it.value}" }
+        return false
+    }
 
     companion object {
         /** 常见电视/手机安装器的组件名；隐式匹配失败时按组件直达。 */
@@ -355,47 +366,59 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
                 // Android 7+ 的公开入口是 InstallStart，PackageInstallerActivity 多为内部页面，
                 // 只在少数厂商 ROM 上可直接拉起，放在后面兜底。
                 "com.android.packageinstaller" to "com.android.packageinstaller.InstallStart",
-                "com.google.android.packageinstaller" to "com.google.android.packageinstaller.InstallStart",
+                "com.google.android.packageinstaller" to "com.android.packageinstaller.InstallStart",
                 "com.miui.packageinstaller" to "com.miui.packageinstaller.PackageInstallerActivity",
                 "com.android.packageinstaller" to "com.android.packageinstaller.PackageInstallerActivity",
-                "com.android.packageinstaller" to "com.android.packageinstaller.InstallAppProgress",
+                "com.google.android.packageinstaller" to "com.android.packageinstaller.PackageInstallerActivity",
             )
 
-        /**
-         * 电视上可能存在的安装入口，按兼容性从高到低排列：
-         * 标准 action + type → 旧 action + type → 常见安装器的显式组件 → Android 6 的 file:// 形式。
-         * 小米/海信等定制电视常把安装器 Activity 从隐式匹配里摘掉，只保留组件可直达。
-         */
-            internal fun installerIntents(uri: Uri, fileUri: Uri?): List<Intent> {
+        /** 先尝试内容授权入口，再尝试 Android 6 外部副本的旧式文件入口。 */
+        internal fun installerIntents(uri: Uri, fileUri: Uri?): List<Intent> {
             val type = "application/vnd.android.package-archive"
             val sources = mutableListOf<Intent>()
-            if (Build.VERSION.SDK_INT < 26)
-                sources += Intent(Intent.ACTION_INSTALL_PACKAGE).setDataAndType(uri, type)
-            sources += Intent(Intent.ACTION_VIEW).setDataAndType(uri, type)
-            for ((pkg, cls) in INSTALLER_COMPONENTS) {
-                sources +=
-                    Intent(Intent.ACTION_VIEW)
-                        .setClassName(pkg, cls)
-                        .setDataAndType(uri, type)
+            val uris = listOfNotNull(uri, fileUri?.takeIf { Build.VERSION.SDK_INT < 24 })
+            for (source in uris) {
                 if (Build.VERSION.SDK_INT < 26)
-                    sources +=
-                        Intent(Intent.ACTION_INSTALL_PACKAGE)
-                            .setClassName(pkg, cls)
-                            .setDataAndType(uri, type)
-            }
-            if (fileUri != null) {
-                sources += Intent(Intent.ACTION_VIEW).setDataAndType(fileUri, type)
-                sources += Intent(Intent.ACTION_INSTALL_PACKAGE).setDataAndType(fileUri, type)
+                    sources += Intent(Intent.ACTION_INSTALL_PACKAGE).setDataAndType(source, type)
+                sources += Intent(Intent.ACTION_VIEW).setDataAndType(source, type)
+                for ((pkg, cls) in INSTALLER_COMPONENTS) {
+                    sources += Intent(Intent.ACTION_VIEW).setClassName(pkg, cls).setDataAndType(source, type)
+                    if (Build.VERSION.SDK_INT < 26)
+                        sources += Intent(Intent.ACTION_INSTALL_PACKAGE).setClassName(pkg, cls).setDataAndType(source, type)
+                }
             }
             return sources
         }
 
+        /** 不放宽私有目录权限；复制完成并校验后才暴露旧式文件路径。 */
+        internal fun stageLegacyApk(source: File, directory: File, verify: (File) -> Boolean): File {
+            if (!directory.isDirectory && !directory.mkdirs()) throw IOException("无法准备外部安装目录")
+            val target = File(directory, "guoying-tv-update.apk")
+            val temporary = File(directory, "guoying-tv-update.apk.part")
+            try {
+                source.inputStream().use { input -> temporary.outputStream().use { input.copyTo(it) } }
+                if (!verify(temporary)) throw IOException("外部安装副本校验失败")
+                if (!temporary.renameTo(target)) throw IOException("无法保存外部安装副本")
+                return target
+            } finally {
+                temporary.delete()
+            }
+        }
+
+        internal fun installerError(error: Throwable): String = when (error) {
+            is android.content.ActivityNotFoundException -> "入口不存在"
+            is SecurityException -> "系统拒绝"
+            else -> "调用失败"
+        }
     }
 
     private fun install() {
         val update = available ?: return
         if (busy || !active || !ready) return
-        work({ validateApk(update) }) {
+        work({
+            validateApk(update)
+            prepareLegacyApk(update)
+        }) {
             try {
                 // Android 8+ 未授权时先尝试打开授权页；但很多电视没有这个页面，
                 // 打不开时不能直接放弃——继续走安装入口，由系统安装器自己提示未知来源。
@@ -441,14 +464,17 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
                             )
                         } else {
                             updateStatus(
-                                "电视未提供安装入口（已尝试 $installerTried 个），请用系统文件管理器安装新版"
+                                "无法打开系统安装器（$installerFailure）。" +
+                                    (if (legacyApk != null) "安装副本位于 Android/data/${activity.packageName}/files/Download/guoying-tv-update.apk，可尝试用文件管理器打开。"
+                                    else "请从正式发布页下载并用系统文件管理器安装新版。")
                             )
                         }
                     }
                 }
-            } catch (_: Exception) {
+            } catch (error: Exception) {
                 permissionRequested = false
-                updateStatus("电视未提供安装或授权入口，请通过系统文件管理器安装新版")
+                android.util.Log.w("HongguoTV", "Update installer setup failed: ${installerError(error)}")
+                updateStatus("安装入口准备失败（${installerError(error)}），请通过系统文件管理器安装新版")
             }
         }
     }

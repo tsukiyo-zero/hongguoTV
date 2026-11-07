@@ -18,7 +18,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [23])
 class UpdateInstallerIntentsApi23Test {
     private val content = Uri.parse("content://io.github.tsukiyo_zero.guoyingtv.updates/updates/app.apk")
-    private val file = Uri.parse("file:///data/user/0/io.github.tsukiyo_zero.guoyingtv/cache/updates/app.apk")
+    private val file = Uri.parse("file:///storage/emulated/0/Android/data/io.github.tsukiyo_zero.guoyingtv/files/Download/guoying-tv-update.apk")
 
     @Test
     fun api23IncludesLegacyActionComponentsAndFileUri() {
@@ -28,6 +28,22 @@ class UpdateInstallerIntentsApi23Test {
         assertTrue(intents.any { it.data?.scheme == "file" })
         assertTrue(intents.any { it.component?.packageName == "com.miui.packageinstaller" })
         assertTrue(intents.all { it.type == "application/vnd.android.package-archive" })
+    }
+
+    @Test
+    fun invalidExternalCopyIsNotPublishedAndTemporaryFileIsRemoved() {
+        val directory = java.nio.file.Files.createTempDirectory("legacy-update-test").toFile()
+        try {
+            val source = java.io.File(directory, "source.apk").apply { writeText("测试包") }
+            val target = java.io.File(directory, "guoying-tv-update.apk").apply { writeText("原有副本") }
+            org.junit.Assert.assertThrows(java.io.IOException::class.java) {
+                AppUpdater.stageLegacyApk(source, directory) { false }
+            }
+            org.junit.Assert.assertEquals("原有副本", target.readText())
+            assertFalse(java.io.File(directory, "guoying-tv-update.apk.part").exists())
+        } finally {
+            directory.deleteRecursively()
+        }
     }
 
     @Test
@@ -45,7 +61,7 @@ class UpdateInstallerIntentsApi26Test {
 
     @Test
     fun api26DropsLegacyActionAndFileUri() {
-        val intents = AppUpdater.installerIntents(content, null)
+        val intents = AppUpdater.installerIntents(content, Uri.parse("file:///storage/emulated/0/update.apk"))
         assertFalse(intents.any { it.action == Intent.ACTION_INSTALL_PACKAGE })
         assertTrue(intents.any { it.action == Intent.ACTION_VIEW })
         assertFalse(intents.any { it.data?.scheme == "file" })
