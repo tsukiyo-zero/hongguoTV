@@ -208,6 +208,7 @@ class MainActivity : Activity() {
     private var retryPosition = 0L
     private var requestedAutoplay = true
     private var waitingForFirstFrame = false
+    private var hideAutoplayOverlay = false
     private var recoveryDisplayActive = false
     private var allowSlowRecovery = false
     private var playbackPreparationUntil = 0L
@@ -2820,6 +2821,7 @@ class MainActivity : Activity() {
         autoplay: Boolean = true,
         recovering: Boolean = false,
         autoDowngrade: Boolean = false,
+        automaticNext: Boolean = false,
     ) {
         cancelNextSeason()
         seasonSuppressed = false
@@ -2906,6 +2908,7 @@ class MainActivity : Activity() {
         panel = false
         playError = false
         waitingForFirstFrame = true
+        hideAutoplayOverlay = automaticNext && !keepRecoveryStatus
         recoveryDisplayActive = keepRecoveryStatus
         relayAttempted = false
         relaySlowHintShown = false
@@ -3007,7 +3010,8 @@ class MainActivity : Activity() {
         progressBar.progress = 0
         progressBar.visibility = View.VISIBLE
         main.removeCallbacks(hideHud)
-        hud.visibility = View.VISIBLE
+        hud.visibility = if (hideAutoplayOverlay) View.GONE else View.VISIBLE
+        updateClock()
         controls.removeAllViews()
         controls.visibility = if (recoveryDisplayActive) View.VISIBLE else View.GONE
         if (recoveryDisplayActive) {
@@ -3104,7 +3108,7 @@ class MainActivity : Activity() {
                                         library.autoNext &&
                                         episodeIndex < data.episodes.lastIndex
                                 )
-                                    playEpisode(episodeIndex + 1)
+                                    playEpisode(episodeIndex + 1, automaticNext = true)
                                 else {
                                     val continueSeason = requestedAutoplay
                                     requestedAutoplay = false
@@ -3461,6 +3465,9 @@ class MainActivity : Activity() {
         controls.removeAllViews()
         controls.visibility = View.GONE
         panel = false
+        // 自动队列续播保持画面干净，手动切集仍沿用原有提示。
+        hideAutoplayOverlay = completed
+        if (completed) hidePlaybackOverlay()
         transportPlay = null
         saveProgress()
         syncMediaSession()
@@ -3729,7 +3736,7 @@ class MainActivity : Activity() {
                                         !sleepStopped &&
                                         episodeIndex + 1 < data.episodes.size
                                 ) {
-                                    playEpisode(episodeIndex + 1, 0, true)
+                                    playEpisode(episodeIndex + 1, automaticNext = true)
                                 } else if (foreground && requestedAutoplay && !pausedForLifecycle &&
                                     !sleepStopped && library.autoNext && episodeIndex == data.episodes.lastIndex) {
                                     finishSeason(data)
@@ -4078,7 +4085,7 @@ class MainActivity : Activity() {
 
     private fun hidePlaybackOverlay() {
         main.removeCallbacks(hideHud)
-        if (waitingForFirstFrame && !playError) {
+        if (waitingForFirstFrame && !playError && !hideAutoplayOverlay) {
             hud.visibility = View.VISIBLE
             return
         }
@@ -4101,7 +4108,10 @@ class MainActivity : Activity() {
             autoRecoveredPlay = false
             Toast.makeText(this, "已恢复播放", Toast.LENGTH_SHORT).show()
         }
-        showHud()
+        if (hideAutoplayOverlay) {
+            hideAutoplayOverlay = false
+            hidePlaybackOverlay()
+        } else showHud()
     }
 
     private fun stopPreparingPlayback() {
@@ -4127,6 +4137,7 @@ class MainActivity : Activity() {
 
     private fun showHud() {
         if (screen != "player") return
+        hideAutoplayOverlay = false
         hud.visibility = View.VISIBLE
         updateClock()
         updatePlaybackText()

@@ -137,6 +137,9 @@ class PlaybackQueueTest {
             set(activity, "playbackReady", true)
             set(activity, "playbackTitle", TextView(activity))
             set(activity, "controls", LinearLayout(activity))
+            set(activity, "hud", LinearLayout(activity))
+            set(activity, "playbackText", TextView(activity))
+            set(activity, "progressBar", android.widget.ProgressBar(activity))
             set(activity, "episodeDuration", 90000L)
             val remote =
                 RemoteVideo(OkHttpClient(), StreamInfo("https://example.com/next", null, "720P"))
@@ -189,6 +192,11 @@ class PlaybackQueueTest {
             assertEquals(listOf("101", "102"), fake.items.map { it.mediaId })
             fake.index = 1
             assertEquals(true, invoke(activity, "advanceQueuedEpisode", 90000L, true))
+            assertEquals(android.view.View.GONE, (get(activity, "hud") as LinearLayout).visibility)
+            invoke(activity, "playbackFirstFrame")
+            assertEquals(android.view.View.GONE, (get(activity, "hud") as LinearLayout).visibility)
+            activity.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DPAD_UP))
+            assertEquals(android.view.View.VISIBLE, (get(activity, "hud") as LinearLayout).visibility)
             assertEquals(1, get(activity, "episodeIndex"))
             assertSame(remote, get(activity, "video"))
             assertNull(get(activity, "queuedNext"))
@@ -208,7 +216,7 @@ class PlaybackQueueTest {
             val timer = get(activity, "sleepTimer") as SleepTimer
             timer.afterEpisodes(3)
             invoke(activity, "queuePreparedEpisode", "102:${library.maxQuality}")
-            invoke(activity, "playEpisode", 1, 0L, true, false, false)
+            invoke(activity, "playEpisode", 1, 0L, true, false, false, false)
             assertTrue(fake.calls.contains("seekToNextMediaItem"))
             assertEquals(true, invoke(activity, "advanceQueuedEpisode", 12000L, false))
             assertEquals(3, timer.episodesLeft)
@@ -271,7 +279,8 @@ class PlaybackQueueTest {
                 set(activity, "hud", LinearLayout(activity))
                 set(activity, "playbackText", TextView(activity))
                 set(activity, "progressBar", android.widget.ProgressBar(activity))
-                invoke(activity, "playEpisode", 1, 0L, true, false, false)
+                invoke(activity, "playEpisode", 1, 0L, true, false, false, true)
+                assertEquals(android.view.View.GONE, (get(activity, "hud") as LinearLayout).visibility)
                 assertFalse(
                     "Switching to the next episode must retain its running request",
                     job.isCancelled,
@@ -279,6 +288,8 @@ class PlaybackQueueTest {
                 finish.countDown()
                 (get(activity, "workJob") as Future<*>).get(5, TimeUnit.SECONDS)
                 ShadowLooper.idleMainLooper()
+                invoke(activity, "playbackFirstFrame")
+                assertEquals(android.view.View.GONE, (get(activity, "hud") as LinearLayout).visibility)
                 assertSame(remote, get(activity, "video"))
                 assertSame(http, get(activity, "playbackHttp"))
                 assertEquals(1, get(activity, "episodeIndex"))
@@ -363,7 +374,7 @@ class PlaybackQueueTest {
                 set(activity, "hud", LinearLayout(activity))
                 set(activity, "playbackText", TextView(activity))
                 set(activity, "progressBar", android.widget.ProgressBar(activity))
-                invoke(activity, "playEpisode", 1, 0L, true, false, false)
+                invoke(activity, "playEpisode", 1, 0L, true, false, false, false)
                 assertFalse(job.isCancelled)
                 invoke(activity, "invalidatePage")
                 assertTrue(job.isCancelled)
