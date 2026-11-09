@@ -201,8 +201,24 @@ class TvSocial(
             val n = prefs.getInt("font", 24)
             prefs.edit().putInt("font", if (n >= 32) 20 else n + 4).apply()
         }
-        option({ "密度：${prefs.getInt("lanes",2)} 行" }) {
-            prefs.edit().putInt("lanes", prefs.getInt("lanes", 2) % 4 + 1).apply()
+        option({ "行数：${if (prefs.getInt("lanes", 0) > 0) "${prefs.getInt("lanes", 0)} 行" else "自动"}" }) {
+            // 0 表示按屏幕高度自动计算；其余为固定值，避免旧版本只有 1–4 行可选。
+            val steps = listOf(0, 4, 6, 8, 10, 12)
+            val index = steps.indexOf(prefs.getInt("lanes", 0)).let { if (it >= 0) it else 0 }
+            prefs.edit().putInt("lanes", steps[(index + 1) % steps.size]).apply()
+        }
+        option({ "透明度：${prefs.getInt("alpha", 85)}%" }) {
+            val steps = listOf(60, 75, 85, 100)
+            val next = steps[(steps.indexOf(prefs.getInt("alpha", 85)) + 1) % steps.size]
+            prefs.edit().putInt("alpha", next).apply()
+        }
+        option({ "区域：${when (prefs.getString("area", "top")) { "middle" -> "中部"; "bottom" -> "下部"; "full" -> "全屏"; else -> "上部" }}" }) {
+            val order = listOf("top", "middle", "bottom", "full")
+            val next = order[(order.indexOf(prefs.getString("area", "top")) + 1) % order.size]
+            prefs.edit().putString("area", next).apply()
+        }
+        option({ "相同弹幕合并：${if (prefs.getBoolean("merge", true)) "开" else "关"}" }) {
+            prefs.edit().putBoolean("merge", !prefs.getBoolean("merge", true)).apply()
         }
         option({ "速度：${if(prefs.getInt("travel",12000)==12000) "慢速" else "标准"}" }) {
             prefs
@@ -418,25 +434,49 @@ class TvSocial(
     private inner class BulletView : View(activity) {
         var running = false
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD }
-        private var rows = emptyList<Triple<String, Long, Int>>()
+
+
+        /** 轨道与文本在 setRows 时算好；绘制只做坐标换算，避免每帧重新分配。 */
+        private var scheduled: List<ScheduledDanmaku> = emptyList()
+
+        private fun areaTop(): Int =
+            when (prefs.getString("area", "top")) {
+                "middle" -> dp(220)
+                "bottom" -> dp(420)
+                "full" -> dp(65)
+                else -> dp(65)
+            }
+
+        private fun areaHeight(): Int {
+            val top = areaTop()
+            val full = height - top
+            return when (prefs.getString("area", "top")) {
+                "middle", "bottom" -> (full * 0.6f).toInt()
+                else -> full
+            }
+        }
 
         fun setRows(values: List<JSONObject>) {
-            val lanes = prefs.getInt("lanes", 2)
             val travel = prefs.getInt("travel", 12000)
-            val free = LongArray(lanes)
-            val seen = mutableSetOf<String>()
-            rows =
-                values
-                    .sortedBy { it.getLong("timeMS") }
-                    .mapNotNull {
-                        val at = it.getLong("timeMS")
-                        val lane = free.indexOfFirst { t -> t <= at }
-                        if (lane < 0 || !seen.add(it.getString("id"))) null
-                        else {
-                            free[lane] = at + travel
-                            Triple(it.getString("text"), at, lane)
-                        }
-                    }
+            val textSize = dp(prefs.getInt("font", 24))
+            val configured = prefs.getInt("lanes", 0)
+            val lanes =
+                if (configured > 0) configured
+                else DanmakuLayout.laneCountFor(areaHeight(), textSize, 0)
+            val items =
+                values.mapNotNull {
+                    val text = it.optString("text").trim()
+                    val at = it.optLong("timeMS", -1)
+                    if (text.isEmpty() || at < 0) null
+                    else DanmakuItem(it.optString("id"), text, at)
+                }
+            scheduled =
+                DanmakuLayout.assign(
+                    items = items,
+                    lanes = lanes,
+                    travelMs = travel,
+                    merge = prefs.getBoolean("merge", true),
+                )
             invalidate()
         }
 
@@ -445,18 +485,32 @@ class TvSocial(
             val p = player() ?: return
             if (!active || !prefs.getBoolean("enabled", true)) return
             val now = p.currentPosition
-            val travel = prefs.getInt("travel", 12000)
+            val travel = prefs.getInt("travel", 12000).coerceAtLeast(1)
             paint.textSize = dp(prefs.getInt("font", 24)).toFloat()
-            for ((text, at, lane) in rows) if (now >= at && now < at + travel) {
-                val x = width - (width + paint.measureText(text)) * (now - at).toFloat() / travel
-                val y = dp(65) + lane * (paint.textSize + dp(12))
+            val alpha = (prefs.getInt("alpha", 85).coerceIn(20, 100) * 255 / 100)
+            val lineHeight = (paint.textSize + dp(12)).toInt()
+            val top = areaTop()
+            // 高密度时抽稀：单帧超过 60 条只画偶数索引，保证低端盒子不掉帧。
+            val dense = scheduled.size > 240
+            var drawn = 0
+            for ((index, item) in scheduled.withIndex()) {
+                if (now < item.startMs || now >= item.endMs) continue
+                if (dense && index % 2 == 1) continue
+                val x =
+                    width -
+                        (width + paint.measureText(item.text)) *
+                            (now - item.startMs).toFloat() / travel
+                val y = (top + item.lane * lineHeight).toFloat()
                 paint.style = Paint.Style.STROKE
                 paint.strokeWidth = dp(2).toFloat()
                 paint.color = Color.BLACK
-                canvas.drawText(text, x, y, paint)
+                paint.alpha = alpha
+                canvas.drawText(item.text, x, y, paint)
                 paint.style = Paint.Style.FILL
                 paint.color = Color.WHITE
-                canvas.drawText(text, x, y, paint)
+                paint.alpha = alpha
+                canvas.drawText(item.text, x, y, paint)
+                drawn++
             }
             if (running && isAttachedToWindow) postInvalidateOnAnimation()
         }
