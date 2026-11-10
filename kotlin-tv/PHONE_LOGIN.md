@@ -4,6 +4,8 @@
 
 静态参考用户提供的官方 `com.phoenix.read` 7.4.3.32 APK。实际登录页 `PhoneNumberNormalView` 使用 `LoginPhoneAreaCodeConfig`；该配置的默认项为中国大陆 86（11 位）、中国香港 852（8 位）、中国澳门 853（8 位）。该类会读取服务端配置，因此默认项不能被描述为官方当前线上完整支持列表。
 
+2026-11-10 补充只读联网核对：使用 APK 中的 `https://is.snssdk.com/service/settings/v3/` 设置入口，携带 `app=1`、`aid=8662`、`app_name=novelread`、`version_code=74332`、`version_name=7.4.3.32` 等匿名版本参数。响应 `data.settings.login_phone_area_code_config_v685.list` 本次仍为大陆 86/11 位、香港 852/8 位、澳门 853/8 位。该结果只代表此匿名请求上下文，不排除其他版本、地区或服务端分组拿到不同配置；不能据此保证短信送达。没有调用发码、验码或登录端点。
+
 APK 的 `account_x_area_code.json` 是另一旧区号选择器使用的全球资料文件，不以其中的国家数量推断短信送达能力。本次未复制反编译代码或全球数据文件进仓库，仅依据三个默认项编写本地限制。
 
 ## 客户端修正
