@@ -36,6 +36,7 @@ class TvSocial(
     private var overlay: BulletView? = null
     private var loading = false
     private var failedAt = 0L
+    private var timedStatus = "尚未读取"
     private val pages = linkedMapOf<Long, JSONObject>()
 
     private fun dp(n: Int) = (n * activity.resources.displayMetrics.density).toInt()
@@ -62,18 +63,7 @@ class TvSocial(
                         (failedAt == 0L ||
                             android.os.SystemClock.elapsedRealtime() - failedAt > 15000)
                 ) {
-                    val start = p.currentPosition / 30000 * 30000
-                    val desired =
-                        listOf(
-                            start,
-                            if (start > 0 && p.currentPosition - start < 15000) start - 30000
-                            else start,
-                            if (p.currentPosition - start > 20000 && start + 30000 < p.duration)
-                                start + 30000
-                            else start,
-                        )
-                    desired
-                        .firstOrNull { !pages.containsKey(it) }
+                    TimedCommentWindows.next(pages.values.toList(), p.currentPosition, p.duration)
                         ?.let { loadTimed(next, it, p.duration) }
                 }
                 main.postDelayed(this, 500)
@@ -105,6 +95,7 @@ class TvSocial(
         loading = false
         failedAt = 0
         pages.clear()
+        timedStatus = "尚未读取"
         overlay?.setRows(emptyList())
         dialog?.dismiss()
         dialog = null
@@ -121,14 +112,18 @@ class TvSocial(
         val ticket = generation
         val request = RequestScope()
         scope = request
+        // 在主线程取相邻区间游标，工作线程不读取正在变化的页面缓存。
+        val cursor = pages.values.filter { it.optLong("nextMS") == start }
+            .maxByOrNull { it.optLong("startMS") }?.optString("nextCursor").orEmpty()
         worker.submit {
             try {
-                val page = request.run { timed.read(ids.first, ids.second, start, duration) }
+                val page = request.run { timed.read(ids.first, ids.second, start, duration, cursor) }
                 main.post {
                     if (ticket != generation || !active) return@post
                     loading = false
                     pages[start] = page
-                    while (pages.size > 6) pages.remove(
+                    timedStatus = "最近区间 ${start / 1000}–${page.getLong("nextMS") / 1000} 秒：接口 ${page.optInt("rawCount", -1)} 条，有效 ${page.getJSONArray("items").length()} 条"
+                    while (pages.size > 128) pages.remove(
                         pages.keys.maxBy { kotlin.math.abs(it - start) }
                     )
                     val rows =
@@ -143,6 +138,7 @@ class TvSocial(
                     if (ticket == generation) {
                         loading = false
                         failedAt = android.os.SystemClock.elapsedRealtime()
+                        timedStatus = "读取失败，等待重试"
                     }
                 }
             }
@@ -177,12 +173,13 @@ class TvSocial(
                 background = TvVisual.panel(activity)
             }
         body.addView(label("弹幕设置", 22f))
-        fun option(title: () -> String, action: () -> Unit) {
+        val refreshers = mutableListOf<() -> Unit>()
+        fun option(title: () -> String, parent: LinearLayout = body, action: () -> Unit) {
             lateinit var b: TextView
             b =
                 button(title()) {
                     action()
-                    b.text = title()
+                    refreshers.forEach { it() }
                     overlay?.setRows(
                         pages.values.flatMap {
                             val a = it.getJSONArray("items")
@@ -191,26 +188,39 @@ class TvSocial(
                     )
                     overlay?.invalidate()
                 }
-            body.addView(b)
+            refreshers += { b.text = title() }
+            parent.addView(b)
+        }
+        fun section(title: String): LinearLayout {
+            val content = LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                visibility = View.GONE
+                setPadding(dp(10), 0, 0, 0)
+            }
+            lateinit var opener: TextView
+            opener = button("$title ▸") {
+                val expanded = content.visibility != View.VISIBLE
+                content.visibility = if (expanded) View.VISIBLE else View.GONE
+                opener.text = "$title ${if (expanded) "▾" else "▸"}"
+            }
+            body.addView(opener)
+            body.addView(content)
+            return content
         }
         option({ "弹幕：${if(prefs.getBoolean("enabled",true)) "开" else "关"}" }) {
             prefs.edit().putBoolean("enabled", !prefs.getBoolean("enabled", true)).apply()
-            reset()
         }
         option({ "字号：${prefs.getInt("font",24)}" }) {
             val n = prefs.getInt("font", 24)
             prefs.edit().putInt("font", if (n >= 32) 20 else n + 4).apply()
         }
-        option({ "行数：${if (prefs.getInt("lanes", 0) > 0) "${prefs.getInt("lanes", 0)} 行" else "自动"}" }) {
-            // 0 表示按屏幕高度自动计算；其余为固定值，避免旧版本只有 1–4 行可选。
-            val steps = listOf(0, 4, 6, 8, 10, 12)
-            val index = steps.indexOf(prefs.getInt("lanes", 0)).let { if (it >= 0) it else 0 }
-            prefs.edit().putInt("lanes", steps[(index + 1) % steps.size]).apply()
-        }
-        option({ "透明度：${prefs.getInt("alpha", 85)}%" }) {
-            val steps = listOf(60, 75, 85, 100)
-            val next = steps[(steps.indexOf(prefs.getInt("alpha", 85)) + 1) % steps.size]
-            prefs.edit().putInt("alpha", next).apply()
+        option({
+            val lanes = prefs.getInt("lanes", 0)
+            "密度：${when (lanes) { 4 -> "少"; 0 -> "标准（自动）"; 12 -> "多"; else -> "自定义 $lanes 行" }}"
+        }) {
+            val steps = listOf(4, 0, 12)
+            val current = steps.indexOf(prefs.getInt("lanes", 0))
+            prefs.edit().putInt("lanes", steps[(current + 1) % steps.size]).apply()
         }
         option({ "区域：${when (prefs.getString("area", "top")) { "middle" -> "中部"; "bottom" -> "下部"; "full" -> "全屏"; else -> "上部" }}" }) {
             val order = listOf("top", "middle", "bottom", "full")
@@ -220,21 +230,44 @@ class TvSocial(
         option({ "相同弹幕合并：${if (prefs.getBoolean("merge", true)) "开" else "关"}" }) {
             prefs.edit().putBoolean("merge", !prefs.getBoolean("merge", true)).apply()
         }
-        option({ "速度：${if(prefs.getInt("travel",12000)==12000) "慢速" else "标准"}" }) {
+        val advanced = section("更多设置")
+        option({ "精确行数：${if (prefs.getInt("lanes", 0) > 0) "${prefs.getInt("lanes", 0)} 行" else "自动"}" }, advanced) {
+            // 0 表示按屏幕高度自动计算；其余为固定值，避免旧版本只有 1–4 行可选。
+            val steps = listOf(0, 4, 6, 8, 10, 12)
+            val index = steps.indexOf(prefs.getInt("lanes", 0)).let { if (it >= 0) it else 0 }
+            prefs.edit().putInt("lanes", steps[(index + 1) % steps.size]).apply()
+        }
+        option({ "不透明度：${prefs.getInt("alpha", 85)}%" }, advanced) {
+            val steps = listOf(60, 75, 85, 100)
+            val next = steps[(steps.indexOf(prefs.getInt("alpha", 85)) + 1) % steps.size]
+            prefs.edit().putInt("alpha", next).apply()
+        }
+        option({ "速度：${if(prefs.getInt("travel",12000)==12000) "慢速（12 秒）" else "标准（9 秒）"}" }, advanced) {
             prefs
                 .edit()
                 .putInt("travel", if (prefs.getInt("travel", 12000) == 12000) 9000 else 12000)
                 .apply()
         }
-        body.addView(
+        val troubleshooting = section("弹幕排查")
+        troubleshooting.addView(
             button("重新读取弹幕") {
+                timed.clearCache()
                 reset()
-                d.dismiss()
             }
         )
+        troubleshooting.addView(button("查看读取诊断") {
+            val counts = pages.values.flatMap { page ->
+                val rows = page.getJSONArray("items")
+                (0 until rows.length()).map { rows.getJSONObject(it).optString("id") }
+            }.distinct().size
+            val report = "弹幕诊断 D3\n$timedStatus\n缓存 ${pages.size} 段，去重 $counts 条\n" +
+                (overlay?.diagnostics() ?: "画布尚未创建")
+            android.app.AlertDialog.Builder(activity).setTitle("弹幕读取诊断")
+                .setMessage(report).setPositiveButton("关闭", null).show()
+        })
         body.addView(label("真实时间轴弹幕；无内容时不使用普通评论代替。", 14f))
         body.addView(button("关闭") { d.dismiss() })
-        d.setContentView(body)
+        d.setContentView(ScrollView(activity).apply { addView(body) })
         d.setOnDismissListener { if (anchor.isAttachedToWindow) anchor.requestFocus() }
         d.show()
         d.window?.setLayout(dp(440), -2)
@@ -480,6 +513,12 @@ class TvSocial(
             invalidate()
         }
 
+        fun diagnostics(): String {
+            val now = player()?.currentPosition ?: 0
+            val visible = scheduled.count { now >= it.startMs && now < it.endMs }
+            return "合并排程 ${scheduled.size} 条，当前时间范围内 $visible 条\n播放 ${now / 1000} 秒，画布 ${width}×${height}"
+        }
+
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             val p = player() ?: return
@@ -490,12 +529,9 @@ class TvSocial(
             val alpha = (prefs.getInt("alpha", 85).coerceIn(20, 100) * 255 / 100)
             val lineHeight = (paint.textSize + dp(12)).toInt()
             val top = areaTop()
-            // 高密度时抽稀：单帧超过 60 条只画偶数索引，保证低端盒子不掉帧。
-            val dense = scheduled.size > 240
-            var drawn = 0
-            for ((index, item) in scheduled.withIndex()) {
+            // 只绘制当前有效的弹幕，不因缓存总量大而按索引丢弃。
+            for (item in scheduled) {
                 if (now < item.startMs || now >= item.endMs) continue
-                if (dense && index % 2 == 1) continue
                 val x =
                     width -
                         (width + paint.measureText(item.text)) *
@@ -510,7 +546,6 @@ class TvSocial(
                 paint.color = Color.WHITE
                 paint.alpha = alpha
                 canvas.drawText(item.text, x, y, paint)
-                drawn++
             }
             if (running && isAttachedToWindow) postInvalidateOnAnimation()
         }

@@ -21,7 +21,7 @@ class DanmakuLayoutTest {
     @Test
     fun sameLaneKeepsMinimumGap() {
         val rows = items("A" to 0L, "B" to 100L, "C" to 200L, "D" to 300L)
-        val scheduled = DanmakuLayout.assign(rows, lanes = 1, travelMs = 9000)
+        val scheduled = DanmakuLayout.assign(rows, lanes = 1, travelMs = 900)
         assertEquals(4, scheduled.size)
         val ordered = scheduled.sortedBy { it.startMs }
         for (index in 1 until ordered.size) {
@@ -43,6 +43,26 @@ class DanmakuLayoutTest {
         assertEquals("哈哈 ×2", merged.text)
         // 合并保留最早出现时间
         assertEquals(1000L, merged.startMs)
+    }
+
+    @Test
+    fun repeatedTextAtDifferentTimesStaysVisibleAndOverlappingPagesDoNotDoubleCount() {
+        val rows = listOf(
+            DanmakuItem("a", "哈哈", 0), DanmakuItem("a", "哈哈", 0),
+            DanmakuItem("b", "哈哈", 4000), DanmakuItem("c", "哈哈", 9000),
+            DanmakuItem("d", "哈哈", 30000),
+        )
+        val scheduled = DanmakuLayout.assign(rows.reversed(), lanes = 3, travelMs = 9000)
+        assertEquals(listOf(2, 1, 1), scheduled.map { it.count })
+        assertEquals(listOf(0L, 9000L, 30000L), scheduled.map { it.startMs })
+    }
+
+    @Test
+    fun denseCommentsAreNotQueuedPastMaximumDelay() {
+        val rows = (0 until 300).map { DanmakuItem("id$it", "弹幕$it", 1000) }
+        val scheduled = DanmakuLayout.assign(rows, lanes = 2, travelMs = 12000)
+        assertEquals(300, scheduled.size)
+        assertTrue(scheduled.all { it.startMs in 1000L..4000L })
     }
 
     @Test

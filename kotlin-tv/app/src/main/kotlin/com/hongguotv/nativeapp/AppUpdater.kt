@@ -82,6 +82,12 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         active = true
         main.removeCallbacks(poll)
         main.postDelayed(poll, 8000)
+        val sessionState = activity.getSharedPreferences("update_install_session", 0)
+        sessionState.getString("result_text", null)?.let {
+            sessionState.edit().remove("result_text").apply()
+            updateStatus(it)
+            show(anchor)
+        }
         if (permissionRequested) {
             permissionRequested = false
             if (Build.VERSION.SDK_INT < 26 || activity.packageManager.canRequestPackageInstalls())
@@ -448,26 +454,34 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
                         FileProvider.getUriForFile(activity, "${activity.packageName}.updates", apk)
                     // 为 Android 6/7 增加标准安装 action；厂商 ROM 是否提供对应入口仍需实机验证。
                     if (!launchInstaller(uri)) {
-                        val openedSettings =
-                            runCatching {
-                                    activity.startActivity(
-                                        Intent(Settings.ACTION_SECURITY_SETTINGS)
+                        updateStatus("正在准备系统兼容安装…")
+                        work({ runCatching { UpdateInstallSession.submit(activity, apk) } }) { result ->
+                            if (result.isSuccess) {
+                                updateStatus("已提交系统安装会话，请在系统确认页继续安装")
+                            } else {
+                                android.util.Log.w("HongguoTV", "Update session failed: ${installerError(result.exceptionOrNull()!!)}")
+                                val openedSettings =
+                                    runCatching {
+                                            activity.startActivity(
+                                                Intent(Settings.ACTION_SECURITY_SETTINGS)
+                                            )
+                                            true
+                                        }
+                                        .getOrDefault(false)
+                                if (openedSettings) {
+                                    // 这里只打开设置，不能视为已经授权，也不在返回时自动重试，
+                                    // 否则安装入口始终缺失的 ROM 会反复跳回设置。
+                                    updateStatus(
+                                        "已打开系统安全设置，请查找并允许「未知来源」，返回后再次点安装新版"
                                     )
-                                    true
+                                } else {
+                                    updateStatus(
+                                        "无法打开系统安装器（$installerFailure）。" +
+                                            (if (legacyApk != null) "安装副本位于 Android/data/${activity.packageName}/files/Download/guoying-tv-update.apk，可尝试用文件管理器打开。"
+                                            else "请从正式发布页下载并用系统文件管理器安装新版。")
+                                    )
                                 }
-                                .getOrDefault(false)
-                        if (openedSettings) {
-                            // 这里只打开设置，不能视为已经授权，也不在返回时自动重试，
-                            // 否则安装入口始终缺失的 ROM 会反复跳回设置。
-                            updateStatus(
-                                "已打开系统安全设置，请查找并允许「未知来源」，返回后再次点安装新版"
-                            )
-                        } else {
-                            updateStatus(
-                                "无法打开系统安装器（$installerFailure）。" +
-                                    (if (legacyApk != null) "安装副本位于 Android/data/${activity.packageName}/files/Download/guoying-tv-update.apk，可尝试用文件管理器打开。"
-                                    else "请从正式发布页下载并用系统文件管理器安装新版。")
-                            )
+                            }
                         }
                     }
                 }

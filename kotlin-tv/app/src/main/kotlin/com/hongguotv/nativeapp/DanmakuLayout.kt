@@ -6,7 +6,7 @@ package com.hongguotv.nativeapp
  *
  * 旧实现是「轨道被占用就丢弃这条弹幕」，默认 2 条轨道、每条占满整个滚动时长，
  * 120 秒最多只能显示 20 条，实测一集 259 条弹幕会被丢掉九成以上。
- * 现在改为：轨道按需排队，超出容量时短暂顺延而不是丢弃；同一文本可合并计数。
+ * 现在改为：轨道按需排队，超出容量时短暂顺延或同时进入，不丢弃；同一文本可合并计数。
  */
 internal data class DanmakuItem(val id: String, val text: String, val timeMs: Long)
 
@@ -22,13 +22,13 @@ internal object DanmakuLayout {
     /** 同轨道两条弹幕之间的最小间隔，避免文字重叠。 */
     const val MIN_GAP_MS = 400L
 
-    /** 允许的最大顺延；超过后仍会显示，只是挤在最早空出的轨道上。 */
+    /** 允许的最大顺延；拥挤时允许重叠，避免排队到剧集结束后。 */
     const val MAX_DELAY_MS = 3000L
 
     /**
      * @param lanes 可用轨道数（已按屏幕高度算好）
      * @param travelMs 单条弹幕完整穿过屏幕的时间
-     * @param merge 相同文本是否合并为「文字 ×N」，保留最早出现时间
+     * @param merge 五秒内相同文本是否合并为「文字 ×N」，保留最早出现时间
      */
     fun assign(
         items: List<DanmakuItem>,
@@ -39,21 +39,22 @@ internal object DanmakuLayout {
         maxDelayMs: Long = MAX_DELAY_MS,
     ): List<ScheduledDanmaku> {
         if (items.isEmpty() || lanes <= 0 || travelMs <= 0) return emptyList()
-        val prepared =
-            if (merge) {
-                // 相同文本只保留最早时间，计数累加；不同 id 的完全重复也合并。
-                val merged = linkedMapOf<String, Pair<Long, Int>>()
-                for (item in items) {
-                    val text = item.text.trim()
-                    if (text.isEmpty()) continue
-                    val kept = merged[text]
-                    if (kept == null) merged[text] = item.timeMs to 1
-                    else merged[text] = minOf(kept.first, item.timeMs) to kept.second + 1
-                }
-                merged.map { (text, value) -> Triple(text, value.first, value.second) }
+        // 先按真实 id 去重，避免重叠时间段重复计数；相同文字只在五秒内合并。
+        val unique = items.distinctBy { it.id.ifBlank { "${it.timeMs}:${it.text}" } }.sortedBy { it.timeMs }
+        val prepared = mutableListOf<Triple<String, Long, Int>>()
+        val latest = mutableMapOf<String, Int>()
+        for (item in unique) {
+            val text = item.text.trim()
+            if (text.isEmpty()) continue
+            val index = if (merge) latest[text] else null
+            val previous = index?.let { prepared[it] }
+            if (previous != null && item.timeMs - previous.second <= 5000L) {
+                prepared[index!!] = previous.copy(third = previous.third + 1)
             } else {
-                items.filter { it.text.isNotBlank() }.map { Triple(it.text.trim(), it.timeMs, 1) }
-            }.sortedBy { it.second }
+                latest[text] = prepared.size
+                prepared += Triple(text, item.timeMs, 1)
+            }
+        }
 
         val laneFreeAt = LongArray(lanes) { Long.MIN_VALUE }
         val output = ArrayList<ScheduledDanmaku>(prepared.size)
@@ -67,8 +68,8 @@ internal object DanmakuLayout {
                     bestLane = lane
                 }
             }
-            // 超出顺延上限也照常显示：宁可稍晚一点，也不静默丢弃。
-            val start = bestStart.coerceAtLeast(at)
+            // 限制等待时间，轨道拥挤时允许重叠，不能把弹幕推迟到片尾之后。
+            val start = minOf(bestStart, at + maxDelayMs.coerceAtLeast(0)).coerceAtLeast(at)
             laneFreeAt[bestLane] = start + travelMs / 3
             output +=
                 ScheduledDanmaku(
