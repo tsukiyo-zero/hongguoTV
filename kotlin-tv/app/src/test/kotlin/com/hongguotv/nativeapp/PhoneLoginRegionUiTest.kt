@@ -35,7 +35,8 @@ class PhoneLoginRegionUiTest {
         var calls = 0
         val http = OkHttpClient.Builder().addInterceptor { chain ->
             calls++
-            assertEquals("+852 12345678", chain.request().url.queryParameter("mobile"))
+            assertEquals("POST", chain.request().method)
+            assertNull(chain.request().url.queryParameter("mobile"))
             Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("fixture")
                 .body("""{"message":"success","data":{"mobile":"+852******78","mobile_ticket":"test-only"}}""".toResponseBody()).build()
         }.build()

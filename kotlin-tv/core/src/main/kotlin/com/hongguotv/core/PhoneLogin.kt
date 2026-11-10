@@ -14,7 +14,10 @@ import org.json.JSONObject
  * 请求受理不等同于短信送达，非大陆号码尚未完成实号验收。
  * 一个实例保留本次验证码票据；重新发码会清除旧票据与登录凭据。
  */
-class PhoneLogin(private val http: OkHttpClient) {
+class PhoneLogin(http: OkHttpClient) {
+    // 发码是有副作用的操作：一次点击只允许一次传输，不跟随重定向或自动重试。
+    private val http = http.newBuilder().retryOnConnectionFailure(false)
+        .followRedirects(false).followSslRedirects(false).build()
     var deviceId = ""
     var installId = ""
     var mobile = ""
@@ -33,7 +36,7 @@ class PhoneLogin(private val http: OkHttpClient) {
     data class Sent(val maskedMobile: String, val retrySeconds: Int)
 
     fun send(mobile: String): Sent {
-        // 沿用现有设备表兼容请求；本次区号修复不改变底层登录身份协议。
+        // 保留现有设备表身份兼容层；请求方法、字段编码与版本上下文按官方 App 修正。
         deviceId = VendorConstants.device.getValue("device_id")
         installId = VendorConstants.device.getValue("iid")
         cookies.clear()
@@ -43,8 +46,8 @@ class PhoneLogin(private val http: OkHttpClient) {
         val reply =
             call(
                 "/passport/mobile/send_code/v1/",
-                mapOf("mobile" to this.mobile, "type" to type),
-                form = false,
+                mapOf("mobile" to this.mobile, "type" to type, "unbind_exist" to "0", "auto_read" to "0"),
+                form = true,
             )
         val data = reply.optJSONObject("data") ?: JSONObject()
         // 风控要求滑块验证：电视上没法做，也不去绕它。
@@ -63,7 +66,7 @@ class PhoneLogin(private val http: OkHttpClient) {
         if (expired) throw Failure("本次登录会话已失效，请重新获取验证码", 1)
         check(deviceId.isNotEmpty()) { "请先发送验证码" }
         var params =
-            mapOf("mobile" to mobile, "code" to code, "type" to type, "mobile_ticket" to ticket)
+            mapOf("mobile" to mobile, "code" to code, "mobile_ticket" to ticket)
         val failures = mutableListOf<Failure>()
         for ((path, form) in VERIFY_ATTEMPTS) {
             val reply = call(path, params, form)
@@ -76,7 +79,7 @@ class PhoneLogin(private val http: OkHttpClient) {
             }
             val errorCode = data?.optInt("error_code", 0) ?: 0
             when {
-                // 1 = 会话过期：这条端点不适用于「未登录换验证码」，继续试下一条。
+                // 保留原会话错误；兼容尝试仅限下一条已核对的短信登录入口。
                 errorCode == 0 || errorCode == 1 -> {
                     if (errorCode == 1) failures += Failure("会话过期，请重新登录（错误码 1）", 1)
                     continue
@@ -124,21 +127,27 @@ class PhoneLogin(private val http: OkHttpClient) {
                         "manifest_version_code",
                         "update_version_code",
                         "pv_player",
-                    )) put(key, "73932")
-                put("version_name", "7.3.9.32")
+                    )) put(key, "74332")
+                put("version_name", "7.4.3.32")
             }
         val passport =
             mapOf("aid" to "8662", "app_name" to "novelread", "device_platform" to "android") +
                 params.filterValues { it.isNotBlank() }
-        val payload = if (form) Signer.encode(passport).toByteArray() else null
-        // 官方 App 的 passport 请求把 device_id/iid 从 query 里去掉（设备靠 Cookie 识别），
-        // 带着它们发会被判异常设备；签名器内部仍使用完整设备表。
-        val queryDevice = device.filterKeys { it != "device_id" && it != "iid" }
+        // 官方 App 的账号 SDK 对指定字段执行逐字节 XOR 5，再提交十六进制表单。
+        val mixed = passport.mapValues { (key, value) ->
+            if (key in setOf("mobile", "code", "type", "unbind_exist")) mix(value) else value
+        } + mapOf("mix_mode" to "1", "account_sdk_source" to "app")
+        val payload = if (form) Signer.encode(mixed).toByteArray(Charsets.UTF_8) else null
+        // 暂保留现有兼容层的查询身份处理；不能把设备表常量描述为官方真实设备注册结果。
+        val queryDevice = device.filterKeys { it != "device_id" && it != "iid" } +
+            mapOf("passport-sdk-version" to "5051452")
         val signed =
             Signer(device = device)
-                .sign(PASSPORT + path, if (form) queryDevice else queryDevice + passport, payload)
+                .sign(PASSPORT + path, if (form) queryDevice else queryDevice + mixed, payload)
         val request = Request.Builder().url(signed.url)
         signed.headers.forEach { (k, v) -> request.header(k, v) }
+        request.header("User-Agent", "com.phoenix.read/74332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)")
+        request.removeHeader("passport-sdk-version")
         // 刻意不回发 Cookie：实测把 send_code 下发的 cookie 带到 sms_login 会被 passport
         // 判 `2046`，而不带 cookie 时同一请求回 `1202 验证码错误`。Set-Cookie 仍会解析并保留，
         // 只用于判断是否已经拿到 sessionid。
@@ -173,18 +182,15 @@ class PhoneLogin(private val http: OkHttpClient) {
         private const val PASSPORT = "https://security.snssdk.com"
         /** login-lab 实测：24 = 登录验证码；1 / 3 是绑定 / 换绑手机号。 */
         const val LOGIN_CODE_TYPE = "24"
-        /**
-         * 短信登录的主端点是 `sms_login` 系列；`validate_code` 是「已登录后校验手机号」的入口，
-         * 对未登录会话固定回 `error_code 1 会话过期`（2026-11-03 实测），因此放到最后兜底。
-         */
-        private val VERIFY_ATTEMPTS =
-            listOf(
-                "/passport/mobile/sms_login/" to true,
-                "/passport/mobile/sms_login_only/" to true,
-                "/passport/mobile/sms_login_continue/" to true,
-                "/passport/mobile/validate_code/v1/" to false,
-                "/passport/mobile/validate_code/v1/" to true,
-            )
+        /** 静态核对官方 App 的两条短信登录入口，均为编码后的 POST 表单。 */
+        private val VERIFY_ATTEMPTS = listOf(
+            "/passport/mobile/sms_login/" to true,
+            "/passport/mobile/sms_login_only/" to true,
+        )
+
+        internal fun mix(value: String): String = value.toByteArray(Charsets.UTF_8).joinToString("") {
+            "%02x".format((it.toInt() and 255) xor 5)
+        }
 
         data class Region(val code: String, val name: String, val digits: Int? = null)
 

@@ -154,8 +154,8 @@ class CloudAccountTest {
     }
 
     /**
-     * `error_code 1` 是端点不适用（validate_code 对未登录会话固定回它），要继续试后续端点，
-     * 且不能把会话标记成不可再用——否则用户换一个验证码也没机会。
+     * 会话错误只在两条已核对的短信登录入口内有界处理，保留原平台错误，
+     * 不再把不适用于未登录场景的 validate_code 加入兜底。
      */
     @Test
     fun sessionExpiredErrorIsTreatedAsEndpointMismatch() {
@@ -174,7 +174,7 @@ class CloudAccountTest {
         val first = assertThrows(PhoneLogin.Failure::class.java) { login.verify("123456") }
         assertEquals(1, first.errorCode)
         assertFalse(first.canRetryCode)
-        assertEquals(5, calls)
+        assertEquals(2, calls)
         assertEquals("test-ticket", login.ticket)
         assertTrue(login.cookies.isNotEmpty())
     }

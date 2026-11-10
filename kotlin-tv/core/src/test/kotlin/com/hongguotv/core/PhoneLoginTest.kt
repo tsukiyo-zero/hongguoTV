@@ -29,11 +29,49 @@ class PhoneLoginTest {
                     .protocol(Protocol.HTTP_1_1)
                     .code(code)
                     .message("fixture")
-                    .apply { cookies.forEach { (k, v) -> addHeader("Set-Cookie", "$k=$v; Path=/") } }
+                    .apply {
+                        cookies.forEach { (k, v) -> addHeader("Set-Cookie", "$k=$v; Path=/") }
+                        if (code == 307) addHeader("Location", "https://redirect.invalid/not-allowed")
+                    }
                     .body(body.toResponseBody())
                     .build()
             }
             .build()
+
+    private fun form(request: Request): Map<String, String> {
+        val buffer = okio.Buffer()
+        request.body!!.writeTo(buffer)
+        return buffer.readUtf8().split('&').associate {
+            val pair = it.split('=', limit = 2)
+            java.net.URLDecoder.decode(pair[0], "UTF-8") to java.net.URLDecoder.decode(pair.getOrElse(1) { "" }, "UTF-8")
+        }
+    }
+
+    @Test
+    fun appSendUsesMixedPostBodyAndConsistentVersionWithNoRedirectRetry() {
+        var calls = 0
+        val login = PhoneLogin(client { request ->
+            calls++
+            assertEquals("POST", request.method)
+            assertEquals(null, request.url.queryParameter("mobile"))
+            assertEquals("74332", request.url.queryParameter("version_code"))
+            assertTrue(request.header("User-Agent")!!.contains("74332"))
+            assertEquals("5051452", request.url.queryParameter("passport-sdk-version"))
+            assertEquals(null, request.header("passport-sdk-version"))
+            val body = form(request)
+            assertEquals(PhoneLogin.mix("+886 123456789"), body["mobile"])
+            assertEquals("3731", body["type"])
+            assertEquals("35", body["unbind_exist"])
+            assertEquals("0", body["auto_read"])
+            assertEquals("1", body["mix_mode"])
+            assertEquals("app", body["account_sdk_source"])
+            assertFalse(request.header("x-ss-stub").isNullOrBlank())
+            307 to """{"message":"error","data":{"error_code":7,"description":"测试拒绝"}}"""
+        })
+        org.junit.Assert.assertThrows(java.io.IOException::class.java) { login.send("+886123456789") }
+        assertEquals(1, calls)
+        assertEquals("2e3d3d3325343736313033323d3c", PhoneLogin.mix("+886 123456789"))
+    }
 
     private fun deviceRegister(request: Request) =
         request.url.encodedPath == "/service/2/device_register/"
@@ -52,7 +90,7 @@ class PhoneLoginTest {
         assertEquals("138******00", sent.maskedMobile)
         assertEquals(60, sent.retrySeconds)
         assertEquals("tk", login.ticket)
-        // 官方 App 的登录直接用设备表里的固定号，不注册新设备。
+        // 兼容层当前保留设备表身份，不把它视为官方真实注册身份。
         assertEquals("1905892595378490", login.deviceId)
         assertEquals("1905892595382586", login.installId)
     }
@@ -101,7 +139,7 @@ class PhoneLoginTest {
         assertEquals(1, calls.get())
     }
 
-    /** `error_code 1` 表示端点不适用（validate_code 对未登录会话固定回它），应继续尝试后续端点。 */
+    /** 会话错误最多尝试两条已核对的短信登录入口，失败保留原错误。 */
     @Test
     fun sessionExpiredErrorKeepsTryingOtherEndpoints() {
         val endpoints = mutableListOf<String>()
@@ -126,8 +164,8 @@ class PhoneLoginTest {
             assertEquals(1, failure.errorCode)
             assertFalse(failure.canRetryCode)
         }
-        // 五条端点都试过，且不会把会话标记成不可再用（用户可换验证码重试）。
-        assertEquals(5, endpoints.size)
+        // 仅尝试静态核对的两条入口，不再提交未登录会话不适用的校验端点。
+        assertEquals(2, endpoints.size)
         try {
             login.verify("123456")
             fail("expected another rejection")
@@ -179,6 +217,9 @@ class PhoneLoginTest {
                         request.url.encodedPath.contains("/send_code/") ->
                             200 to """{"message":"success","data":{"mobile":"138******00","mobile_ticket":"tk"}}"""
                         else -> {
+                            assertEquals("POST", request.method)
+                            assertEquals(PhoneLogin.mix("123456"), form(request)["code"])
+                            assertEquals("1", form(request)["mix_mode"])
                             paths += request.url.encodedPath
                             200 to """{"message":"success","data":{}}"""
                         }
@@ -207,7 +248,8 @@ class PhoneLoginTest {
         var calls = 0
         val login = PhoneLogin(client { request ->
             calls++
-            assertEquals("+852 12345678", request.url.queryParameter("mobile"))
+            assertEquals("POST", request.method)
+            assertEquals(PhoneLogin.mix("+852 12345678"), form(request)["mobile"])
             200 to """{"message":"success","data":{"error_code":2046,"description":"请求被拒绝"}}"""
         })
         val failure = org.junit.Assert.assertThrows(PhoneLogin.Failure::class.java) {
