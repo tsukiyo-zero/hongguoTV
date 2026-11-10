@@ -195,11 +195,11 @@ class PhoneLoginTest {
     fun unsupportedRegionsAndMalformedNumbersAreRejectedBeforeNetwork() {
         var calls = 0
         val login = PhoneLogin(client { calls++; error("不得发送真实短信") })
-        for (number in listOf("+886 0912345678", "+1 2025550123", "+852 012345678", "+853 123", "+852 abc12345678")) {
+        for (number in listOf("+44 12345678", "+1 2025550123", "+852 012345678", "+853 123", "+852 abc12345678")) {
             org.junit.Assert.assertThrows(IllegalArgumentException::class.java) { login.send(number) }
         }
         assertEquals(0, calls)
-        assertEquals(listOf("86", "852", "853"), PhoneLogin.regions.map { it.code })
+        assertEquals(listOf("86", "852", "853", "886", "60", "65", "62", "95", "63", "84", "855", "81", "82", "971"), PhoneLogin.regions.map { it.code })
     }
 
     @Test
@@ -216,6 +216,18 @@ class PhoneLoginTest {
         assertEquals(2046, failure.errorCode)
         assertEquals(1, calls)
         assertEquals("", login.ticket)
+    }
+
+    @Test
+    fun screenshotRegionsRemainSelectableWithoutInventingLocalNumberRules() {
+        for (region in PhoneLogin.regions.filter { it.digits == null }) {
+            val normalized = "+${region.code} 01234567"
+            assertEquals(normalized, PhoneLogin.format(region.code, "0123-4567"))
+            assertEquals(normalized, PhoneLogin.parse("+${region.code}01234567"))
+        }
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            PhoneLogin.format("886", "1".repeat(14))
+        }
     }
 
     @Test

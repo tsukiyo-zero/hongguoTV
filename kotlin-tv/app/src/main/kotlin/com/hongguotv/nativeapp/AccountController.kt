@@ -500,7 +500,7 @@ class AccountController(private val activity: Activity, private val play: (Cloud
             }
         val mobile =
             EditText(context).apply {
-                hint = "大陆 11 位；香港、澳门 8 位"
+                hint = "手机号（请勿重复输入区号）"
                 inputType = InputType.TYPE_CLASS_PHONE
                 isSingleLine = true
             }
@@ -559,7 +559,7 @@ class AccountController(private val activity: Activity, private val play: (Cloud
                 addView(row)
                 addView(hint)
                 addView(TextView(context).apply {
-                    text = "区号参考官方默认项。港澳短信未做实号验证；平台受理不代表短信已送达，收不到请用官方 App 或扫码登录。"
+                    text = "区号参考官方登录界面。非大陆短信未做实号验证；平台受理不代表短信已送达，收不到请用官方 App 或扫码登录。"
                     textSize = 13f
                     setPadding(0, px(8), 0, px(8))
                 })
@@ -690,7 +690,7 @@ class AccountController(private val activity: Activity, private val play: (Cloud
         }
     }
 
-    /** 只展示所参考官方 APK 登录配置默认项，不使用旧的全球区号选择器。 */
+    /** 展示用户提供的官方登录截图中已核对的区号，不将其他入口配置当作通用限制。 */
     private fun pickCountryCode(context: Context, current: String, onPick: (String) -> Unit) {
         val rows = PhoneLogin.regions
         val names = rows.map { "${it.name}  +${it.code}" }.toTypedArray()

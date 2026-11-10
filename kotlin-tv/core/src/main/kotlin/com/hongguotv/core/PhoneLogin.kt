@@ -9,7 +9,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 
 /**
- * 手机号与验证码登录：区号取所参考官方 APK 登录配置的三个默认项。
+ * 手机号与验证码登录：区号按用户提供的官方登录界面截图核对。
  * 发码与验码沿用设备表身份，不新注册设备；凭据与该身份一起保存。
  * 请求受理不等同于短信送达，非大陆号码尚未完成实号验收。
  * 一个实例保留本次验证码票据；重新发码会清除旧票据与登录凭据。
@@ -186,24 +186,42 @@ class PhoneLogin(private val http: OkHttpClient) {
                 "/passport/mobile/validate_code/v1/" to true,
             )
 
-        data class Region(val code: String, val name: String, val digits: Int)
+        data class Region(val code: String, val name: String, val digits: Int? = null)
 
-        /** 参考官方 7.4.3.32 登录配置的默认项，不等同于各地区短信已验证可用。 */
+        /** 官方登录截图可确认的区号；仅有明确依据的位数做严格校验，不等于短信可达。 */
         val regions = listOf(
             Region("86", "中国大陆", 11),
             Region("852", "中国香港", 8),
             Region("853", "中国澳门", 8),
+            Region("886", "中国台湾"),
+            Region("60", "马来西亚"),
+            Region("65", "新加坡"),
+            Region("62", "印度尼西亚"),
+            Region("95", "缅甸"),
+            Region("63", "菲律宾"),
+            Region("84", "越南"),
+            Region("855", "柬埔寨"),
+            Region("81", "日本"),
+            Region("82", "韩国"),
+            Region("971", "阿拉伯联合酋长国"),
         )
 
         /** 只清理常见排版符号，不悄悄删除字母或具有号码含义的前导零。 */
         fun format(countryCode: String, number: String): String {
             val region = regions.singleOrNull { it.code == countryCode.removePrefix("+") }
-                ?: throw IllegalArgumentException("当前仅提供 +86、+852、+853；其他地区短信尚未验证，请改用官方 App 或扫码登录")
+                ?: throw IllegalArgumentException("该区号尚未列入已核对的官方登录列表，请改用官方 App 或扫码登录")
             require(number.isNotBlank() && number.all { it in '0'..'9' || it in " -()" }) {
                 "号码只能包含数字、空格、短横线或括号"
             }
             val digits = number.filter { it in '0'..'9' }
-            require(digits.length == region.digits) { "${region.name}手机号需 ${region.digits} 位数字，不要重复输入区号" }
+            if (region.digits != null) {
+                require(digits.length == region.digits) { "${region.name}手机号需 ${region.digits} 位数字，不要重复输入区号" }
+            } else {
+                // 截图未提供各地位数规则，只限制国际号码总长度，不猜测本地拨号规则。
+                require(digits.length >= 4 && region.code.length + digits.length <= 15) {
+                    "号码长度不对：区号加号码最多 15 位，本地号码至少 4 位"
+                }
+            }
             if (region.code == "86") {
                 require(digits.startsWith("1")) { "大陆手机号是 1 开头的 11 位数字" }
                 return digits
@@ -218,7 +236,7 @@ class PhoneLogin(private val http: OkHttpClient) {
             val international = text.drop(1)
             val region = regions.sortedByDescending { it.code.length }.firstOrNull {
                 international.startsWith(it.code)
-            } ?: throw IllegalArgumentException("当前仅提供 +86、+852、+853；其他地区短信尚未验证，请改用官方 App 或扫码登录")
+            } ?: throw IllegalArgumentException("该区号尚未列入已核对的官方登录列表，请改用官方 App 或扫码登录")
             return format(region.code, international.drop(region.code.length).trimStart(' ', '-'))
         }
     }
