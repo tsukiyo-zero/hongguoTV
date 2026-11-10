@@ -10,14 +10,19 @@ import org.json.JSONObject
 
 /**
  * 手机号与验证码登录：区号按用户提供的官方登录界面截图核对。
- * 发码与验码沿用设备表身份，不新注册设备；凭据与该身份一起保存。
+ * 发码与验码复用正常匿名注册身份；公共表单、签名及凭据使用同一身份。
  * 请求受理不等同于短信送达，非大陆号码尚未完成实号验收。
  * 一个实例保留本次验证码票据；重新发码会清除旧票据与登录凭据。
  */
-class PhoneLogin(http: OkHttpClient) {
+class PhoneLogin(
+    http: OkHttpClient,
+    private val deviceSession: PlaybackDeviceSession = PlaybackDeviceSession.shared,
+) {
     // 发码是有副作用的操作：一次点击只允许一次传输，不跟随重定向或自动重试。
     private val http = http.newBuilder().retryOnConnectionFailure(false)
         .followRedirects(false).followSslRedirects(false).build()
+    private var profile: PlaybackDeviceSession.Profile? = null
+    private var registrationCookies = emptyMap<String, String>()
     var deviceId = ""
     var installId = ""
     var mobile = ""
@@ -36,13 +41,19 @@ class PhoneLogin(http: OkHttpClient) {
     data class Sent(val maskedMobile: String, val retrySeconds: Int)
 
     fun send(mobile: String): Sent {
-        // 保留现有设备表身份兼容层；请求方法、字段编码与版本上下文按官方 App 修正。
-        deviceId = VendorConstants.device.getValue("device_id")
-        installId = VendorConstants.device.getValue("iid")
+        // 号码先校验，不能为无效输入注册设备或请求短信。
+        this.mobile = parse(mobile)
         cookies.clear()
         expired = false
         ticket = ""
-        this.mobile = parse(mobile)
+        val ready = deviceSession.profile(this.http)
+        profile = ready
+        deviceId = ready.values.getValue("device_id")
+        installId = ready.values.getValue("iid")
+        registrationCookies = ready.cookie.split(';').mapNotNull { raw ->
+            val pair = raw.trim().split('=', limit = 2)
+            if (pair.size == 2 && pair[0].isNotBlank()) pair[0] to pair[1] else null
+        }.toMap()
         val reply =
             call(
                 "/passport/mobile/send_code/v1/",
@@ -106,19 +117,17 @@ class PhoneLogin(http: OkHttpClient) {
             throw failures.firstOrNull()
                 ?: Failure("登录没有成功，平台没有下发登录态")
         }
-        val header = cookies.entries.joinToString("; ") { (name, value) -> "$name=$value" }
+        val header = (registrationCookies + cookies).entries.joinToString("; ") { (name, value) -> "$name=$value" }
         return AccountCredentialsParser.parseHeader(header)
             .copy(
                 deviceId = deviceId,
                 installId = installId,
-                device = mapOf("device_id" to deviceId, "iid" to installId),
+                device = deviceValues(),
             )
     }
 
-    /** 带这台设备的身份签名后发一次 passport 请求；`Set-Cookie` 并进 [cookies]，返回 JSON（非 JSON 时包成 `raw`）。 */
-    private fun call(path: String, params: Map<String, String>, form: Boolean): JSONObject {
-        val device =
-            LinkedHashMap(VendorConstants.device).apply {
+    private fun deviceValues(): Map<String, String> =
+            LinkedHashMap(profile?.values ?: VendorConstants.device).apply {
                 put("device_id", deviceId)
                 put("iid", installId)
                 for (key in
@@ -130,27 +139,30 @@ class PhoneLogin(http: OkHttpClient) {
                     )) put(key, "74332")
                 put("version_name", "7.4.3.32")
             }
+
+    /** 带这台设备的身份签名后发一次 passport 请求；`Set-Cookie` 并进 [cookies]，返回 JSON（非 JSON 时包成 `raw`）。 */
+    private fun call(path: String, params: Map<String, String>, form: Boolean): JSONObject {
+        val device = deviceValues()
         val passport =
-            mapOf("aid" to "8662", "app_name" to "novelread", "device_platform" to "android") +
+            device +
                 params.filterValues { it.isNotBlank() }
         // 官方 App 的账号 SDK 对指定字段执行逐字节 XOR 5，再提交十六进制表单。
         val mixed = passport.mapValues { (key, value) ->
             if (key in setOf("mobile", "code", "type", "unbind_exist")) mix(value) else value
         } + mapOf("mix_mode" to "1", "account_sdk_source" to "app")
         val payload = if (form) Signer.encode(mixed).toByteArray(Charsets.UTF_8) else null
-        // 暂保留现有兼容层的查询身份处理；不能把设备表常量描述为官方真实设备注册结果。
-        val queryDevice = device.filterKeys { it != "device_id" && it != "iid" } +
-            mapOf("passport-sdk-version" to "5051452")
+        // 与公共表单使用同一注册身份，不能删去已确认由官方公共参数提供的设备字段。
+        val queryDevice = device + mapOf("passport-sdk-version" to "5051452")
         val signed =
-            Signer(device = device)
+            (profile?.passportSigner(System::currentTimeMillis, device) ?: Signer(device = device))
                 .sign(PASSPORT + path, if (form) queryDevice else queryDevice + mixed, payload)
         val request = Request.Builder().url(signed.url)
         signed.headers.forEach { (k, v) -> request.header(k, v) }
         request.header("User-Agent", "com.phoenix.read/74332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)")
         request.removeHeader("passport-sdk-version")
-        // 刻意不回发 Cookie：实测把 send_code 下发的 cookie 带到 sms_login 会被 passport
-        // 判 `2046`，而不带 cookie 时同一请求回 `1202 验证码错误`。Set-Cookie 仍会解析并保留，
-        // 只用于判断是否已经拿到 sessionid。
+        // 保留注册及该登录流程的同域会话；不借用外部账号或网页会话。
+        val sessionCookies = registrationCookies + cookies
+        if (sessionCookies.isNotEmpty()) request.header("Cookie", sessionCookies.entries.joinToString("; ") { "${it.key}=${it.value}" })
         if (payload != null)
             request.post(payload.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
         val reply =

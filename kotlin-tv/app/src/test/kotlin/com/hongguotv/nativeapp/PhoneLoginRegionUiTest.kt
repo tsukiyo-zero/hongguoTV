@@ -34,6 +34,10 @@ class PhoneLoginRegionUiTest {
         val account = AccountController(controller.get()) {}
         var calls = 0
         val http = OkHttpClient.Builder().addInterceptor { chain ->
+            if (chain.request().url.encodedPath == "/service/2/device_register/") {
+                return@addInterceptor Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("fixture")
+                    .body("""{"device_id":"333","install_id":"444"}""".toResponseBody()).build()
+            }
             calls++
             assertEquals("POST", chain.request().method)
             assertNull(chain.request().url.queryParameter("mobile"))

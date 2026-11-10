@@ -40,6 +40,7 @@ class PlaybackDeviceSession(
     ) {
         private var playbackSigner: Signer? = null
         private var recommendationSigner: Signer? = null
+        private var passportSigner: Signer? = null
         private data class Model(val entry: org.json.JSONObject, val owner: Any, val savedAt: Long)
         private val models = linkedMapOf<String, Model>()
 
@@ -70,6 +71,12 @@ class PlaybackDeviceSession(
         @Synchronized
         fun recommendationSigner(clock: () -> Long, values: Map<String, String>): Signer =
             recommendationSigner ?: Signer(clock, values).also { recommendationSigner = it }
+
+        // 账号 SDK 与推荐/播放分开保存签名上下文，但同一注册会话内保持稳定。
+        @Synchronized
+        fun passportSigner(clock: () -> Long, values: Map<String, String>): Signer =
+            passportSigner ?: Signer(clock, values).also { passportSigner = it }
+
     }
 
     private var cdid = UUID.randomUUID().toString()

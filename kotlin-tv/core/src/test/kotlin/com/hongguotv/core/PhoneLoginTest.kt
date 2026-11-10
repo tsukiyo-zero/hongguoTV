@@ -50,7 +50,7 @@ class PhoneLoginTest {
     @Test
     fun appSendUsesMixedPostBodyAndConsistentVersionWithNoRedirectRetry() {
         var calls = 0
-        val login = PhoneLogin(client { request ->
+        val login = loginForTest(client { request ->
             calls++
             assertEquals("POST", request.method)
             assertEquals(null, request.url.queryParameter("mobile"))
@@ -73,6 +73,52 @@ class PhoneLoginTest {
         assertEquals("2e3d3d3325343736313033323d3c", PhoneLogin.mix("+886 123456789"))
     }
 
+    private fun loginForTest(http: OkHttpClient) = PhoneLogin(http,
+        PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
+
+    @Test
+    fun registeredIdentityAndCookiesStayPairedAcrossSendAndVerify() {
+        var registrations = 0
+        var sends = 0
+        var verifies = 0
+        val session = PlaybackDeviceSession {
+            registrations++
+            DeviceRegister.Registered("333", "444", cookies = mapOf("ttreq" to "registration-test"))
+        }
+        val http = client { request ->
+            val values = form(request)
+            assertEquals("333", values["device_id"])
+            assertEquals("444", values["iid"])
+            assertEquals("333", request.url.queryParameter("device_id"))
+            assertEquals("444", request.url.queryParameter("iid"))
+            assertTrue(request.header("Cookie")!!.contains("ttreq=registration-test"))
+            if (request.url.encodedPath.contains("send_code")) {
+                sends++
+                200 to """{"message":"success","data":{"mobile_ticket":"test-only"}}"""
+            } else {
+                verifies++
+                200 to """{"message":"error","data":{"error_code":1102,"description":"测试验证码错误"}}"""
+            }
+        }
+        val first = PhoneLogin(http, session)
+        first.send("+886123456789")
+        org.junit.Assert.assertThrows(PhoneLogin.Failure::class.java) { first.verify("000000") }
+        PhoneLogin(http, session).send("+886123456789")
+        assertEquals(1, registrations)
+        assertEquals(2, sends)
+        assertEquals(1, verifies)
+        assertEquals("333", first.deviceId)
+    }
+
+    @Test
+    fun registrationFailureNeverFallsBackToFixedDeviceSms() {
+        var calls = 0
+        val http = client { calls++; error("注册失败不应发出短信") }
+        val login = PhoneLogin(http, PlaybackDeviceSession { null })
+        org.junit.Assert.assertThrows(PlaybackDeviceRegistrationException::class.java) { login.send("+886123456789") }
+        assertEquals(0, calls)
+    }
+
     private fun deviceRegister(request: Request) =
         request.url.encodedPath == "/service/2/device_register/"
 
@@ -80,7 +126,7 @@ class PhoneLoginTest {
 
     @Test
     fun sendReportsMaskedNumberRetryAndTicket() {
-        val login = PhoneLogin(
+        val login = loginForTest(
             client { request ->
                 if (deviceRegister(request)) registered
                 else 200 to """{"message":"success","data":{"mobile":"138******00","retry_time":60,"mobile_ticket":"tk"}}"""
@@ -91,13 +137,13 @@ class PhoneLoginTest {
         assertEquals(60, sent.retrySeconds)
         assertEquals("tk", login.ticket)
         // 兼容层当前保留设备表身份，不把它视为官方真实注册身份。
-        assertEquals("1905892595378490", login.deviceId)
-        assertEquals("1905892595382586", login.installId)
+        assertEquals("333", login.deviceId)
+        assertEquals("444", login.installId)
     }
 
     @Test
     fun sliderChallengeIsReportedAsUnsupported() {
-        val login = PhoneLogin(
+        val login = loginForTest(
             client { request ->
                 if (deviceRegister(request)) registered
                 else 200 to """{"message":"success","data":{"verify_center_decision_conf":"{}"}}"""
@@ -114,7 +160,7 @@ class PhoneLoginTest {
     @Test
     fun verifyReturnsCredentialsBoundToTheRegisteredDevice() {
         val calls = AtomicInteger()
-        val login = PhoneLogin(
+        val login = loginForTest(
             client(
                 respond = { request ->
                     when {
@@ -133,9 +179,9 @@ class PhoneLoginTest {
         login.send("13800000000")
         val credentials = login.verify("123456")
         assertEquals("sessionid=abc", credentials.cookie)
-        assertEquals("1905892595378490", credentials.deviceId)
-        assertEquals("1905892595382586", credentials.installId)
-        assertEquals("1905892595378490", credentials.device["device_id"])
+        assertEquals("333", credentials.deviceId)
+        assertEquals("444", credentials.installId)
+        assertEquals("333", credentials.device["device_id"])
         assertEquals(1, calls.get())
     }
 
@@ -143,7 +189,7 @@ class PhoneLoginTest {
     @Test
     fun sessionExpiredErrorKeepsTryingOtherEndpoints() {
         val endpoints = mutableListOf<String>()
-        val login = PhoneLogin(
+        val login = loginForTest(
             client { request ->
                 when {
                     deviceRegister(request) -> registered
@@ -177,7 +223,7 @@ class PhoneLoginTest {
     /** 1203 是「错误次数过多或验证码过期」，本次会话作废，不再继续提交。 */
     @Test
     fun tooManyAttemptsExpiresTheSession() {
-        val login = PhoneLogin(
+        val login = loginForTest(
             client { request ->
                 when {
                     deviceRegister(request) -> registered
@@ -208,7 +254,7 @@ class PhoneLoginTest {
     @Test
     fun smsLoginEstablishesSessionWithoutTouchingValidateCode() {
         val paths = mutableListOf<String>()
-        val login = PhoneLogin(
+        val login = loginForTest(
             client(
                 cookies = mapOf("sessionid" to "abc"),
                 respond = { request ->
@@ -235,7 +281,7 @@ class PhoneLoginTest {
     @Test
     fun unsupportedRegionsAndMalformedNumbersAreRejectedBeforeNetwork() {
         var calls = 0
-        val login = PhoneLogin(client { calls++; error("不得发送真实短信") })
+        val login = loginForTest(client { calls++; error("不得发送真实短信") })
         for (number in listOf("+44 12345678", "+1 2025550123", "+852 012345678", "+853 123", "+852 abc12345678")) {
             org.junit.Assert.assertThrows(IllegalArgumentException::class.java) { login.send(number) }
         }
@@ -246,7 +292,7 @@ class PhoneLoginTest {
     @Test
     fun overseasSendUsesNormalizedNumberAndKeepsPlatformErrorsVisible() {
         var calls = 0
-        val login = PhoneLogin(client { request ->
+        val login = loginForTest(client { request ->
             calls++
             assertEquals("POST", request.method)
             assertEquals(PhoneLogin.mix("+852 12345678"), form(request)["mobile"])
@@ -274,7 +320,7 @@ class PhoneLoginTest {
 
     @Test
     fun absentMaskedNumberDoesNotEchoFullNumberAsSent() {
-        val login = PhoneLogin(client { 200 to """{"message":"success","data":{"mobile_ticket":"test-only"}}""" })
+        val login = loginForTest(client { 200 to """{"message":"success","data":{"mobile_ticket":"test-only"}}""" })
         val result = login.send("+85312345678")
         assertEquals("+853 ******78", result.maskedMobile)
     }
