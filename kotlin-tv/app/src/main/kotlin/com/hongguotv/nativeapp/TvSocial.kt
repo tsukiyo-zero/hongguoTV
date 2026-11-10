@@ -62,18 +62,7 @@ class TvSocial(
                         (failedAt == 0L ||
                             android.os.SystemClock.elapsedRealtime() - failedAt > 15000)
                 ) {
-                    val start = p.currentPosition / 30000 * 30000
-                    val desired =
-                        listOf(
-                            start,
-                            if (start > 0 && p.currentPosition - start < 15000) start - 30000
-                            else start,
-                            if (p.currentPosition - start > 20000 && start + 30000 < p.duration)
-                                start + 30000
-                            else start,
-                        )
-                    desired
-                        .firstOrNull { !pages.containsKey(it) }
+                    TimedCommentWindows.next(pages.values.toList(), p.currentPosition, p.duration)
                         ?.let { loadTimed(next, it, p.duration) }
                 }
                 main.postDelayed(this, 500)
@@ -128,7 +117,7 @@ class TvSocial(
                     if (ticket != generation || !active) return@post
                     loading = false
                     pages[start] = page
-                    while (pages.size > 6) pages.remove(
+                    while (pages.size > 128) pages.remove(
                         pages.keys.maxBy { kotlin.math.abs(it - start) }
                     )
                     val rows =
@@ -490,12 +479,9 @@ class TvSocial(
             val alpha = (prefs.getInt("alpha", 85).coerceIn(20, 100) * 255 / 100)
             val lineHeight = (paint.textSize + dp(12)).toInt()
             val top = areaTop()
-            // 高密度时抽稀：单帧超过 60 条只画偶数索引，保证低端盒子不掉帧。
-            val dense = scheduled.size > 240
-            var drawn = 0
-            for ((index, item) in scheduled.withIndex()) {
+            // 只绘制当前有效的弹幕，不因缓存总量大而按索引丢弃。
+            for (item in scheduled) {
                 if (now < item.startMs || now >= item.endMs) continue
-                if (dense && index % 2 == 1) continue
                 val x =
                     width -
                         (width + paint.measureText(item.text)) *
@@ -510,7 +496,6 @@ class TvSocial(
                 paint.color = Color.WHITE
                 paint.alpha = alpha
                 canvas.drawText(item.text, x, y, paint)
-                drawn++
             }
             if (running && isAttachedToWindow) postInvalidateOnAnimation()
         }
