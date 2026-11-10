@@ -34,7 +34,12 @@ class PhoneLogin(
     val trace = mutableListOf<String>()
 
     /** 平台拒绝时的可读原因，界面直接显示 [message]。 */
-    class Failure(message: String, val errorCode: Int? = null, val canRetryCode: Boolean = false) :
+    class Failure(
+        message: String,
+        val errorCode: Int? = null,
+        val canRetryCode: Boolean = false,
+        val requiresHumanVerification: Boolean = false,
+    ) :
         Exception(message)
 
     /** [maskedMobile] 是平台回显的打码号码（如 `+886******23`）。 */
@@ -61,9 +66,6 @@ class PhoneLogin(
                 form = true,
             )
         val data = reply.optJSONObject("data") ?: JSONObject()
-        // 风控要求滑块验证：电视上没法做，也不去绕它。
-        if (data.has("verify_center_decision_conf"))
-            throw Failure("平台要求先完成滑块验证，当前电视登录流程不支持，尚未完成登录。")
         val errorCode = data.optInt("error_code", 0)
         if (reply.optString("message") != "success" || errorCode != 0)
             throw Failure(describe(data) ?: "平台未受理验证码请求", errorCode.takeIf { it != 0 })
@@ -182,8 +184,35 @@ class PhoneLogin(
                         JSONObject().put("http", response.code).put("raw", text.take(300))
                     }
             }
+        rejectHumanVerification(reply)
         // Never retain authentication responses or verification codes in diagnostics.
         return reply
+    }
+
+    /** 官方验证流程同时检查顶层和 data；仅错误7不能证明需要滑块。 */
+    private fun rejectHumanVerification(reply: JSONObject) {
+        val data = reply.optJSONObject("data")
+        val nodes = listOfNotNull(reply, data)
+        val code = nodes.firstNotNullOfOrNull { node ->
+            listOf("error_code", "code").firstNotNullOfOrNull { key ->
+                node.optInt(key, 0).takeIf { it != 0 }
+            }
+        }
+        val challenge = nodes.any { node ->
+            listOf("verify_center_decision_conf", "verify_center_secondary_decision_conf").any { key ->
+                !node.isNull(key) && node.optString(key).isNotBlank()
+            }
+        }
+        if (challenge || code == 1104 || code == 1105) {
+            expired = true
+            ticket = ""
+            cookies.clear()
+            throw Failure(
+                "平台要求先完成人工验证（如滑块），当前电视尚未接入该流程。请在官方 App 完成登录，再使用电视的扫码登录。",
+                errorCode = code,
+                requiresHumanVerification = true,
+            )
+        }
     }
 
     private fun describe(data: JSONObject): String? =

@@ -72,4 +72,36 @@ class PhoneLoginRegionUiTest {
             controller.pause().stop().destroy()
         }
     }
+    @Test
+    fun sendChallengeOffersQrLoginWithoutAutomaticSmsRetry() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val account = AccountController(controller.get()) {}
+        var sends = 0
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val registering = chain.request().url.encodedPath == "/service/2/device_register/"
+            if (!registering) sends++
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("fixture")
+                .body((if (registering) """{"device_id":"333","install_id":"444"}"""
+                else """{"message":"error","data":{"error_code":1105}}""").toResponseBody()).build()
+        }.build()
+        try {
+            AccountController::class.java.getDeclaredField("phoneHttp").apply { isAccessible = true }.set(account, http)
+            AccountController::class.java.getDeclaredMethod("phone").apply { isAccessible = true }.invoke(account)
+            val login = ShadowAlertDialog.getLatestAlertDialog()
+            texts(login.window!!.decorView).filterIsInstance<EditText>()[0].setText("13800000000")
+            texts(login.window!!.decorView).single { it.text.toString() == "获取验证码" }.performClick()
+            val worker = AccountController::class.java.getDeclaredField("worker").apply { isAccessible = true }.get(account) as ExecutorService
+            worker.submit {}.get(5, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper()
+            val failure = ShadowAlertDialog.getLatestAlertDialog()
+            assertNotSame(login, failure)
+            assertTrue(texts(failure.window!!.decorView).any { it.text.toString().contains("人工验证") })
+            assertEquals("改用扫码", failure.getButton(android.app.AlertDialog.BUTTON_NEUTRAL).text.toString())
+            assertEquals(1, sends)
+        } finally {
+            account.destroy()
+            controller.pause().stop().destroy()
+        }
+    }
+
 }

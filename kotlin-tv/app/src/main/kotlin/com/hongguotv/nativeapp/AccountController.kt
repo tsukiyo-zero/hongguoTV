@@ -685,6 +685,8 @@ class AccountController(private val activity: Activity, private val play: (Cloud
                     send.isEnabled = true
                     send.text = "获取验证码"
                     hint.text = safeError(failure)
+                    if (failure is PhoneLogin.Failure && failure.requiresHumanVerification)
+                        phoneLoginFailure(failure)
                 },
             )
         }

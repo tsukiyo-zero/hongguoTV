@@ -159,6 +159,58 @@ class PhoneLoginTest {
     }
 
     @Test
+    fun humanVerificationAtEitherResponseLevelStopsWithoutRetry() {
+        val fixtures = listOf(
+            """{"message":"error","verify_center_decision_conf":"test-only","data":{"error_code":7}}""",
+            """{"message":"error","data":{"error_code":7,"verify_center_secondary_decision_conf":"test-only"}}""",
+            """{"message":"error","data":{"error_code":1104}}""",
+            """{"message":"error","data":{"code":1105}}""",
+        )
+        for (fixture in fixtures) {
+            var calls = 0
+            val login = loginForTest(client { calls++; 200 to fixture })
+            val failure = org.junit.Assert.assertThrows(PhoneLogin.Failure::class.java) {
+                login.send("13800000000")
+            }
+            assertTrue(failure.requiresHumanVerification)
+            assertFalse(failure.canRetryCode)
+            assertEquals(1, calls)
+            assertEquals("", login.ticket)
+            assertTrue(login.cookies.isEmpty())
+        }
+    }
+
+    @Test
+    fun plainErrorSevenIsNotInventedAsHumanVerification() {
+        val login = loginForTest(client {
+            200 to """{"message":"error","data":{"error_code":7,"verify_center_decision_conf":"","verify_center_secondary_decision_conf":null,"description":"测试拒绝"}}"""
+        })
+        val failure = org.junit.Assert.assertThrows(PhoneLogin.Failure::class.java) {
+            login.send("13800000000")
+        }
+        assertEquals(7, failure.errorCode)
+        assertFalse(failure.requiresHumanVerification)
+    }
+
+    @Test
+    fun verificationChallengeClearsSessionAndDoesNotTrySecondLoginEndpoint() {
+        var calls = 0
+        val login = loginForTest(client { request ->
+            calls++
+            if (request.url.encodedPath.contains("send_code"))
+                200 to """{"message":"success","data":{"mobile_ticket":"test-only"}}"""
+            else
+                200 to """{"message":"error","data":{"error_code":1105}}"""
+        })
+        login.send("13800000000")
+        val failure = org.junit.Assert.assertThrows(PhoneLogin.Failure::class.java) { login.verify("000000") }
+        assertTrue(failure.requiresHumanVerification)
+        assertEquals("", login.ticket)
+        org.junit.Assert.assertThrows(PhoneLogin.Failure::class.java) { login.verify("000000") }
+        assertEquals(2, calls)
+    }
+
+    @Test
     fun verifyReturnsCredentialsBoundToTheRegisteredDevice() {
         val calls = AtomicInteger()
         val login = loginForTest(
