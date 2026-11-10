@@ -36,6 +36,7 @@ class TvSocial(
     private var overlay: BulletView? = null
     private var loading = false
     private var failedAt = 0L
+    private var timedStatus = "尚未读取"
     private val pages = linkedMapOf<Long, JSONObject>()
 
     private fun dp(n: Int) = (n * activity.resources.displayMetrics.density).toInt()
@@ -94,6 +95,7 @@ class TvSocial(
         loading = false
         failedAt = 0
         pages.clear()
+        timedStatus = "尚未读取"
         overlay?.setRows(emptyList())
         dialog?.dismiss()
         dialog = null
@@ -120,6 +122,7 @@ class TvSocial(
                     if (ticket != generation || !active) return@post
                     loading = false
                     pages[start] = page
+                    timedStatus = "最近区间 ${start / 1000}–${page.getLong("nextMS") / 1000} 秒：接口 ${page.optInt("rawCount", -1)} 条，有效 ${page.getJSONArray("items").length()} 条"
                     while (pages.size > 128) pages.remove(
                         pages.keys.maxBy { kotlin.math.abs(it - start) }
                     )
@@ -135,6 +138,7 @@ class TvSocial(
                     if (ticket == generation) {
                         loading = false
                         failedAt = android.os.SystemClock.elapsedRealtime()
+                        timedStatus = "读取失败，等待重试"
                     }
                 }
             }
@@ -220,13 +224,24 @@ class TvSocial(
         }
         body.addView(
             button("重新读取弹幕") {
+                timed.clearCache()
                 reset()
                 d.dismiss()
             }
         )
+        body.addView(button("查看读取诊断") {
+            val counts = pages.values.flatMap { page ->
+                val rows = page.getJSONArray("items")
+                (0 until rows.length()).map { rows.getJSONObject(it).optString("id") }
+            }.distinct().size
+            val report = "弹幕诊断 D3\n$timedStatus\n缓存 ${pages.size} 段，去重 $counts 条\n" +
+                (overlay?.diagnostics() ?: "画布尚未创建")
+            android.app.AlertDialog.Builder(activity).setTitle("弹幕读取诊断")
+                .setMessage(report).setPositiveButton("关闭", null).show()
+        })
         body.addView(label("真实时间轴弹幕；无内容时不使用普通评论代替。", 14f))
         body.addView(button("关闭") { d.dismiss() })
-        d.setContentView(body)
+        d.setContentView(ScrollView(activity).apply { addView(body) })
         d.setOnDismissListener { if (anchor.isAttachedToWindow) anchor.requestFocus() }
         d.show()
         d.window?.setLayout(dp(440), -2)
@@ -470,6 +485,12 @@ class TvSocial(
                     merge = prefs.getBoolean("merge", true),
                 )
             invalidate()
+        }
+
+        fun diagnostics(): String {
+            val now = player()?.currentPosition ?: 0
+            val visible = scheduled.count { now >= it.startMs && now < it.endMs }
+            return "合并排程 ${scheduled.size} 条，当前时间范围内 $visible 条\n播放 ${now / 1000} 秒，画布 ${width}×${height}"
         }
 
         override fun onDraw(canvas: Canvas) {

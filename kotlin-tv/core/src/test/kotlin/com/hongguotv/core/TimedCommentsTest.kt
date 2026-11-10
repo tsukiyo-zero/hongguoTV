@@ -61,6 +61,9 @@ class TimedCommentsTest {
         timed.read("123456", "234567", 30000, 90000, first.getString("nextCursor"))
         timed.read("123456", "234567", 30000, 90000, first.getString("nextCursor"))
         assertEquals(listOf("", "next-window"), cursors)
+        timed.clearCache()
+        timed.read("123456", "234567", 30000, 90000, "next-window")
+        assertEquals(listOf("", "next-window", "next-window"), cursors)
         assertEquals(1, registrations)
     }
 

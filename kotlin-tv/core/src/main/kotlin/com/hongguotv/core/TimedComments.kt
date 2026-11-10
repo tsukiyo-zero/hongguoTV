@@ -12,6 +12,9 @@ class TimedComments(
     private val transport = CommentTransport(playbackSession, http)
     private val cache = linkedMapOf<String, Pair<Long, String>>()
 
+    /** 用户主动重读时清除短期缓存，保证确实重新请求服务端。 */
+    fun clearCache() = synchronized(cache) { cache.clear() }
+
     fun read(series: String, episode: String, start: Long, duration: Long, cursor: String = ""): JSONObject {
         require(series.matches(Regex("[0-9]{6,30}")) && episode.matches(Regex("[0-9]{6,30}")))
         require(start >= 0 && duration > start && duration <= 86400000)
@@ -92,6 +95,7 @@ class TimedComments(
             }
             val continuation = data.optJSONObject("common_list_info")
             return JSONObject()
+                .put("rawCount", rows.length())
                 .put("nextCursor", continuation?.optString("cursor").orEmpty())
                 .put("hasMore", continuation?.optBoolean("has_more", false) ?: false)
                 .put("seriesID", series)

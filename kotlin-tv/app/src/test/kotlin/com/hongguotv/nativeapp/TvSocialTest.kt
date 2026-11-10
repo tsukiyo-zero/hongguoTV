@@ -21,6 +21,32 @@ import org.robolectric.shadows.ShadowLooper
 @GraphicsMode(GraphicsMode.Mode.LEGACY)
 class TvSocialTest {
     @Test
+    fun timedDiagnosticsExposeCountsWithoutIdentityAndSettingsCanScroll() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val social = TvSocial(activity, { null }, { null })
+        try {
+            val page = JSONObject().put("items", JSONArray(listOf(
+                JSONObject().put("id", "test-id-private").put("text", "测试").put("timeMS", 0),
+            )))
+            val field = social.javaClass.getDeclaredField("pages").apply { isAccessible = true }
+            @Suppress("UNCHECKED_CAST")
+            (field.get(social) as MutableMap<Long, JSONObject>)[0] = page
+            social.settings(Button(activity))
+            val settings = ShadowDialog.getLatestDialog()
+            assertTrue(settings.findViewById<ViewGroup>(android.R.id.content).getChildAt(0) is ScrollView)
+            views(settings.window!!.decorView).single { it.text.toString() == "查看读取诊断" }.performClick()
+            val report = views(ShadowDialog.getLatestDialog().window!!.decorView).joinToString { it.text.toString() }
+            assertTrue(report.contains("弹幕诊断 D3"))
+            assertTrue(report.contains("去重 1 条"))
+            assertFalse(report.contains("test-id-private"))
+        } finally {
+            social.destroy()
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
     fun knownEmojiUsesImageAndUnknownLabelIsPreserved() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         try {
