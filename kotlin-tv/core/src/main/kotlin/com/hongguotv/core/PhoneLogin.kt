@@ -57,7 +57,7 @@ class PhoneLogin(
         val reply =
             call(
                 "/passport/mobile/send_code/v1/",
-                mapOf("mobile" to this.mobile, "type" to type, "unbind_exist" to "0", "auto_read" to "0"),
+                mapOf("mobile" to passportMobile(), "type" to type, "unbind_exist" to "0", "auto_read" to "0"),
                 form = true,
             )
         val data = reply.optJSONObject("data") ?: JSONObject()
@@ -77,7 +77,7 @@ class PhoneLogin(
         if (expired) throw Failure("本次登录会话已失效，请重新获取验证码", 1)
         check(deviceId.isNotEmpty()) { "请先发送验证码" }
         var params =
-            mapOf("mobile" to mobile, "code" to code, "mobile_ticket" to ticket)
+            mapOf("mobile" to passportMobile(), "code" to code, "mobile_ticket" to ticket)
         val failures = mutableListOf<Failure>()
         for ((path, form) in VERIFY_ATTEMPTS) {
             val reply = call(path, params, form)
@@ -125,6 +125,9 @@ class PhoneLogin(
                 device = deviceValues(),
             )
     }
+
+    // 官方安卓输入组件直接拼接区号和号码；展示用的分隔空格不能进入 App 协议。
+    private fun passportMobile(): String = mobile.replace(" ", "")
 
     private fun deviceValues(): Map<String, String> =
             LinkedHashMap(profile?.values ?: VendorConstants.device).apply {

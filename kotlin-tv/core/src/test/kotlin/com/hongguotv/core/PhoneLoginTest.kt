@@ -59,7 +59,7 @@ class PhoneLoginTest {
             assertEquals("5051452", request.url.queryParameter("passport-sdk-version"))
             assertEquals(null, request.header("passport-sdk-version"))
             val body = form(request)
-            assertEquals(PhoneLogin.mix("+886 123456789"), body["mobile"])
+            assertEquals(PhoneLogin.mix("+886123456789"), body["mobile"])
             assertEquals("3731", body["type"])
             assertEquals("35", body["unbind_exist"])
             assertEquals("0", body["auto_read"])
@@ -87,6 +87,7 @@ class PhoneLoginTest {
         }
         val http = client { request ->
             val values = form(request)
+            assertEquals(PhoneLogin.mix("+886123456789"), values["mobile"])
             assertEquals("333", values["device_id"])
             assertEquals("444", values["iid"])
             assertEquals("333", request.url.queryParameter("device_id"))
@@ -101,7 +102,7 @@ class PhoneLoginTest {
             }
         }
         val first = PhoneLogin(http, session)
-        first.send("+886123456789")
+        first.send("+886 123 456 789")
         org.junit.Assert.assertThrows(PhoneLogin.Failure::class.java) { first.verify("000000") }
         PhoneLogin(http, session).send("+886123456789")
         assertEquals(1, registrations)
@@ -295,7 +296,7 @@ class PhoneLoginTest {
         val login = loginForTest(client { request ->
             calls++
             assertEquals("POST", request.method)
-            assertEquals(PhoneLogin.mix("+852 12345678"), form(request)["mobile"])
+            assertEquals(PhoneLogin.mix("+85212345678"), form(request)["mobile"])
             200 to """{"message":"success","data":{"error_code":2046,"description":"请求被拒绝"}}"""
         })
         val failure = org.junit.Assert.assertThrows(PhoneLogin.Failure::class.java) {
