@@ -110,9 +110,12 @@ class TvSocial(
         val ticket = generation
         val request = RequestScope()
         scope = request
+        // 在主线程取相邻区间游标，工作线程不读取正在变化的页面缓存。
+        val cursor = pages.values.filter { it.optLong("nextMS") == start }
+            .maxByOrNull { it.optLong("startMS") }?.optString("nextCursor").orEmpty()
         worker.submit {
             try {
-                val page = request.run { timed.read(ids.first, ids.second, start, duration) }
+                val page = request.run { timed.read(ids.first, ids.second, start, duration, cursor) }
                 main.post {
                     if (ticket != generation || !active) return@post
                     loading = false

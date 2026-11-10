@@ -11,9 +11,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 
 /** Shared anonymous transport for read-only comment lists. Never accepts account credentials. */
-internal class CommentTransport {
-    private val http =
-        OkHttpClient.Builder().callTimeout(20, TimeUnit.SECONDS).followRedirects(false).build()
+internal class CommentTransport(
+    private val playbackSession: PlaybackDeviceSession? = null,
+    private val http: OkHttpClient = OkHttpClient.Builder().callTimeout(20, TimeUnit.SECONDS).followRedirects(false).build(),
+) {
     private val signature = CommentSignature()
 
     fun read(episode: String, payload: JSONObject, source: Int, channel: Int): JSONObject {
@@ -45,6 +46,7 @@ internal class CommentTransport {
             query.toSortedMap().entries.joinToString("&") { (k, v) ->
                 "$k=${URLEncoder.encode(v,"UTF-8")}"
             }
+        val body = payload.toString().toByteArray(Charsets.UTF_8)
         val request =
             Request.Builder()
                 .url(
@@ -59,12 +61,23 @@ internal class CommentTransport {
                 .header("Sdk-Version", "2")
                 .header("Comment-Source", source.toString())
                 .header("Server-Channel", channel.toString())
-                .post(
-                    payload
-                        .toString()
-                        .toRequestBody("application/json; charset=utf-8".toMediaType())
-                )
-        signature.headers(encoded).forEach { (k, v) -> request.header(k, v) }
+                .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
+        if (playbackSession == null) {
+            signature.headers(encoded).forEach { (k, v) -> request.header(k, v) }
+        } else {
+            // 时间轴弹幕复用匿名注册会话和完整推荐版本签名，不能使用固定占位设备标识。
+            val identity = playbackSession.profile(http)
+            val values = identity.values + mapOf(
+                "aid" to "8662", "version_code" to "74332", "version_name" to "7.4.3.32",
+                "manifest_version_code" to "74332", "update_version_code" to "74332", "pv_player" to "74332",
+            )
+            val base = "https://api5-normal-sinfonlineb.fqnovel.com/novel/commentapi/comment/list/$episode/v1/"
+            val signed = identity.recommendationSigner(System::currentTimeMillis, values).signPlayback(base, values, body)
+            request.url(signed.url)
+            signed.headers.forEach { (k, v) -> request.header(k, v) }
+            request.header("Cookie", identity.cookie)
+            request.header("User-Agent", "com.phoenix.read/74332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)")
+        }
         return RequestScope.execute(http.newCall(request.build())) { response ->
             if (!response.isSuccessful) throw IOException("评论读取失败（HTTP ${response.code}）")
             val bytes =

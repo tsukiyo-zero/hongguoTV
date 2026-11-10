@@ -5,14 +5,18 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** Anonymous, read-only timed comments. No account session or write endpoint. */
-class TimedComments {
-    private val transport = CommentTransport()
+class TimedComments(
+    http: okhttp3.OkHttpClient = okhttp3.OkHttpClient.Builder().callTimeout(20, java.util.concurrent.TimeUnit.SECONDS).followRedirects(false).build(),
+    playbackSession: PlaybackDeviceSession = PlaybackDeviceSession.shared,
+) {
+    private val transport = CommentTransport(playbackSession, http)
     private val cache = linkedMapOf<String, Pair<Long, String>>()
 
-    fun read(series: String, episode: String, start: Long, duration: Long): JSONObject {
+    fun read(series: String, episode: String, start: Long, duration: Long, cursor: String = ""): JSONObject {
         require(series.matches(Regex("[0-9]{6,30}")) && episode.matches(Regex("[0-9]{6,30}")))
         require(start >= 0 && duration > start && duration <= 86400000)
-        val key = "$series/$episode/$start/$duration"
+        require(cursor.length <= 16384)
+        val key = "$series/$episode/$start/$duration/$cursor"
         synchronized(cache) {
             cache[key]
                 ?.takeIf { System.currentTimeMillis() - it.first < 60000 }
@@ -29,7 +33,7 @@ class TimedComments {
                 .put("comment_type", 20)
                 .put("sort", 1)
                 .put("count", 90)
-                .put("cursor", "")
+                .put("cursor", cursor)
                 .put("aid", 8662)
                 .put("compliance_status", 0)
                 .put(
@@ -86,7 +90,10 @@ class TimedComments {
                 items.add(JSONObject().put("id", id).put("text", text).put("timeMS", time))
                 if (items.size >= 90) break
             }
+            val continuation = data.optJSONObject("common_list_info")
             return JSONObject()
+                .put("nextCursor", continuation?.optString("cursor").orEmpty())
+                .put("hasMore", continuation?.optBoolean("has_more", false) ?: false)
                 .put("seriesID", series)
                 .put("episodeID", episode)
                 .put("startMS", start)
