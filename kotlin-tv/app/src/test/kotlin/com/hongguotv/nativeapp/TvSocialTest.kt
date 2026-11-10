@@ -35,11 +35,58 @@ class TvSocialTest {
             social.settings(Button(activity))
             val settings = ShadowDialog.getLatestDialog()
             assertTrue(settings.findViewById<ViewGroup>(android.R.id.content).getChildAt(0) is ScrollView)
+            views(settings.window!!.decorView).single { it.text.toString().startsWith("弹幕排查") }.performClick()
             views(settings.window!!.decorView).single { it.text.toString() == "查看读取诊断" }.performClick()
             val report = views(ShadowDialog.getLatestDialog().window!!.decorView).joinToString { it.text.toString() }
             assertTrue(report.contains("弹幕诊断 D3"))
             assertTrue(report.contains("去重 1 条"))
             assertFalse(report.contains("test-id-private"))
+        } finally {
+            social.destroy()
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun commonSettingsKeepFocusAndAdvancedDensityLabelsStayInSync() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val social = TvSocial(activity, { null }, { null })
+        try {
+            social.settings(Button(activity))
+            val dialog = ShadowDialog.getLatestDialog()
+            fun row(prefix: String) = views(dialog.window!!.decorView).single { it.text.toString().startsWith(prefix) }
+            assertFalse(row("精确行数").isShown)
+            assertFalse(row("重新读取弹幕").isShown)
+            val density = row("密度：")
+            density.requestFocus()
+            density.performClick()
+            assertEquals("密度：多", density.text.toString())
+            assertTrue(density.hasFocus())
+            row("更多设置").performClick()
+            assertTrue(row("精确行数").isShown)
+            assertEquals("精确行数：12 行", row("精确行数").text.toString())
+            row("精确行数").performClick()
+            assertEquals("密度：标准（自动）", density.text.toString())
+            row("精确行数").performClick()
+            row("精确行数").performClick()
+            assertEquals("密度：自定义 6 行", density.text.toString())
+            val page = JSONObject().put("items", JSONArray())
+            val field = social.javaClass.getDeclaredField("pages").apply { isAccessible = true }
+            @Suppress("UNCHECKED_CAST")
+            val pages = field.get(social) as MutableMap<Long, JSONObject>
+            pages[0] = page
+            val enabled = row("弹幕：")
+            enabled.requestFocus()
+            enabled.performClick()
+            assertTrue(dialog.isShowing)
+            assertTrue(enabled.hasFocus())
+            assertEquals(1, pages.size)
+            row("弹幕排查").performClick()
+            row("重新读取弹幕").performClick()
+            assertTrue(dialog.isShowing)
+            assertTrue(pages.isEmpty())
+            dialog.dismiss()
         } finally {
             social.destroy()
             controller.pause().stop().destroy()
