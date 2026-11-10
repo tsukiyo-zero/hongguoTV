@@ -9,12 +9,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 
 /**
- * 手机号 + 验证码登录（大陆与境外号码都收）。
- * * [send]：先匿名注册一台**新设备**（[DeviceRegister]），再用这台设备的身份发码。 设备注册仅是前置条件；短信登录换取会话尚未完成实机验收。
- * * [verify]：用**同一台设备**验码，平台在 `Set-Cookie` 里下发 `sessionid`。 换到的凭据带上这台设备的 `device_id` /
- *   `iid`（[AccountCredentials.device]）， 之后账号接口的签名都用它，会话与设备保持一致。
- *
- * 一个实例对应一次登录；重新发码会换一台新设备，之前的验证码随之作废。
+ * 手机号与验证码登录：区号取所参考官方 APK 登录配置的三个默认项。
+ * 发码与验码沿用设备表身份，不新注册设备；凭据与该身份一起保存。
+ * 请求受理不等同于短信送达，非大陆号码尚未完成实号验收。
+ * 一个实例保留本次验证码票据；重新发码会清除旧票据与登录凭据。
  */
 class PhoneLogin(private val http: OkHttpClient) {
     var deviceId = ""
@@ -35,26 +33,30 @@ class PhoneLogin(private val http: OkHttpClient) {
     data class Sent(val maskedMobile: String, val retrySeconds: Int)
 
     fun send(mobile: String): Sent {
-        // 官方 App 的短信登录不注册新设备：它直接用设备表里的固定 device_id/iid，且不携带
-        // 注册 cookie。实测新注册设备 + query 带 device_id 会被 passport 判 `2046`。
+        // 沿用现有设备表兼容请求；本次区号修复不改变底层登录身份协议。
         deviceId = VendorConstants.device.getValue("device_id")
         installId = VendorConstants.device.getValue("iid")
         cookies.clear()
         expired = false
-        this.mobile = mobile
+        ticket = ""
+        this.mobile = parse(mobile)
         val reply =
             call(
                 "/passport/mobile/send_code/v1/",
-                mapOf("mobile" to mobile, "type" to type),
+                mapOf("mobile" to this.mobile, "type" to type),
                 form = false,
             )
         val data = reply.optJSONObject("data") ?: JSONObject()
         // 风控要求滑块验证：电视上没法做，也不去绕它。
         if (data.has("verify_center_decision_conf"))
             throw Failure("平台要求先完成滑块验证，当前电视登录流程不支持，尚未完成登录。")
-        if (reply.optString("message") != "success") throw Failure(describe(data) ?: "验证码没发出去")
+        val errorCode = data.optInt("error_code", 0)
+        if (reply.optString("message") != "success" || errorCode != 0)
+            throw Failure(describe(data) ?: "平台未受理验证码请求", errorCode.takeIf { it != 0 })
         ticket = data.optString("mobile_ticket")
-        return Sent(data.optString("mobile").ifBlank { mobile }, data.optInt("retry_time", 60))
+        val fallbackMask = this.mobile.substringBefore(' ', "") +
+            (if (this.mobile.contains(' ')) " " else "") + "******" + this.mobile.takeLast(2)
+        return Sent(data.optString("mobile").ifBlank { fallbackMask }, data.optInt("retry_time", 60))
     }
 
     fun verify(code: String): AccountCredentials {
@@ -184,36 +186,40 @@ class PhoneLogin(private val http: OkHttpClient) {
                 "/passport/mobile/validate_code/v1/" to true,
             )
 
-        /**
-         * 区号 + 本地号码 → 平台认的手机号；不合格时抛 [IllegalArgumentException]，[Throwable.message] 可直接显示。
-         * * 大陆（86）：1 开头 11 位，原样发（实测可用）；
-         * * 境外：`+区号 号码`（区号后一个空格，去掉本地开头的 0），passport 的惯用写法； 长度按 E.164——区号 1–3 位，区号 + 号码合计不超过 15
-         *   位，号码至少 4 位。
-         *
-         * 号码里的空格、横线等非数字字符一律忽略。
-         */
+        data class Region(val code: String, val name: String, val digits: Int)
+
+        /** 参考官方 7.4.3.32 登录配置的默认项，不等同于各地区短信已验证可用。 */
+        val regions = listOf(
+            Region("86", "中国大陆", 11),
+            Region("852", "中国香港", 8),
+            Region("853", "中国澳门", 8),
+        )
+
+        /** 只清理常见排版符号，不悄悄删除字母或具有号码含义的前导零。 */
         fun format(countryCode: String, number: String): String {
-            val cc = countryCode.filter(Char::isDigit)
-            val digits = number.filter(Char::isDigit).removePrefix("0")
-            if (cc == "86") {
-                require(digits.matches(Regex("1\\d{10}"))) { "大陆手机号是 1 开头的 11 位数字" }
+            val region = regions.singleOrNull { it.code == countryCode.removePrefix("+") }
+                ?: throw IllegalArgumentException("当前仅提供 +86、+852、+853；其他地区短信尚未验证，请改用官方 App 或扫码登录")
+            require(number.isNotBlank() && number.all { it in '0'..'9' || it in " -()" }) {
+                "号码只能包含数字、空格、短横线或括号"
+            }
+            val digits = number.filter { it in '0'..'9' }
+            require(digits.length == region.digits) { "${region.name}手机号需 ${region.digits} 位数字，不要重复输入区号" }
+            if (region.code == "86") {
+                require(digits.startsWith("1")) { "大陆手机号是 1 开头的 11 位数字" }
                 return digits
             }
-            require(cc.matches(Regex("[1-9]\\d{0,2}"))) { "区号是 1–3 位数字" }
-            require(digits.length >= 4 && cc.length + digits.length <= 15) { "号码长度不对：区号加号码最多 15 位" }
-            return "+$cc $digits"
+            return "+${region.code} $digits"
         }
 
-        /** 一整串的写法：`13800138000`（大陆），或 `+区号-号码` / `+区号 号码`（如 `+886-0912345678`）。 */
+        /** 支持带或不带分隔符的完整号码；只解析当前明确提供的区号。 */
         fun parse(raw: String): String {
             val text = raw.trim()
             if (!text.startsWith("+")) return format("86", text)
-            val cc = text.drop(1).takeWhile(Char::isDigit)
-            val rest = text.drop(1 + cc.length)
-            require(rest.firstOrNull() == '-' || rest.firstOrNull() == ' ') {
-                "境外号码写成 +区号 号码，如 +886 0912345678"
-            }
-            return format(cc, rest)
+            val international = text.drop(1)
+            val region = regions.sortedByDescending { it.code.length }.firstOrNull {
+                international.startsWith(it.code)
+            } ?: throw IllegalArgumentException("当前仅提供 +86、+852、+853；其他地区短信尚未验证，请改用官方 App 或扫码登录")
+            return format(region.code, international.drop(region.code.length).trimStart(' ', '-'))
         }
     }
 }

@@ -12,13 +12,9 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.text.InputType
 import android.util.Base64
-import android.text.Editable
-import android.text.TextWatcher
-import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
 import com.hongguotv.core.*
@@ -504,7 +500,7 @@ class AccountController(private val activity: Activity, private val play: (Cloud
             }
         val mobile =
             EditText(context).apply {
-                hint = "手机号（大陆 11 位，境外不填前导 0）"
+                hint = "大陆 11 位；香港、澳门 8 位"
                 inputType = InputType.TYPE_CLASS_PHONE
                 isSingleLine = true
             }
@@ -562,7 +558,16 @@ class AccountController(private val activity: Activity, private val play: (Cloud
                 addView(mobileRow)
                 addView(row)
                 addView(hint)
+                addView(TextView(context).apply {
+                    text = "区号参考官方默认项。港澳短信未做实号验证；平台受理不代表短信已送达，收不到请用官方 App 或扫码登录。"
+                    textSize = 13f
+                    setPadding(0, px(8), 0, px(8))
+                })
             }
+        fun enteredNumber(): String {
+            val typed = mobile.text.toString().trim()
+            return if (typed.startsWith("+")) PhoneLogin.parse(typed) else PhoneLogin.format(country, typed)
+        }
 
         var login: PhoneLogin? = null
         var countdown: Runnable? = null
@@ -610,6 +615,12 @@ class AccountController(private val activity: Activity, private val play: (Cloud
                 hint.text = "请先点「获取验证码」"
                 return@setOnClickListener
             }
+            if (runCatching { enteredNumber() }.getOrNull() != current.mobile) {
+                login = null
+                code.text.clear()
+                hint.text = "号码或区号已更改，请重新获取验证码"
+                return@setOnClickListener
+            }
             if (!value.matches(Regex("[0-9]{4,8}"))) {
                 hint.text = "请输入 4—8 位验证码"
                 return@setOnClickListener
@@ -633,36 +644,44 @@ class AccountController(private val activity: Activity, private val play: (Cloud
 
         countryButton.setOnClickListener {
             pickCountryCode(context, country) { picked ->
+                if (country != picked) {
+                    login = null
+                    code.text.clear()
+                    hint.text = "区号已更改，请重新获取验证码"
+                }
                 country = picked
                 countryButton.text = "+$picked ▾"
             }
         }
 
         send.setOnClickListener {
-            val typed = mobile.text.toString().trim()
             val number =
-                runCatching {
-                        // 直接粘贴完整国际号码时按 +区号 解析，否则用下拉选中的区号拼接。
-                        if (typed.startsWith("+")) PhoneLogin.parse(typed)
-                        else PhoneLogin.format(country, typed)
-                    }
+                runCatching { enteredNumber() }
                     .getOrElse {
                         hint.text = safeError(it)
                         return@setOnClickListener
                     }
+            login = null
+            code.text.clear()
             val fresh = PhoneLogin(phoneHttp)
             stopCountdown()
             send.isEnabled = false
             send.text = "发送中…"
             hint.text = "正在发送验证码…"
+            mobile.isEnabled = false
+            countryButton.isEnabled = false
             task(
                 { fresh.send(number) },
                 { sent ->
+                    mobile.isEnabled = true
+                    countryButton.isEnabled = true
                     login = fresh
-                    hint.text = "验证码已发送至 ${sent.maskedMobile}"
+                    hint.text = "平台已受理向 ${sent.maskedMobile} 发送验证码的请求，请以实际收到短信为准"
                     startCountdown(sent.retrySeconds)
                 },
                 { failure ->
+                    mobile.isEnabled = true
+                    countryButton.isEnabled = true
                     send.isEnabled = true
                     send.text = "获取验证码"
                     hint.text = safeError(failure)
@@ -671,128 +690,18 @@ class AccountController(private val activity: Activity, private val play: (Cloud
         }
     }
 
-    private data class CountryCode(val code: String, val name: String)
-
-    /** 常用国家/地区区号；电视上先选再输号码，避免记格式。 */
-    private val countryCodes =
-        listOf(
-            CountryCode("86", "中国大陆"),
-            CountryCode("852", "中国香港"),
-            CountryCode("853", "中国澳门"),
-            CountryCode("886", "中国台湾"),
-            CountryCode("65", "新加坡"),
-            CountryCode("60", "马来西亚"),
-            CountryCode("62", "印度尼西亚"),
-            CountryCode("63", "菲律宾"),
-            CountryCode("66", "泰国"),
-            CountryCode("84", "越南"),
-            CountryCode("855", "柬埔寨"),
-            CountryCode("856", "老挝"),
-            CountryCode("95", "缅甸"),
-            CountryCode("81", "日本"),
-            CountryCode("82", "韩国"),
-            CountryCode("850", "朝鲜"),
-            CountryCode("91", "印度"),
-            CountryCode("92", "巴基斯坦"),
-            CountryCode("880", "孟加拉国"),
-            CountryCode("94", "斯里兰卡"),
-            CountryCode("977", "尼泊尔"),
-            CountryCode("1", "美国 / 加拿大"),
-            CountryCode("52", "墨西哥"),
-            CountryCode("55", "巴西"),
-            CountryCode("54", "阿根廷"),
-            CountryCode("56", "智利"),
-            CountryCode("57", "哥伦比亚"),
-            CountryCode("51", "秘鲁"),
-            CountryCode("44", "英国"),
-            CountryCode("33", "法国"),
-            CountryCode("49", "德国"),
-            CountryCode("39", "意大利"),
-            CountryCode("34", "西班牙"),
-            CountryCode("31", "荷兰"),
-            CountryCode("32", "比利时"),
-            CountryCode("41", "瑞士"),
-            CountryCode("43", "奥地利"),
-            CountryCode("46", "瑞典"),
-            CountryCode("47", "挪威"),
-            CountryCode("45", "丹麦"),
-            CountryCode("358", "芬兰"),
-            CountryCode("48", "波兰"),
-            CountryCode("420", "捷克"),
-            CountryCode("36", "匈牙利"),
-            CountryCode("30", "希腊"),
-            CountryCode("351", "葡萄牙"),
-            CountryCode("353", "爱尔兰"),
-            CountryCode("7", "俄罗斯 / 哈萨克斯坦"),
-            CountryCode("380", "乌克兰"),
-            CountryCode("90", "土耳其"),
-            CountryCode("972", "以色列"),
-            CountryCode("971", "阿联酋"),
-            CountryCode("966", "沙特阿拉伯"),
-            CountryCode("20", "埃及"),
-            CountryCode("27", "南非"),
-            CountryCode("234", "尼日利亚"),
-            CountryCode("254", "肯尼亚"),
-            CountryCode("61", "澳大利亚"),
-            CountryCode("64", "新西兰"),
-        )
-
-    /** 区号选择器：支持按住遥控器在列表里翻页，也能在搜索框按名称或区号过滤。 */
-    private fun pickCountryCode(
-        context: Context,
-        current: String,
-        onPick: (String) -> Unit,
-    ) {
-        val density = context.resources.displayMetrics.density
-        fun px(value: Int) = (value * density).toInt()
-        val search =
-            EditText(context).apply {
-                hint = "输入国家/地区名称或区号筛选"
-                isSingleLine = true
+    /** 只展示所参考官方 APK 登录配置默认项，不使用旧的全球区号选择器。 */
+    private fun pickCountryCode(context: Context, current: String, onPick: (String) -> Unit) {
+        val rows = PhoneLogin.regions
+        val names = rows.map { "${it.name}  +${it.code}" }.toTypedArray()
+        AlertDialog.Builder(context)
+            .setTitle("选择手机号区号")
+            .setSingleChoiceItems(names, rows.indexOfFirst { it.code == current }) { picker, index ->
+                onPick(rows[index].code)
+                picker.dismiss()
             }
-        val list = ListView(context)
-        fun label(rows: List<CountryCode>) = rows.map { "${it.name}  +${it.code}" }
-        var rows = countryCodes.sortedBy { if (it.code == current) "" else it.name }
-        list.adapter =
-            ArrayAdapter(context, android.R.layout.simple_list_item_1, label(rows))
-        var picker: AlertDialog? = null
-        search.addTextChangedListener(
-            object : TextWatcher {
-                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
-                override fun afterTextChanged(editable: Editable?) {
-                    val query = editable?.toString().orEmpty().trim()
-                    rows =
-                        countryCodes
-                            .filter {
-                                query.isEmpty() ||
-                                    it.name.contains(query) ||
-                                    it.code.startsWith(query.removePrefix("+"))
-                            }
-                            .sortedBy { if (it.code == current) "" else it.name }
-                    list.adapter =
-                        ArrayAdapter(context, android.R.layout.simple_list_item_1, label(rows))
-                }
-            }
-        )
-        list.setOnItemClickListener { _, _, position, _ ->
-            rows.getOrNull(position)?.let { onPick(it.code) }
-            picker?.dismiss()
-        }
-        val column =
-            LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(px(20), px(8), px(20), 0)
-                addView(search)
-                addView(list, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, px(260)))
-            }
-        picker =
-            AlertDialog.Builder(context)
-                .setTitle("选择国家/地区区号（当前 +$current）")
-                .setView(column)
-                .setNegativeButton("取消", null)
-                .create()
-        picker.show()
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     /** 需要重新发码或改用扫码时才打断用户；可重试的错误留在面板里显示。 */

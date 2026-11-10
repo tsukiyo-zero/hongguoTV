@@ -13,10 +13,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 
-/**
- * App passport 短信登录（`/passport/mobile/` 三个端点）：网页端已要求滑块，这条通道仍未要求；
- * 用例只验证请求构造、响应解析与错误分类，真实验证码与 sessionid 需实机验收。
- */
+/** 本地模拟仅验证请求、号码处理与失败分类；不向真实号码发码，不证明短信可达。 */
 class PhoneLoginTest {
 
     private fun client(
@@ -195,9 +192,46 @@ class PhoneLoginTest {
     }
 
     @Test
+    fun unsupportedRegionsAndMalformedNumbersAreRejectedBeforeNetwork() {
+        var calls = 0
+        val login = PhoneLogin(client { calls++; error("不得发送真实短信") })
+        for (number in listOf("+886 0912345678", "+1 2025550123", "+852 012345678", "+853 123", "+852 abc12345678")) {
+            org.junit.Assert.assertThrows(IllegalArgumentException::class.java) { login.send(number) }
+        }
+        assertEquals(0, calls)
+        assertEquals(listOf("86", "852", "853"), PhoneLogin.regions.map { it.code })
+    }
+
+    @Test
+    fun overseasSendUsesNormalizedNumberAndKeepsPlatformErrorsVisible() {
+        var calls = 0
+        val login = PhoneLogin(client { request ->
+            calls++
+            assertEquals("+852 12345678", request.url.queryParameter("mobile"))
+            200 to """{"message":"success","data":{"error_code":2046,"description":"请求被拒绝"}}"""
+        })
+        val failure = org.junit.Assert.assertThrows(PhoneLogin.Failure::class.java) {
+            login.send("+85212345678")
+        }
+        assertEquals(2046, failure.errorCode)
+        assertEquals(1, calls)
+        assertEquals("", login.ticket)
+    }
+
+    @Test
+    fun absentMaskedNumberDoesNotEchoFullNumberAsSent() {
+        val login = PhoneLogin(client { 200 to """{"message":"success","data":{"mobile_ticket":"test-only"}}""" })
+        val result = login.send("+85312345678")
+        assertEquals("+853 ******78", result.maskedMobile)
+    }
+
+    @Test
     fun formatAcceptsMainlandAndOverseasNumbers() {
         assertEquals("13800138000", PhoneLogin.format("86", "138 0013 8000"))
-        assertEquals("+886 912345678", PhoneLogin.format("886", "0912345678"))
+        assertEquals("+852 12345678", PhoneLogin.format("852", "1234-5678"))
+        assertEquals("+853 12345678", PhoneLogin.parse("+85312345678"))
+        assertEquals("+852 12345678", PhoneLogin.parse("+852 1234 5678"))
+        assertEquals("13800138000", PhoneLogin.parse("+8613800138000"))
         try {
             PhoneLogin.format("86", "12345")
             fail("expected invalid mainland number")
