@@ -2,7 +2,7 @@
 
 工程：Kotlin + Android View + Media3。最低 Android 6.0 / API 23；compileSdk、targetSdk 为 36。安装标识 `io.github.tsukiyo_zero.guoyingtv`，与旧原生包 `com.hongguotv.nativeapp`、React Native 包 `com.hongguotv` 的数据独立。Kotlin namespace 暂保留旧命名，Manifest 使用完整 Activity 类名，真正安装标识以 APK 的 applicationId 为准。
 
-当前正式版本为果映 TV 0.1.29 / versionCode 70，使用新包名。旧包名的 0.1.29 / 48 保留历史发布记录；新包需单独安装，不能覆盖旧包名；本机数据与登录态不自动迁移。备份恢复底层代码仍在，但当前设置页未接入入口，尚不能提供完整的图形迁移流程；重新登录后可获取账户内容。本机记录与账户内容不同，不能据此宣称本机记录已迁移。保持原签名与 Android 6 v1。
+当前正式版本为果映 TV 0.1.30 / versionCode 71，使用新包名。旧包名的 0.1.30 / 48 保留历史发布记录；新包需单独安装，不能覆盖旧包名；本机数据与登录态不自动迁移。备份恢复底层代码仍在，但当前设置页未接入入口，尚不能提供完整的图形迁移流程；重新登录后可获取账户内容。本机记录与账户内容不同，不能据此宣称本机记录已迁移。保持原签名与 Android 6 v1。
 
 桌面图标与应用内标识采用 C3 蓝紫渐变果实银幕图，TV 启动器提供「果映 TV」横幅。主图与生成提示词见 [品牌资源](artwork/README.md)；多密度桌面图标覆盖 Android 6+，本轮使用完整位图，不依赖透明拆层或自适应前景。
 
@@ -42,7 +42,7 @@
 
 上下换剧时复用缓存；若目标作品仍在预加载，则接续该任务，失败后退回前台加载，避免取消后重复解析与下载。同一 HTTP 分段中的视频数据边到达边交给播放器，不等待整个 512 KiB 分段完成。切换类型、换批、离开页面或退出仍取消过期任务并清理资源。
 
-本轮参考本地官方 App 6.5.5.32 中可识别的 TTVideoEngine、DataLoaderHelper 和短视频预加载组件，采用独立实现；静态分析不能确认官方实际启用的策略或参数。Media3 接入依据 [Android 官方预加载文档](https://developer.android.com/media/media3/exoplayer/preloading-media/preloadmanager)。此前首页加载优化已经用户验收并纳入正式 0.1.29；本轮分级预加载、签名上下文及首次路径优选仍待电视实机验收。没有与官方 App 进行设备测速对比，不承诺固定首帧耗时；缓存未命中时仍需要必要的推荐、播放地址和视频索引请求。
+本轮参考本地官方 App 6.5.5.32 中可识别的 TTVideoEngine、DataLoaderHelper 和短视频预加载组件，采用独立实现；静态分析不能确认官方实际启用的策略或参数。Media3 接入依据 [Android 官方预加载文档](https://developer.android.com/media/media3/exoplayer/preloading-media/preloadmanager)。此前首页加载优化已经用户验收并纳入正式 0.1.30；本轮分级预加载、签名上下文及首次路径优选仍待电视实机验收。没有与官方 App 进行设备测速对比，不承诺固定首帧耗时；缓存未命中时仍需要必要的推荐、播放地址和视频索引请求。
 
 日志只记录 `Home recommendations`、`Home category`、`Home detail`、`Home starter-cache hit`、`Home play-address`、`Home promoted in-flight preload` 与 `Home first-frame` 等阶段信息，不打印播放地址或账户信息。`first-frame` 从交给播放器开始计时，不包含此前推荐及地址请求耗时。
 
@@ -90,7 +90,7 @@
 
 ## 版本与签名
 
-调试时保持 `app/build.gradle.kts` 的 versionName/versionCode 不变，通过文件名区分测试包；正式发布由统一入口自动递增版本。环境变量 `HONGGUOTV_VERSION_CODE`、`HONGGUOTV_VERSION_NAME` 会覆盖文件中的默认值。当前正式版为 0.1.29（versionCode 70），后续正式发布再递增。分支名、APK 文件名或 Git 标签不会自动改变 APK 内部版本。
+调试时保持 `app/build.gradle.kts` 的 versionName/versionCode 不变，通过文件名区分测试包；正式发布由统一入口自动递增版本。环境变量 `HONGGUOTV_VERSION_CODE`、`HONGGUOTV_VERSION_NAME` 会覆盖文件中的默认值。当前正式版为 0.1.30（versionCode 71），后续正式发布再递增。分支名、APK 文件名或 Git 标签不会自动改变 APK 内部版本。
 
 开发 APK 使用本机 Debug 签名。电视已经安装的版本只能由相同包名、相同签名的新版覆盖；换电脑或改用其他签名可能无法覆盖安装。不要删除、替换现有签名密钥，不要将密钥或密码提交到仓库。
 
@@ -202,7 +202,7 @@ python3 scripts/release-tv.py --publish
 
 弹幕按服务端实际返回的时间区间连续补齐，重叠批次按真实 ID 去重；相同文字仅在五秒内合并计数，不因缓存条目多而隔条隐藏。轨道拥挤最多顺延三秒，极高密度时允许重叠，不承诺与其他应用数量完全相同。
 
-应用内更新在标准和常见安装入口均失败后，尝试系统 PackageInstaller 安装会话；安装包写入系统会话后，由系统提供确认页，仍需用户授权和确认。失败保留状态码提示及 U 盘安装途径，不保证所有 MIUI TV 固件支持。小米电视 4A 的真实更新效果仍待验收；旧版需手动覆盖安装一次修复包，后续在线更新才使用新逻辑。调试保持 0.1.29 / 70，不进行正式发布。
+应用内更新在标准和常见安装入口均失败后，尝试系统 PackageInstaller 安装会话；安装包写入系统会话后，由系统提供确认页，仍需用户授权和确认。失败保留状态码提示及 U 盘安装途径，不保证所有 MIUI TV 固件支持。小米电视 4A 的真实更新效果仍待验收；旧版需手动覆盖安装一次修复包，后续在线更新才使用新逻辑。调试保持 0.1.30 / 70，不进行正式发布。
 
 弹幕请求上下文补充修复：时间轴读取复用现有匿名注册会话，使用一致的 7.4.3.32 查询、UA 与签名上下文，并将实际 POST 正文纳入签名；跨时间段携带服务端续读游标。不使用账号 Cookie，不因结果稀疏循环注册或自动换身份，注册失败保留正常失败重试。普通评论列表沿用原请求流程。针对《天幕直播：古人每周来我家》148 集版第 46 集，旧请求首段仅返回 1 条；修改后的实际读取三段返回 9/13/9 条，共 31 个不同 ID，包含截图中缺失的皇亲、妙云和真好看相关内容。数量为该次匿名样本，不代表服务端固定总数或与官方展示完全一致，画面仍待用户验收。
 
