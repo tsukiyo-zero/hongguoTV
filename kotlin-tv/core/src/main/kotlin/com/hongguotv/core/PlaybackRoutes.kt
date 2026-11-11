@@ -14,7 +14,7 @@ internal class PlaybackRoutes {
         val available = routes.filter { health.getValue(it).blockedUntil <= now }
             .sortedByDescending { health.getValue(it).success }
         if (available.isNotEmpty()) {
-            if (speculative) return available.take(1)
+            if (speculative) return available.take(2)
             // GET 不适用于部分内容时，仍保留一次最早冷却的 POST 探测，避免只剩 GET 可选。
             return if (available.none { !it.get }) available + listOf(routes.filter { !it.get }.minBy { health.getValue(it).blockedUntil })
                 else available

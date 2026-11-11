@@ -3297,7 +3297,7 @@ class MainActivity : Activity() {
             return
         if (
             prefetchAttempts >= 3 ||
-                (prefetchAttempts > 0 && now - prefetchAttemptAt < 15_000) ||
+                (prefetchAttempts > 0 && now - prefetchAttemptAt < 3_000) ||
                 connectivity.isActiveNetworkMetered ||
                 !networkAvailable()
         )
@@ -3317,21 +3317,24 @@ class MainActivity : Activity() {
                 try {
                     val prepared =
                         scope.run {
-                            val opened =
-                                // 播放地址复用当前 Repository 的设备身份和会话；仅视频传输独立取消。
-                                openStream(
-                                    http,
-                                    repository,
-                                    id,
-                                    quality,
-                                    CodecCapabilities::supports,
-                                    initialBytes = 32 * 1024,
-                                    metadataAhead = metadataAhead,
-                                    speculative = true,
-                                ) {
-                                    it == null || CodecCapabilities.supports(it)
-                                } ?: throw java.io.IOException("没有电视可播放的清晰度")
-                            opened.video.also { remote = it }
+                            // 模型和视频头准备共同有界，切集接管时不能继续等待长时间的后台读取。
+                            RequestScope.withDeadline(System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(4)) {
+                                val opened =
+                                    // 播放地址复用当前 Repository 的设备身份和会话；仅视频传输独立取消。
+                                    openStream(
+                                        http,
+                                        repository,
+                                        id,
+                                        quality,
+                                        CodecCapabilities::supports,
+                                        initialBytes = 32 * 1024,
+                                        metadataAhead = metadataAhead,
+                                        speculative = true,
+                                    ) {
+                                        it == null || CodecCapabilities.supports(it)
+                                    } ?: throw java.io.IOException("没有电视可播放的清晰度")
+                                opened.video.also { remote = it }
+                            }
                         }
                     if (preparedNext.complete(ticket, key, prepared)) {
                         android.util.Log.i(

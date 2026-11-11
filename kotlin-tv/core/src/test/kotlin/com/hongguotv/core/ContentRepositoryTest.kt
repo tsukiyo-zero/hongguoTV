@@ -95,7 +95,7 @@ class ContentRepositoryTest {
     }
 
     @Test
-    fun backgroundOnlySamplesOnceAndStopsAtCooldownWithoutRegisteringAgain() {
+    fun backgroundProbesAtMostTwoRoutesAndStopsAtCooldownWithoutRegisteringAgain() {
         var registrations = 0
         var calls = 0
         val session = PlaybackDeviceSession {
@@ -116,6 +116,24 @@ class ContentRepositoryTest {
     }
 
     @Test
+    fun backgroundEmptyGetCanUseHealthyPostWithoutWaitingForAnotherWarmup() {
+        var registrations = 0
+        val methods = mutableListOf<String>()
+        val session = PlaybackDeviceSession {
+            registrations++
+            DeviceRegister.Registered("333", "444")
+        }
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            methods += request.method
+            fixtureResponse(request, if (request.method == "GET") "" else playbackModel)
+        }.build()
+        assertEquals(1, ContentRepository(http, playbackSession = session).streamLadder("123", speculative = true).renditions.size)
+        assertEquals(listOf("GET", "POST"), methods)
+        assertEquals(1, registrations)
+    }
+
+    @Test
     fun foregroundCallsShareOneDeadlineAndBackgroundHasSmallerBudget() {
         val budgets = mutableListOf<Long>()
         val deadlines = mutableListOf<Long>()
@@ -129,15 +147,15 @@ class ContentRepositoryTest {
         }.build()
         val repo = ContentRepository(http, playbackSession = session)
         assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
-        assertEquals(4, budgets.size)
+        assertEquals(5, budgets.size)
         assertEquals(1, deadlines.distinct().size)
         assertTrue(budgets.first() <= java.util.concurrent.TimeUnit.SECONDS.toNanos(8))
         assertTrue(budgets.zipWithNext().all { (a, b) -> b < a })
         budgets.clear()
         val fresh = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("555", "666") })
         assertThrows(EmptyPlaybackResponseException::class.java) { fresh.streamLadder("123", speculative = true) }
-        assertEquals(1, budgets.size)
-        assertTrue(budgets.single() <= java.util.concurrent.TimeUnit.SECONDS.toNanos(2))
+        assertEquals(2, budgets.size)
+        assertTrue(budgets.all { it <= java.util.concurrent.TimeUnit.SECONDS.toNanos(2) })
     }
 
     @Test
@@ -220,8 +238,8 @@ class ContentRepositoryTest {
             fixtureResponse(chain.request(), if (registrations >= 3) videoTabModel else "")
         }.build()
         val repo = ContentRepository(http, playbackSession = session)
-        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
-        assertThrows(java.io.InterruptedIOException::class.java) { scope.run { repo.streamLadder("123") } }
+        val cancelled = assertThrows(java.io.IOException::class.java) { scope.run { repo.streamLadder("123") } }
+        assertTrue(cancelled.message.orEmpty().contains("取消"))
         assertEquals(1, repo.streamLadder("123").renditions.size)
         assertEquals(3, registrations)
     }
@@ -264,8 +282,8 @@ class ContentRepositoryTest {
             }
         }.build()
         val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession(), sleep = {})
-        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
-        assertEquals(1, registrations)
+        assertEquals(1, repo.streamLadder("123").renditions.size)
+        assertEquals(2, registrations)
         assertEquals(1, repo.streamLadder("123").renditions.size)
         assertEquals(2, registrations)
         assertEquals(3, legacyCalls)
@@ -291,7 +309,7 @@ class ContentRepositoryTest {
                 .build()
         val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession(), sleep = {})
         val first = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
-        assertFalse(first.detail.orEmpty().contains("rotated"))
+        assertTrue(first.detail.orEmpty().contains("rotated=1"))
         val second = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
         assertTrue(second.detail.orEmpty().contains("rotated=1"))
         assertEquals(2, registrations.get())

@@ -838,7 +838,7 @@ constructor(
         else info
     }
 
-    /** 读取一集的可播档位；前台按会话路径健康度选择，后台只轻量准备一次。 */
+    /** 读取一集的可播档位；前台允许同轮恢复一次，后台仅轻量探测备用路径。 */
     @JvmOverloads
     fun streamLadder(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder {
         require(id.matches(Regex("[0-9]{1,30}")))
@@ -931,7 +931,9 @@ constructor(
                     var postCount = 0
                     var emptyPosts = 0
                     var attempts = 0
-                    while (attempts < (if (speculative) 1 else 4)) {
+                    // 原有四条路径全空后保留一次恢复探测，避免必须由用户再点重试。
+                    // 不延长共享截止时间；后台仅探测两条路径，仍不轮换身份。
+                    while (attempts < (if (speculative) 2 else 5)) {
                         if (pendingRoutes.isEmpty()) {
                             // 已知路径全部为空时，在本轮剩余额度内恢复身份，不先弹错误再重跑整轮。
                             if (!speculative && identity.routes.exhausted(clock())) {

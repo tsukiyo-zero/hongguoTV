@@ -105,10 +105,10 @@ class LowEndPlaybackTest {
     }
 
     @Test
-    fun nextEpisodeWarmupUsesThirtySecondsAndStableBufferedPlayback() {
+    fun nextEpisodeWarmupUsesFortyFiveSecondsAndStableBufferedPlayback() {
         assertTrue(PrefetchPolicy.canStart(32000, 60000, 1f, 1500, 5000))
-        assertTrue(PrefetchPolicy.canStart(150000, 180000, 1f, 3000, 10000))
-        assertFalse(PrefetchPolicy.canStart(149999, 180000, 1f, 3000, 10000))
+        assertTrue(PrefetchPolicy.canStart(135000, 180000, 1f, 3000, 10000))
+        assertFalse(PrefetchPolicy.canStart(134999, 180000, 1f, 3000, 10000))
         assertFalse(PrefetchPolicy.canStart(32000, 60000, 1f, 1499, 10000))
         assertFalse(PrefetchPolicy.canStart(32000, 60000, 1f, 3000, 4999))
         assertTrue(PrefetchPolicy.canStart(58000, 60000, 1f, 3000, 2000))

@@ -24,7 +24,7 @@ class PlaybackRoutesTest {
         assertTrue(routes.exhausted(1001))
         assertTrue(routes.plan(1001, true).isEmpty())
         assertEquals(1, routes.plan(1001, false).size)
-        assertEquals(1, PlaybackRoutes().plan(1001, true).size)
+        assertEquals(2, PlaybackRoutes().plan(1001, true).size)
     }
 
     @Test fun timeoutsDoNotMeanEveryPathWasEmptyAndFreshSessionHasNoOldCooldown() {
