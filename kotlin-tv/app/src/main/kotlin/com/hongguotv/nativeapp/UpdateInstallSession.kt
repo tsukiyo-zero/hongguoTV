@@ -14,6 +14,45 @@ import java.io.File
 
 /** 将已校验安装包交给系统会话，避免依赖厂商安装器组件名及外部文件读取权限。 */
 internal object UpdateInstallSession {
+    /** 只提取标准错误代号；系统原始正文可能包含路径，不写入日志或提示。 */
+    internal fun failureText(status: Int, legacy: Int?, detail: String?): String {
+        val reasons = mapOf(
+            "INSTALL_FAILED_USER_RESTRICTED" to "系统限制了本应用发起安装",
+            "INSTALL_FAILED_VERIFICATION_FAILURE" to "系统安装验证未通过",
+            "INSTALL_FAILED_VERIFICATION_TIMEOUT" to "系统安装验证超时",
+            "INSTALL_FAILED_NO_MATCHING_ABIS" to "安装包架构不匹配",
+            "INSTALL_FAILED_OLDER_SDK" to "系统版本低于安装包要求",
+            "INSTALL_FAILED_UPDATE_INCOMPATIBLE" to "已安装应用与新版签名不兼容",
+            "INSTALL_FAILED_VERSION_DOWNGRADE" to "系统拒绝安装较低版本",
+            "INSTALL_FAILED_INSUFFICIENT_STORAGE" to "系统安装空间不足",
+            "INSTALL_FAILED_MISSING_SHARED_LIBRARY" to "系统缺少安装包要求的共享库",
+        )
+        val legacySymbols = mapOf(
+            -111 to "INSTALL_FAILED_USER_RESTRICTED",
+            -22 to "INSTALL_FAILED_VERIFICATION_FAILURE",
+            -21 to "INSTALL_FAILED_VERIFICATION_TIMEOUT",
+            -113 to "INSTALL_FAILED_NO_MATCHING_ABIS",
+            -12 to "INSTALL_FAILED_OLDER_SDK",
+            -7 to "INSTALL_FAILED_UPDATE_INCOMPATIBLE",
+            -25 to "INSTALL_FAILED_VERSION_DOWNGRADE",
+            -4 to "INSTALL_FAILED_INSUFFICIENT_STORAGE",
+            -9 to "INSTALL_FAILED_MISSING_SHARED_LIBRARY",
+        )
+        val symbol = legacySymbols[legacy] ?: Regex("\\bINSTALL_FAILED_[A-Z_]+\\b")
+            .findAll(detail.orEmpty()).map { it.value }.firstOrNull { it in reasons }
+        val reason = symbol?.let(reasons::get) ?: when (status) {
+            PackageInstaller.STATUS_FAILURE_BLOCKED -> "系统阻止了安装"
+            PackageInstaller.STATUS_FAILURE_ABORTED -> "系统安装已取消"
+            PackageInstaller.STATUS_FAILURE_CONFLICT -> "安装包与已安装应用冲突"
+            PackageInstaller.STATUS_FAILURE_INVALID -> "系统判定安装包无效"
+            PackageInstaller.STATUS_FAILURE_STORAGE -> "系统安装空间不足"
+            PackageInstaller.STATUS_FAILURE_INCOMPATIBLE -> "系统报告安装不兼容，具体原因尚未确认"
+            else -> "系统安装未完成"
+        }
+        val codes = listOfNotNull("状态 $status", legacy?.let { "底层码 $it" }, symbol).joinToString("，")
+        return "$reason（$codes）。可用 U 盘手动覆盖安装，保留本机记录"
+    }
+
     fun submit(context: Context, apk: File): Int {
         val installer = context.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
@@ -75,12 +114,18 @@ class UpdateInstallResultActivity : Activity() {
             }
         } else {
             preferences.edit().remove("active").apply()
-            // 仅记录状态码，不记录可能包含文件路径的系统错误正文。
-            android.util.Log.i("HongguoTV", "Update session result status=$status")
+            // 底层错误码可区分厂商拒绝和安装包错误；不保存原始错误正文。
+            val legacyKey = "android.content.pm.extra.LEGACY_STATUS"
+            val legacy = if (intent.hasExtra(legacyKey)) intent.getIntExtra(legacyKey, 0) else null
+            android.util.Log.i("HongguoTV", "Update session result status=$status legacy=$legacy")
             if (status != PackageInstaller.STATUS_SUCCESS) {
-                val message = "系统安装未完成（状态 $status），可使用 U 盘安装"
+                val message = UpdateInstallSession.failureText(
+                    status, legacy, intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE),
+                )
                 preferences.edit().putString("result_text", message).apply()
                 Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            } else {
+                preferences.edit().remove("result_text").apply()
             }
         }
         finish()

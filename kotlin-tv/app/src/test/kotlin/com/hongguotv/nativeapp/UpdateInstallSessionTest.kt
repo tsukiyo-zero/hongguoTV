@@ -18,6 +18,52 @@ import org.robolectric.annotation.Config
 @Config(sdk = [23, 26])
 class UpdateInstallSessionTest {
     @Test
+    fun incompatibleResultKeepsLegacyCodeWithoutLeakingSystemMessage() {
+        val app = org.robolectric.RuntimeEnvironment.getApplication()
+        val preferences = app.getSharedPreferences("update_install_session", 0)
+        preferences.edit().putInt("active", 19).commit()
+        val intent = Intent(app, UpdateInstallResultActivity::class.java)
+            .putExtra(PackageInstaller.EXTRA_SESSION_ID, 19)
+            .putExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE_INCOMPATIBLE)
+            .putExtra("android.content.pm.extra.LEGACY_STATUS", -111)
+            .putExtra(PackageInstaller.EXTRA_STATUS_MESSAGE,
+                "INSTALL_FAILED_USER_RESTRICTED: /private/secret.apk token=private-value")
+        val controller = Robolectric.buildActivity(UpdateInstallResultActivity::class.java, intent).create()
+        val text = preferences.getString("result_text", "")!!
+        assertTrue(text.contains("系统限制了本应用发起安装"))
+        assertTrue(text.contains("底层码 -111"))
+        assertFalse(text.contains("secret"))
+        assertFalse(text.contains("private-value"))
+        assertNull(shadowOf(controller.get()).nextStartedActivity)
+        assertEquals(-1, preferences.getInt("active", -1))
+        controller.destroy()
+    }
+
+    @Test
+    fun unknownIncompatibleResultDoesNotInventADeviceRestriction() {
+        val text = UpdateInstallSession.failureText(7, null, "vendor message /private/test.apk")
+        assertTrue(text.contains("具体原因尚未确认"))
+        assertFalse(text.contains("系统限制"))
+        assertFalse(text.contains("private"))
+        assertFalse(text.contains("底层码"))
+        assertTrue(UpdateInstallSession.failureText(7, -111, null).contains("系统限制了本应用发起安装"))
+        assertTrue(UpdateInstallSession.failureText(7, -113, null).contains("安装包架构不匹配"))
+    }
+
+    @Test
+    fun successfulResultClearsPreviousFailureText() {
+        val app = org.robolectric.RuntimeEnvironment.getApplication()
+        val preferences = app.getSharedPreferences("update_install_session", 0)
+        preferences.edit().putInt("active", 20).putString("result_text", "旧失败").commit()
+        val intent = Intent(app, UpdateInstallResultActivity::class.java)
+            .putExtra(PackageInstaller.EXTRA_SESSION_ID, 20)
+            .putExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_SUCCESS)
+        val controller = Robolectric.buildActivity(UpdateInstallResultActivity::class.java, intent).create()
+        assertFalse(preferences.contains("result_text"))
+        controller.destroy()
+    }
+
+    @Test
     fun sessionSubmissionDoesNotRequireAnExternalInstallerActivity() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val activity = controller.get()
