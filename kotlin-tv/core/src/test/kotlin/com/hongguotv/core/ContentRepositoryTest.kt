@@ -350,10 +350,11 @@ class ContentRepositoryTest {
         assertNull(request.url.queryParameter("ts"))
             assertTrue(kotlin.math.abs(request.header("x-khronos")!!.toLong() -
                 request.url.queryParameter("_rticket")!!.toLong() / 1000) <= 1)
-        for (header in listOf("x-gorgon", "x-medusa", "x-argus", "x-ladon", "x-khronos", "x-helios"))
+        // 上游现在校验真签名：播放请求只发 fqapp 系的 x-argus/x-ladon，旧占位头必须去掉。
+        for (header in listOf("x-argus", "x-ladon", "x-khronos", "x-ss-req-ticket"))
             assertFalse(request.header(header).isNullOrBlank())
-        val ts = request.header("x-khronos")!!.toInt()
-        assertEquals(0, Signer().branch(request.url.encodedQuery!!, null, ts))
+        for (header in listOf("x-gorgon", "x-medusa", "x-helios"))
+            assertNull(request.header(header))
     }
 
     private fun fixtureResponse(request: Request, body: String, setCookie: Boolean = false) =
@@ -605,9 +606,11 @@ class ContentRepositoryTest {
         }
         for (request in requests) {
             assertEquals("POST", request.method)
-            for (header in listOf("x-gorgon", "x-medusa", "x-argus", "x-ladon", "x-khronos", "x-helios")) assertNotNull(
-                request.header(header)
-            )
+            // 播放请求只带 fqapp 系真签名；占位头不再发送。
+            for (header in listOf("x-argus", "x-ladon", "x-khronos", "x-ss-req-ticket"))
+                assertNotNull(request.header(header))
+            for (header in listOf("x-gorgon", "x-medusa", "x-helios"))
+                assertNull(request.header(header))
             assertTrue(request.header("User-Agent").orEmpty().startsWith("com.phoenix.read/"))
             for (key in listOf("iid", "device_id")) {
                 val value = request.url.queryParameter(key)!!
@@ -770,8 +773,9 @@ class ContentRepositoryTest {
             assertTrue(kotlin.math.abs(request.header("x-khronos")!!.toLong() -
                 request.url.queryParameter("_rticket")!!.toLong() / 1000) <= 1)
         }
-        assertNotEquals(requests[0].header("x-gorgon"), requests[1].header("x-gorgon"))
-        assertNotEquals(requests[0].header("x-medusa"), requests[1].header("x-medusa"))
+        // 时间戳参与真签名：换路重试必须重新签名，不能复用旧串。
+        assertNotEquals(requests[0].header("x-argus"), requests[1].header("x-argus"))
+        assertNotEquals(requests[0].header("x-khronos"), requests[1].header("x-khronos"))
         // HTTP/2 重试通过独立连接池隔离，不依赖 Connection 请求头。
         // 实际连接序号由 PlaybackRetryConnectionTest 验证。
         assertNull(requests[0].header("Connection"))
