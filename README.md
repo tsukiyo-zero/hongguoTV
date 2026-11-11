@@ -8,7 +8,7 @@ Android TV 使用 `kotlin-tv/` 中的 Kotlin 原生客户端，支持 **Android 
 
 | 内容 | 状态 |
 | --- | --- |
-| 已发布 TV 正式版 | **0.1.30（versionCode 71）**，标签 `kotlin-v0.1.30`，包名 `io.github.tsukiyo_zero.guoyingtv` |
+| 已发布 TV 正式版 | **0.1.31（versionCode 72）**，标签 `kotlin-v0.1.31`，包名 `io.github.tsukiyo_zero.guoyingtv` |
 | 当前分支新增内容 | 显示名称「果映 TV」、新包名、C3 图标与 TV 横幅、遥控器三栏搜索；已实现并完成自动检查 |
 | 稳定分支 | `main`；功能合并、生成测试包和发布 Release 是不同步骤 |
 
@@ -16,7 +16,7 @@ Android TV 使用 `kotlin-tv/` 中的 Kotlin 原生客户端，支持 **Android 
 
 ## Android TV 下载、安装与更新
 
-[GitHub TV 0.1.30 下载](https://github.com/tsukiyo-zero/hongguoTV/releases/tag/kotlin-v0.1.30) · [GitCode 发布记录](https://gitcode.com/tsukiyo-zero/hongguoTV/releases)
+[GitHub TV 0.1.31 下载](https://github.com/tsukiyo-zero/hongguoTV/releases/tag/kotlin-v0.1.31) · [GitCode 发布记录](https://gitcode.com/tsukiyo-zero/hongguoTV/releases)
 
 正式 TV 安装包通过 GitHub 和 GitCode 双平台发布；**应用内更新读取 GitCode**。首次安装从正式 Release 下载 APK，在电视上确认安装。后续同包名版本可在「设置 → 版本与更新」检查、下载并校验更新包，最后交给 Android 系统确认安装；无需每次手动到 GitHub 下载，也不支持静默安装。 Android 6/7 会依次尝试标准安装入口与 APK 查看入口，无法打开时尝试系统安全设置；厂商 ROM 兼容性仍需实机确认。若旧版更新入口无法打开，可从正式 Release 下载同包名、同签名 APK 手动覆盖一次，保留本机数据。
 
@@ -265,7 +265,7 @@ TV 正式发布提供统一入口：`python3 scripts/release-tv.py` 只读预演
 
 弹幕按服务端实际返回的时间区间连续补齐，重叠批次按真实 ID 去重；相同文字仅在五秒内合并计数，不因缓存条目多而隔条隐藏。轨道拥挤最多顺延三秒，极高密度时允许重叠，不承诺与其他应用数量完全相同。
 
-应用内更新在标准和常见安装入口均失败后，尝试系统 PackageInstaller 安装会话；安装包写入系统会话后，由系统提供确认页，仍需用户授权和确认。失败保留状态码提示及 U 盘安装途径，不保证所有 MIUI TV 固件支持。小米电视 4A 的真实更新效果仍待验收；旧版需手动覆盖安装一次修复包，后续在线更新才使用新逻辑。调试保持 0.1.30 / 70，不进行正式发布。
+应用内更新在标准和常见安装入口均失败后，尝试系统 PackageInstaller 安装会话；安装包写入系统会话后，由系统提供确认页，仍需用户授权和确认。失败保留状态码提示及 U 盘安装途径，不保证所有 MIUI TV 固件支持。小米电视 4A 的真实更新效果仍待验收；旧版需手动覆盖安装一次修复包，后续在线更新才使用新逻辑。调试保持 0.1.31 / 70，不进行正式发布。
 
 弹幕请求上下文补充修复：时间轴读取复用现有匿名注册会话，使用一致的 7.4.3.32 查询、UA 与签名上下文，并将实际 POST 正文纳入签名；跨时间段携带服务端续读游标。不使用账号 Cookie，不因结果稀疏循环注册或自动换身份，注册失败保留正常失败重试。普通评论列表沿用原请求流程。针对《天幕直播：古人每周来我家》148 集版第 46 集，旧请求首段仅返回 1 条；修改后的实际读取三段返回 9/13/9 条，共 31 个不同 ID，包含截图中缺失的皇亲、妙云和真好看相关内容。数量为该次匿名样本，不代表服务端固定总数或与官方展示完全一致，画面仍待用户验收。
 
