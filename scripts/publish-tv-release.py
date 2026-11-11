@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import time
 import sys
 import urllib.error
 import urllib.parse
@@ -26,21 +27,29 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None  # Never forward API credentials to another host.
 
 
-def request(url, method='GET', data=None, headers=None, missing=False, raw=False):
+def request(url, method='GET', data=None, headers=None, missing=False, raw=False, attempts=3):
+    """带重试的请求：GitHub 在国内网络下会间歇性 SSL EOF / 5xx，一次失败不应中断整条发布。"""
     if urllib.parse.urlsplit(url).scheme != 'https':
         raise Failure('Refusing non-HTTPS request')
-    req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
-    try:
-        with urllib.request.build_opener(NoRedirect).open(req, timeout=120) as response:
-            body = response.read()
-            return body if raw else (json.loads(body) if body else {})
-    except urllib.error.HTTPError as error:
-        if missing and error.code == 404:
-            return None
-        # Do not print URLs, signed upload links, response bodies or tokens.
-        raise Failure(f'HTTP {error.code}: request failed; check token permissions and release state') from None
-    except (OSError, ValueError):
-        raise Failure('Network request or JSON response failed; retry the command') from None
+    for attempt in range(attempts):
+        req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+        try:
+            with urllib.request.build_opener(NoRedirect).open(req, timeout=120) as response:
+                body = response.read()
+                return body if raw else (json.loads(body) if body else {})
+        except urllib.error.HTTPError as error:
+            if missing and error.code == 404:
+                return None
+            if error.code >= 500 and attempt + 1 < attempts:
+                time.sleep(2 * (attempt + 1))
+                continue
+            # Do not print URLs, signed upload links, response bodies or tokens.
+            raise Failure(f'HTTP {error.code}: request failed; check token permissions and release state') from None
+        except (OSError, ValueError):
+            if attempt + 1 < attempts:
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise Failure('Network request or JSON response failed; retry the command') from None
 
 
 def configure():

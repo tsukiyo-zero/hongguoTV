@@ -11,6 +11,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -63,19 +65,49 @@ def source_version(text):
     return version.group(1), int(code.group(1))
 
 
-def read_public(url, limit=80*1024*1024):
+def mirror_asset_url(url):
+    """GitHub 附件直链 → GitCode 同路径；其他域名返回 None。"""
+    prefix = 'https://github.com/tsukiyo-zero/hongguoTV/releases/download/'
+    if url.startswith(prefix):
+        return 'https://gitcode.com/tsukiyo-zero/hongguoTV/releases/download/' + url[len(prefix):]
+    return None
+
+
+def read_public(url, limit=80*1024*1024, _from_mirror=False):
     host = urllib.parse.urlsplit(url).hostname or ''
     if urllib.parse.urlsplit(url).scheme != 'https' or not (
         host in ('github.com', 'api.github.com', 'gitcode.com', 'api.gitcode.com') or host.endswith('.gitcode.com')):
         raise Failure('Unexpected public asset host')
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'hongguotv-release'}), timeout=120) as response:
-            data = response.read(limit+1)
-        if len(data)>limit:
-            raise Failure('Public asset exceeds size limit')
-        return data
-    except (OSError, ValueError):
-        raise Failure('Anonymous asset download failed; retry later') from None
+    # GitHub 的 release 附件直链偶发 504；先重试，再退回 GitCode 上同路径的同一份附件。
+    # 两平台每次都上传同一套文件，镜像兜底不改变“清单与实物一致”的校验语义。
+    attempts = 2
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'hongguotv-release'}), timeout=120) as response:
+                data = response.read(limit+1)
+            if len(data)>limit:
+                raise Failure('Public asset exceeds size limit')
+            return data
+        except urllib.error.HTTPError as error:
+            # 404 明确表示该平台没有这个附件（历史版本在 GitCode 上常见），不重试、不镜像。
+            if error.code in (404, 410):
+                raise Failure(f'HTTP {error.code}: asset missing') from None
+            # 5xx 多为网关超时：先重试，仍失败再退回另一个平台的同路径附件。
+            if attempt + 1 < attempts:
+                time.sleep(2)
+                continue
+            mirror = None if _from_mirror else mirror_asset_url(url)
+            if mirror:
+                return read_public(mirror, limit, _from_mirror=True)
+            raise Failure(f'HTTP {error.code}: asset download failed') from None
+        except (OSError, ValueError):
+            if attempt + 1 < attempts:
+                time.sleep(2)
+                continue
+            mirror = None if _from_mirror else mirror_asset_url(url)
+            if mirror:
+                return read_public(mirror, limit, _from_mirror=True)
+            raise Failure('Anonymous asset download failed; retry later') from None
 
 
 def releases(api):
@@ -91,8 +123,21 @@ def releases(api):
 
 
 def manifest(release):
+    """读取一个已发布版本的清单；该平台缺附件时返回 None（历史版本在 GitCode 上常见）。"""
     asset = next((a for a in release.get('assets', []) if a.get('name')=='update.json'), None)
-    if asset is None:
+    if asset is not None:
+        try:
+            data = json.loads(read_public(asset['browser_download_url'], 128*1024))
+            if (data['tag'] != release['tag_name'] or data['packageName'] not in ('com.hongguotv.nativeapp','io.github.tsukiyo_zero.guoyingtv')
+                    or not re.fullmatch(re.escape(data['tag'].removeprefix('kotlin-v'))+r'(?:-[0-9A-Za-z.+-]+)?', data['versionName'])
+                    or not isinstance(data['versionCode'], int) or not 1<=data['versionCode']<=2147483647):
+                raise Failure('Published manifest identity/version mismatch')
+            return data
+        except Failure as error:
+            if 'asset missing' not in str(error):
+                raise
+            # 附件被删或未同步：退回用 APK 元数据判断，避免整体发布被历史数据卡死。
+    if True:
         # Early releases predate updater manifests. Read actual APK metadata instead of
         # guessing a code from the tag or silently ignoring a possibly higher versionCode.
         candidates = [a for a in release.get('assets', []) if a.get('name', '').endswith('.apk')]
@@ -101,7 +146,12 @@ def manifest(release):
         _, build_tools = tools_env()
         found = []
         for apk in candidates:
-            raw = read_public(apk['browser_download_url'])
+            try:
+                raw = read_public(apk['browser_download_url'])
+            except Failure as error:
+                if 'asset missing' in str(error):
+                    continue
+                raise
             with tempfile.TemporaryDirectory(prefix='hongguotv-release-inspect-') as temp:
                 path = Path(temp)/'baseline.apk'
                 path.write_bytes(raw)
@@ -116,14 +166,11 @@ def manifest(release):
             found.append(dict(tag=release['tag_name'], packageName=fields['name'], versionName=fields['versionName'],
                               versionCode=code, apk=dict(name=apk['name'], size=len(raw), sha256=hashlib.sha256(raw).hexdigest())))
         if not found:
-            raise Failure('Historical release contains no recognized TV APK')
+            # 该平台已没有可读的 APK（附件被删或未同步）：跳过这个历史版本，
+            # 版本规划用其他平台/更新的版本即可。
+            return None
         return max(found, key=lambda m: m['versionCode'])
-    data = json.loads(read_public(asset['browser_download_url'], 128*1024))
-    if (data['tag'] != release['tag_name'] or data['packageName'] not in ('com.hongguotv.nativeapp','io.github.tsukiyo_zero.guoyingtv')
-            or not re.fullmatch(re.escape(data['tag'].removeprefix('kotlin-v'))+r'(?:-[0-9A-Za-z.+-]+)?', data['versionName'])
-            or not isinstance(data['versionCode'], int) or not 1<=data['versionCode']<=2147483647):
-        raise Failure('Published manifest identity/version mismatch')
-    return data
+
 
 
 def select_version(source, published, occupied, override=None):
@@ -142,7 +189,10 @@ def inventory(apis, override=None):
     stable = [(name, r) for name, rows in all_releases.items() for r in rows
               if not r.get('draft') and not r.get('prerelease')]
     with ThreadPoolExecutor(max_workers=4) as pool:
-        observed = list(pool.map(lambda item: (item[0], item[1], manifest(item[1])), stable))
+        observed = [
+            row for row in pool.map(lambda item: (item[0], item[1], manifest(item[1])), stable)
+            if row[2] is not None
+        ]
     if not observed:
         raise Failure('No published baseline; initial release requires manual preparation')
     occupied = {r['tag_name'] for rows in all_releases.values() for r in rows}
