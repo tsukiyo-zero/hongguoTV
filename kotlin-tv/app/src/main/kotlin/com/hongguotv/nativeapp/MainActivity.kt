@@ -602,7 +602,10 @@ class MainActivity : Activity() {
         (io as? java.util.concurrent.ThreadPoolExecutor)?.purge()
     }
 
-    private fun invalidatePage() {
+    private fun invalidatePage() = invalidatePageKeepingPrepared(null)
+
+    private fun invalidatePageKeepingPrepared(keepPreparedPlaybackId: String?) {
+        repository.discardPreparedPlaybackModels(keepPreparedPlaybackId)
         cancelNextSeason()
         generation++
         cancelWork()
@@ -2864,7 +2867,7 @@ class MainActivity : Activity() {
         )
         saveProgress()
         library.flush()
-        invalidatePage()
+        invalidatePageKeepingPrepared(if (!recovering && !playError && !autoDowngrade) data.episodes[selectedIndex] else null)
         relayStopAsync() // 换集即结束上一会话；伴机兜底会另起新会话
         favoriteMonitor.stop()
         releaseCatalogViews()

@@ -75,6 +75,10 @@ class PlaybackDeviceSession(
     private var cdid = UUID.randomUUID().toString()
     private var ready: Profile? = null
 
+    /** 只检查已有会话，不因缓存检查触发设备注册。 */
+    @Synchronized
+    internal fun currentProfile(): Profile? = ready
+
     @Synchronized
     internal fun profile(http: OkHttpClient): Profile {
         ready?.let {

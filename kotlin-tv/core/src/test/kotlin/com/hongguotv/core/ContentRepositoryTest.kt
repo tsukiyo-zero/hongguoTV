@@ -17,6 +17,142 @@ class ContentRepositoryTest {
         """{"data":{"123":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}}"""
 
     @Test
+    fun speculativeModelSurvivesWarmupFailureAndIsClaimedByForegroundOnlyOnce() {
+        var reads = 0
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            reads++
+            fixtureResponse(chain.request(), videoTabModel)
+        }.build()
+        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
+        repo.streamLadder("123", speculative = true)
+        repo.streamLadder("123", speculative = true)
+        assertEquals(1, reads)
+        repo.streamLadder("123")
+        assertEquals(1, reads)
+        repo.streamLadder("123")
+        assertEquals(2, reads)
+    }
+
+    @Test
+    fun preparedModelExpiresAndCannotCrossDeviceReplacement() {
+        var now = 1000L
+        var reads = 0
+        var registrations = 0
+        val session = PlaybackDeviceSession { DeviceRegister.Registered("${333 + ++registrations}", "444") }
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            reads++
+            fixtureResponse(chain.request(), videoTabModel)
+        }.build()
+        val repo = ContentRepository(http, clock = { now }, playbackSession = session)
+        repo.streamLadder("123", speculative = true)
+        now += 60_001
+        repo.streamLadder("123")
+        assertEquals(2, reads)
+        repo.streamLadder("123", speculative = true)
+        assertTrue(session.rotate(http))
+        repo.streamLadder("123")
+        assertEquals(4, reads)
+    }
+
+    @Test
+    fun explicitDiscardForcesFreshModelButTargetTransitionCanKeepItsModel() {
+        var reads = 0
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            reads++
+            fixtureResponse(chain.request(), videoTabModel)
+        }.build()
+        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
+        repo.streamLadder("123", speculative = true)
+        repo.discardPreparedPlaybackModels("123")
+        repo.streamLadder("123")
+        assertEquals(1, reads)
+        repo.streamLadder("123", speculative = true)
+        repo.discardPreparedPlaybackModels()
+        repo.streamLadder("123")
+        assertEquals(3, reads)
+    }
+
+    @Test
+    fun discardedInFlightModelCannotRefillPreparedCache() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val finish = java.util.concurrent.CountDownLatch(1)
+        val reads = AtomicInteger()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            if (reads.incrementAndGet() == 1) {
+                entered.countDown()
+                assertTrue(finish.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            }
+            fixtureResponse(chain.request(), videoTabModel)
+        }.build()
+        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val pending = worker.submit<StreamLadder> { repo.streamLadder("123", speculative = true) }
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            repo.discardPreparedPlaybackModels()
+            finish.countDown()
+            pending.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            repo.streamLadder("123")
+            assertEquals(2, reads.get())
+        } finally {
+            finish.countDown()
+            worker.shutdownNow()
+        }
+    }
+
+    @Test
+    fun cancelledSpeculationDoesNotPublishPreparedModel() {
+        var reads = 0
+        val scope = RequestScope()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            if (++reads == 1) scope.cancel()
+            fixtureResponse(chain.request(), videoTabModel)
+        }.build()
+        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
+        assertThrows(java.io.InterruptedIOException::class.java) {
+            scope.run { repo.streamLadder("123", speculative = true) }
+        }
+        repo.streamLadder("123")
+        assertEquals(2, reads)
+    }
+
+    @Test
+    fun preparedModelCacheRetainsAtMostSixEpisodes() {
+        var reads = 0
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            reads++
+            val id = chain.request().url.queryParameter("video_id")!!
+            fixtureResponse(chain.request(), videoTabModel.replace("\"123\"", "\"$id\""))
+        }.build()
+        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") })
+        (1..7).forEach { repo.streamLadder(it.toString(), speculative = true) }
+        repo.streamLadder("2")
+        assertEquals(7, reads)
+        repo.streamLadder("1")
+        assertEquals(8, reads)
+    }
+
+    @Test
+    fun batchedUpcomingModelsCannotCrossDeviceReplacement() {
+        var posts = 0
+        var registrations = 0
+        val session = PlaybackDeviceSession { DeviceRegister.Registered("${333 + ++registrations}", "444") }
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            if (request.method == "GET") fixtureResponse(request, "")
+            else {
+                posts++
+                fixtureResponse(request, batchPlaybackFixture(playbackRequestIds(request)))
+            }
+        }.build()
+        val repo = ContentRepository(http, playbackSession = session)
+        repo.streamLadder("123", listOf("456"))
+        assertTrue(session.rotate(http))
+        repo.streamLadder("456")
+        assertEquals(2, posts)
+    }
+
+    @Test
     fun previewModelCanBeHandedToAnotherRepositoryOnceWithoutDuplicatingRequest() {
         var reads = 0
         val session = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }

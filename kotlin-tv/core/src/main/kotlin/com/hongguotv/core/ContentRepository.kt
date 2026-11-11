@@ -212,11 +212,30 @@ constructor(
 
     private val searchCursors = linkedMapOf<Triple<ContentType, String, Int>, SearchCursor>()
 
-    private data class UpcomingPlaybackModel(val entry: JSONObject, val savedAt: Long)
+    private data class UpcomingPlaybackModel(
+        val entry: JSONObject,
+        val savedAt: Long,
+        val identity: PlaybackDeviceSession.Profile,
+    )
 
     private val upcomingPlaybackModels = linkedMapOf<String, UpcomingPlaybackModel>()
     private val playbackModelOwner = Any()
     private val requestedPlaybackModels = linkedSetOf<String>()
+
+    private class PreparedPlaybackModel(val startedAt: Long) {
+        var savedAt = startedAt
+        var identity: PlaybackDeviceSession.Profile? = null
+        var ladder: StreamLadder? = null
+    }
+    private val preparedPlaybackModels = linkedMapOf<String, PreparedPlaybackModel>()
+
+    /** 离开页面或显式重试时清理；切集只保留目标集和它尚在进行的准备。 */
+    @JvmOverloads
+    fun discardPreparedPlaybackModels(keepEpisodeId: String? = null) {
+        synchronized(preparedPlaybackModels) {
+            preparedPlaybackModels.keys.removeAll { it != keepEpisodeId }
+        }
+    }
 
     // 构造并执行内容请求，统一检查 HTTP 状态和响应大小；仅按规则重试临时故障。
     private fun text(
@@ -843,6 +862,43 @@ constructor(
     fun streamLadder(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder {
         require(id.matches(Regex("[0-9]{1,30}")))
         require(metadataAhead.size <= 2 && metadataAhead.all { it.matches(Regex("[0-9]{1,30}")) })
+        RequestScope.ensureActive()
+        var preparedIdentity = playbackSession.currentProfile()
+        val preparedTicket = synchronized(preparedPlaybackModels) {
+            val now = clock()
+            preparedPlaybackModels.entries.removeAll {
+                now - it.value.savedAt !in 0..60_000 ||
+                    it.value.identity?.let { identity -> identity !== preparedIdentity } == true
+            }
+            val ready = preparedPlaybackModels[id]?.ladder
+            if (ready != null) {
+                RequestScope.ensureActive()
+                // 后台视频头失败可以继续使用模型；正式领取后立即删除，后续重试仍走网络。
+                if (!speculative) {
+                    preparedPlaybackModels.remove(id)
+                    resetPlaybackFailures()
+                }
+                return ready
+            }
+            if (speculative) PreparedPlaybackModel(now).also {
+                preparedPlaybackModels[id] = it
+                while (preparedPlaybackModels.size > 6) preparedPlaybackModels.remove(preparedPlaybackModels.keys.first())
+            } else null
+        }
+        fun prepared(ladder: StreamLadder): StreamLadder {
+            RequestScope.ensureActive()
+            if (preparedTicket != null && ladder.renditions.isNotEmpty()) synchronized(preparedPlaybackModels) {
+                RequestScope.ensureActive()
+                // 清理过的旧任务不能回填；身份变化后也不能借新身份复用旧模型。
+                if (preparedPlaybackModels[id] === preparedTicket && preparedIdentity != null &&
+                    playbackSession.currentProfile() === preparedIdentity) {
+                    preparedTicket.savedAt = clock()
+                    preparedTicket.identity = preparedIdentity
+                    preparedTicket.ladder = ladder
+                }
+            }
+            return ladder
+        }
         val firstRead = synchronized(requestedPlaybackModels) {
             val first = requestedPlaybackModels.add(id)
             while (requestedPlaybackModels.size > 64) requestedPlaybackModels.remove(requestedPlaybackModels.first())
@@ -852,7 +908,10 @@ constructor(
         val cached =
             synchronized(upcomingPlaybackModels) {
                 val now = clock()
-                upcomingPlaybackModels.entries.removeAll { now - it.value.savedAt !in 0..60_000 }
+                upcomingPlaybackModels.entries.removeAll {
+                    now - it.value.savedAt !in 0..60_000 ||
+                        it.value.identity !== playbackSession.currentProfile()
+                }
                 upcomingPlaybackModels.remove(id)?.entry
             } ?: playbackSession.takeModel(id, playbackModelOwner, clock()).takeIf { firstRead }
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(if (speculative) 2000 else 8000)
@@ -975,6 +1034,7 @@ constructor(
                             if (model == null || (model.optJSONArray("video_list")?.length() ?: 0) == 0 && !model.has("fallback_api"))
                                 throw IOException("播放信息格式异常")
                             current = row
+                            preparedIdentity = identity
                             RequestScope.ensureActive()
                             identity.offerModel(id, row, playbackModelOwner, clock())
                             identity.routes.success(route, clock())
@@ -1023,7 +1083,7 @@ constructor(
                                 }
                                 ?.let {
                                     upcomingPlaybackModels[next] =
-                                        UpcomingPlaybackModel(it, clock())
+                                        UpcomingPlaybackModel(it, clock(), identity)
                                 }
                         }
                         while (upcomingPlaybackModels.size > 6) upcomingPlaybackModels.remove(
@@ -1073,7 +1133,7 @@ constructor(
                     }
                     .getOrNull()
             }
-        if (inline.isNotEmpty()) return StreamLadder(inline)
+        if (inline.isNotEmpty()) return prepared(StreamLadder(inline))
         val raw = model.opt("fallback_api")
         val fallback =
             when (raw) {
@@ -1151,7 +1211,7 @@ constructor(
                     .getOrNull()
             }
         if (renditions.isEmpty()) throw IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
-        return StreamLadder(renditions)
+        return prepared(StreamLadder(renditions))
     }
 
     private fun dimension(o: JSONObject, vararg keys: String): Int? {
