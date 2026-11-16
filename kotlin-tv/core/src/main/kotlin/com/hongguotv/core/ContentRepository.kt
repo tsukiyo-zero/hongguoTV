@@ -856,9 +856,63 @@ constructor(
         else info
     }
 
-    /** 读取一集的可播档位；前台按会话路径健康度选择，后台只轻量准备一次。 */
+    /** 使用已实测的新签名协议；前台八秒、后台两秒，后台不得触发设备注册。 */
     @JvmOverloads
     fun streamLadder(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder {
+        require(id.matches(Regex("[0-9]{1,30}")))
+        require(metadataAhead.size <= 2 && metadataAhead.all { it.matches(Regex("[0-9]{1,30}")) })
+        RequestScope.ensureActive()
+        val firstRead = synchronized(requestedPlaybackModels) { requestedPlaybackModels.add(id).also {
+            while (requestedPlaybackModels.size > 64) requestedPlaybackModels.remove(requestedPlaybackModels.first())
+        } }
+        val handoff = if (firstRead) playbackSession.takeModel(id, playbackModelOwner, clock()) else null
+        if (handoff != null) return parsePlaybackEntry(handoff)
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(if (speculative) 2000 else 8000)
+        val entry = RequestScope.withDeadline(deadline) {
+            fun transport(): OkHttpClient {
+                val remaining = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())
+                if (remaining <= 0) throw java.net.SocketTimeoutException("播放信息读取超时")
+                return http.newBuilder().connectTimeout(minOf(remaining, 4000), TimeUnit.MILLISECONDS)
+                    .readTimeout(minOf(remaining, 4000), TimeUnit.MILLISECONDS)
+                    .callTimeout(remaining, TimeUnit.MILLISECONDS).build()
+            }
+            val identity = if (speculative) playbackSession.currentProfile()
+                ?: throw IOException("后台播放准备等待前台设备注册")
+                else playbackSession.profile(transport())
+            fun fetch(profile: PlaybackDeviceSession.Profile, fresh: Boolean = false): JSONObject {
+                val client = transport().let {
+                    if (fresh) it.newBuilder().connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS)).build() else it
+                }
+                return try {
+                    MobilePlayback.model(id, profile.values, client, MobilePlayback.signer, clock())
+                } finally {
+                    if (fresh) client.connectionPool.evictAll()
+                }
+            }
+            var owner = identity
+            val model = try { fetch(identity) } catch (error: EmptyPlaybackResponseException) {
+                RequestScope.ensureActive()
+                val mayRotate = synchronized(playbackIdentityLock) {
+                    if (!speculative && (!emptyPlaybackRotated || clock() - playbackRotationAt >= 30_000)) {
+                        emptyPlaybackRotated = true
+                        playbackRotationAt = clock()
+                        true
+                    } else false
+                }
+                if (!mayRotate || !playbackSession.rotate(transport(), identity)) throw error
+                owner = playbackSession.profile(transport())
+                fetch(owner, fresh = true)
+            }
+            RequestScope.ensureActive()
+            owner.offerModel(id, model, playbackModelOwner, clock())
+            model
+        }
+        return parsePlaybackEntry(entry)
+    }
+
+    /** 保留旧传输供离线协议回归使用；正式播放只走上面的 v5 入口。 */
+    @JvmOverloads
+    internal fun legacyStreamLadder(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder {
         require(id.matches(Regex("[0-9]{1,30}")))
         require(metadataAhead.size <= 2 && metadataAhead.all { it.matches(Regex("[0-9]{1,30}")) })
         val firstRead = synchronized(requestedPlaybackModels) {
@@ -1048,8 +1102,13 @@ constructor(
                     }
                     current
                 }
-        val model = entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
         if (cached != null && !speculative) resetPlaybackFailures()
+        return parsePlaybackEntry(entry)
+    }
+
+    /** 新旧传输共用解析和解密，避免更换接口时放宽电视编码及内容密钥校验。 */
+    private fun parsePlaybackEntry(entry: JSONObject): StreamLadder {
+        val model = entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
         // The current model already carries plain media URLs, dimensions and CENC keys.
         // Only use the legacy fallback endpoint when this shape has no usable rendition.
         val inline =
