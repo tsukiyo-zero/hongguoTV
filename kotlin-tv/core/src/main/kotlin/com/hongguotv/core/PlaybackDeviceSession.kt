@@ -84,6 +84,10 @@ class PlaybackDeviceSession(
         return toProfile(registerDevice(http)).also { ready = it }
     }
 
+    /** 仅查看已注册身份，供后台准备使用，不触发网络注册。 */
+    @Synchronized
+    internal fun currentProfile(): Profile? = ready
+
     @Synchronized
     internal fun takeModel(id: String, owner: Any, now: Long) = ready?.takeModel(id, owner, now)
 

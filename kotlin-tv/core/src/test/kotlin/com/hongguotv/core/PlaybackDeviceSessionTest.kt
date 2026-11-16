@@ -99,8 +99,8 @@ class PlaybackDeviceSessionTest {
                 }
                 .build()
         val session = PlaybackDeviceSession()
-        ContentRepository(http, playbackSession = session).streamLadder("123")
-        ContentRepository(http, playbackSession = session).streamLadder("123")
+        ContentRepository(http, playbackSession = session).legacyStreamLadder("123")
+        ContentRepository(http, playbackSession = session).legacyStreamLadder("123")
         assertEquals(1, registrations)
         // 第二个仓库接收首页刚取到的同集模型，不重复请求。
         assertEquals(2, models)
@@ -153,7 +153,7 @@ class PlaybackDeviceSessionTest {
             val repo =
                 ContentRepository(http, playbackSession = PlaybackDeviceSession { registered })
             assertThrows(PlaybackDeviceRegistrationException::class.java) {
-                repo.streamLadder("123")
+                repo.legacyStreamLadder("123")
             }
         }
         assertEquals(0, models)

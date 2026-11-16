@@ -31,17 +31,14 @@ class PlaybackRetryConnectionTest {
                 chain.proceed(request.newBuilder().url(server.url(request.url.encodedPath)).build())
             }.build()
         try {
-            repeat(4) { server.enqueue(MockResponse().setBody("")) }
+            repeat(2) { server.enqueue(MockResponse().setBody("")) }
             val session = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }
             val repo = ContentRepository(http, playbackSession = session, sleep = {})
             val error = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
-            val requests = (1..4).map { server.takeRequest(5, TimeUnit.SECONDS)!! }
-            assertEquals(listOf(0, 0, 0, 0), requests.map { it.sequenceNumber })
-            assertTrue(requests[0].path!!.startsWith("/reading/bookapi/video_tab/"))
-            assertTrue(requests.drop(1).all { it.path!!.startsWith("/novel/player/") })
-            assertTrue(error.detail.orEmpty().contains("G:b=200/0B/h2"))
-            assertTrue(error.detail.orEmpty().contains("P:hl=200/0B/h2"))
-            assertEquals(4, error.detail.orEmpty().split(" ").size)
+            val requests = (1..2).map { server.takeRequest(5, TimeUnit.SECONDS)!! }
+            assertEquals(listOf(0, 0), requests.map { it.sequenceNumber })
+            assertTrue(requests.all { it.path!!.startsWith("/novel/player/multi_video_model/player/v1") })
+            assertEquals("stage=mobile-model", error.detail)
             server.enqueue(MockResponse().setBody("still usable"))
             http.newCall(Request.Builder().url(server.url("/other")).build()).execute().use {
                 assertEquals("still usable", it.body!!.string())
