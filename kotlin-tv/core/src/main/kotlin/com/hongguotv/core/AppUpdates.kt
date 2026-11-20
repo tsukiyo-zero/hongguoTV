@@ -22,17 +22,25 @@ data class AppUpdate(
     val size: Long,
     val sha256: String,
     val notes: String,
+    /** 该清单来源平台的 releases 根地址；GitCode 限流时会换成 GitHub。 */
+    val releasesBase: String = RELEASES,
 ) {
     fun newerThan(installed: Long, sdk: Int) = versionCode > installed && minSdk <= sdk
 
     val downloadUrl
-        get() = "$RELEASES/download/$tag/$fileName"
+        get() = "$releasesBase/download/$tag/$fileName"
 
     companion object {
         const val REPOSITORY = "tsukiyo-zero/hongguoTV"
         const val RELEASES = "https://gitcode.com/$REPOSITORY/releases"
         const val LATEST_API =
             "https://api.gitcode.com/api/v5/repos/$REPOSITORY/releases/latest?type=latest"
+
+        /** GitCode 的 API 会按账号限流（实测出现过 429），这时改用 GitHub 的发行版接口。 */
+        const val LATEST_API_GITHUB =
+            "https://api.github.com/repos/$REPOSITORY/releases/latest"
+
+        const val GITHUB_RELEASES = "https://github.com/$REPOSITORY/releases"
 
         fun latestTag(json: String): String {
             val release = JSONObject(json)
@@ -150,7 +158,15 @@ class AppUpdateRepository : java.io.Closeable {
                 // hosts.
                 if (
                     url.scheme != "https" ||
-                        url.host !in setOf("api.gitcode.com", "gitcode.com", "file-cdn.gitcode.com")
+                        url.host !in
+                            setOf(
+                                "api.gitcode.com",
+                                "gitcode.com",
+                                "file-cdn.gitcode.com",
+                                "api.github.com",
+                                "github.com",
+                                "objects.githubusercontent.com",
+                            )
                 )
                     throw IOException("更新下载地址不受支持")
                 chain.proceed(chain.request())
@@ -185,21 +201,32 @@ class AppUpdateRepository : java.io.Closeable {
     }
 
     fun latest(): AppUpdate {
-        val release = readMetadata(AppUpdate.LATEST_API)
+        // GitCode API 会因账号级限流返回 429；此时回退到 GitHub 的同一份发行版清单，
+        // 两个平台发布的是同一套 tag 与 update.json。
+        val primary = runCatching { readMetadata(AppUpdate.LATEST_API) }
+        val (release, releasesBase) =
+            primary.fold(
+                onSuccess = { it to AppUpdate.RELEASES },
+                onFailure = {
+                    readMetadata(AppUpdate.LATEST_API_GITHUB) to AppUpdate.GITHUB_RELEASES
+                },
+            )
         val tag =
             try {
                 AppUpdate.latestTag(release)
             } catch (_: Exception) {
                 throw IOException("最新发行版信息格式不正确")
             }
-        val metadata = readMetadata("${AppUpdate.RELEASES}/download/$tag/update.json")
+        val metadata = readMetadata("$releasesBase/download/$tag/update.json")
         if (
             runCatching { JSONObject(metadata).optString("packageName") }.getOrDefault("") ==
                 "com.hongguotv.nativeapp"
         )
             throw IOException("当前发行版仍为旧包名，果映 TV 新包名正式更新尚未发布")
         return try {
-            AppUpdate.parse(metadata).also { require(it.tag == tag) { "清单标签不匹配" } }
+            AppUpdate.parse(metadata)
+                .copy(releasesBase = releasesBase)
+                .also { require(it.tag == tag) { "清单标签不匹配" } }
         } catch (_: Exception) {
             throw IOException("更新信息格式不正确")
         }
