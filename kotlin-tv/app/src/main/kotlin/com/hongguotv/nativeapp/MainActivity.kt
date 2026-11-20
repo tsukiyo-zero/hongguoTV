@@ -4441,12 +4441,25 @@ class MainActivity : Activity() {
                                         2 -> showQualityPicker(more, true)
                                         3 -> showFramePicker(more, true)
                                         4 -> {
-                                            val next = DecoderMode.read(decoderPrefs).next()
-                                            DecoderMode.write(decoderPrefs, next)
-                                            // 只影响下次创建播放器；提示用户切集或重开生效。
-                                            playbackText.text =
-                                                "解码方式：${next.label}（切集或重开本集后生效）"
-                                            showPanel()
+                                            // 选择列表 + 立即按新模式重建播放器（保留当前播放位置）。
+                                            val modes = DecoderMode.entries
+                                            tvTools.choose(
+                                                "解码方式",
+                                                modes.map { it.label },
+                                                more,
+                                                { index ->
+                                                    val picked = modes.getOrElse(index) { DecoderMode.AUTO }
+                                                    DecoderMode.write(decoderPrefs, picked)
+                                                    val position = currentPosition()
+                                                    val playing = player?.playWhenReady ?: requestedAutoplay
+                                                    val episode = episodeIndex
+                                                    playbackText.text = "解码方式：${picked.label}，正在重建播放器…"
+                                                    // 解码器在播放器构造时选定，必须重建才能真正切换。
+                                                    releasePlayer(keepPrepared = true)
+                                                    playEpisode(episode, position, playing)
+                                                },
+                                                selected = modes.indexOf(DecoderMode.read(decoderPrefs)),
+                                            )
                                         }
                                         5 -> showSleepPicker(more)
                                         6 -> showRelaySettings(more)
@@ -4675,6 +4688,8 @@ class MainActivity : Activity() {
         playerView = null
         player?.release()
         player = null
+        // 解码器随播放器销毁，重建后由 onVideoDecoderInitialized 重新上报。
+        activeDecoder = null
         playbackReady = false
         transportPlay = null
         sleepButton = null
