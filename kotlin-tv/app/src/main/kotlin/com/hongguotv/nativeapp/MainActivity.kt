@@ -3620,7 +3620,11 @@ class MainActivity : Activity() {
         val base = DecoderMode.describe(activeDecoder, mode)
         val stats = decoderCandidates()
         // 候选统计用来区分「过滤器没生效」和「本机确实没有硬解」。
-        return if (stats == null) base else base + "\n本机 HEVC 解码器：硬解 ${stats.first} / 软解 ${stats.second}"
+        val lines = mutableListOf(base)
+        if (stats != null) lines += "本机 HEVC 解码器：硬解 ${stats.first} / 软解 ${stats.second}"
+        if (mode == DecoderMode.HARDWARE && stats != null && stats.first == 0)
+            lines += "HEVC 硬解不可用，选档已优先 H.264"
+        return lines.joinToString("\n")
     }
 
     private var decoderStats: Pair<Int, Int>? = null

@@ -75,6 +75,17 @@ class DecoderModeTest {
     }
 
     @Test
+    fun hardwareModeSkipsCodecsWithoutHardwareDecoder() {
+        // 强制硬解 + 无硬解 → 跳过该编码（回落到 H.264）
+        assertTrue(DecoderMode.shouldSkipForHardware(DecoderMode.HARDWARE, hasHardwareDecoder = false))
+        // 强制硬解 + 有硬解 → 保留
+        assertTrue(!DecoderMode.shouldSkipForHardware(DecoderMode.HARDWARE, hasHardwareDecoder = true))
+        // 自动 / 强制软解 不受影响
+        assertTrue(!DecoderMode.shouldSkipForHardware(DecoderMode.AUTO, hasHardwareDecoder = false))
+        assertTrue(!DecoderMode.shouldSkipForHardware(DecoderMode.SOFTWARE, hasHardwareDecoder = false))
+    }
+
+    @Test
     fun storesAndReadsBack() {
         DecoderMode.write(prefs, DecoderMode.SOFTWARE)
         assertEquals(DecoderMode.SOFTWARE, DecoderMode.read(prefs))

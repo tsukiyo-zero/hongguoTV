@@ -46,6 +46,13 @@ enum class DecoderMode(val label: String) {
             return wanted.ifEmpty { infos }
         }
 
+        /**
+         * 强制硬解时，若该编码在本机没有任何硬件解码器，选档阶段就应跳过它
+         * （典型场景：设备只有 H.264 硬解，HEVC 只有软解）。
+         */
+        fun shouldSkipForHardware(mode: DecoderMode, hasHardwareDecoder: Boolean): Boolean =
+            mode == HARDWARE && !hasHardwareDecoder
+
         /** Media3 的解码器命名约定：`c2.android.*` / `OMX.google.*` 属于软件实现。 */
         fun isSoftware(decoderName: String): Boolean =
             decoderName.startsWith("c2.android.") || decoderName.startsWith("OMX.google.")
