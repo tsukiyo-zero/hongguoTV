@@ -21,8 +21,8 @@ android {
         applicationId = "io.github.tsukiyo_zero.guoyingtv"
         minSdk = 23
         targetSdk = 36
-        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 74
-        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.1.33"
+        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 75
+        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.1.34"
     }
     buildFeatures { buildConfig = true }
     testOptions {
