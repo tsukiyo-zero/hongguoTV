@@ -128,10 +128,6 @@ internal fun openStream(
     initialBytes: Int = 256 * 1024,
     metadataAhead: List<String> = emptyList(),
     speculative: Boolean = false,
-    /** 硬解模式把全部档位排除时的放宽判定；为空表示不做放宽回退。 */
-    relaxedSupportsRendition: ((Rendition) -> Boolean)? = null,
-    /** 放宽重试时使用的 track 判定；为空则沿用 supportsTrack。 */
-    relaxedSupportsTrack: ((VideoTracks.Track?) -> Boolean)? = null,
     supportsTrack: (VideoTracks.Track?) -> Boolean,
 ): OpenedStream? {
     val ladder = repository.streamLadder(id, metadataAhead, speculative)
@@ -155,17 +151,9 @@ internal fun openStream(
         }
         return null
     }
-    /**
-     * 先按严格判定逐个尝试；一个都没成（档位被硬解过滤、或 moov 复核不通过）时，
-     * 再用宽松判定重试一次，避免「选了强制硬解反而什么也看不了」。
-     */
-    val strict = ladder.playbackOrder(maxQuality, supportsRendition)
-    tryOrder(strict, supportsTrack)?.let { return it }
-    if (relaxedSupportsRendition != null) {
-        val relaxed = ladder.playbackOrder(maxQuality, relaxedSupportsRendition)
-        if (relaxed != strict)
-            tryOrder(relaxed, relaxedSupportsTrack ?: supportsTrack)?.let { return it }
-    }
+    // 严格按当前解码模式选档：强制硬解下没有可用硬解档位时即为确定性失败，
+    // 由错误页提供「改解码方式」入口，不在播放层擅自退让。
+    tryOrder(ladder.playbackOrder(maxQuality, supportsRendition), supportsTrack)?.let { return it }
     // 空阶梯维持 null（供给异常语义，由调用方提示）；非空阶梯走到这里说明每一档都被
     // 能力判定（metadata 过滤或 moov 复核）拒掉，属确定性失败。
     if (ladder.renditions.isNotEmpty()) throw NoPlayableQualityException()
