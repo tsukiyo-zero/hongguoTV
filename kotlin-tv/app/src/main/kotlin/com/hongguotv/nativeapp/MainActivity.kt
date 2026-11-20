@@ -33,6 +33,8 @@ import java.util.concurrent.TimeUnit
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class MainActivity : Activity() {
     private val decoderPrefs by lazy { getSharedPreferences("native-playback-v1", 0) }
+    /** 当前实际初始化的视频解码器名；null 表示尚未起播或未上报。 */
+    private var activeDecoder: String? = null
     private val bg = TvStyle.background
     private val surface = TvStyle.surface
     private val accent = TvStyle.accent
@@ -2305,6 +2307,22 @@ class MainActivity : Activity() {
                     speed = setting("默认倍速  ·  ${PlaybackSpeed.label(library.playbackSpeed)}") { showSpeedPicker(speed, false) }
                     lateinit var frame: TextView
                     frame = setting("画面模式  ·  ${library.frameMode.label}") { showFramePicker(frame, false) }
+                    lateinit var decode: TextView
+                    decode =
+                        setting("解码方式  ·  ${DecoderMode.read(decoderPrefs).label}") {
+                            val modes = DecoderMode.entries
+                            tvTools.choose(
+                                "解码方式",
+                                modes.map { it.label },
+                                decode,
+                                { choice ->
+                                    val picked = modes.getOrElse(choice) { DecoderMode.AUTO }
+                                    DecoderMode.write(decoderPrefs, picked)
+                                    // 设置页没有播放器实例，只能下次起播生效。
+                                    decode.text = "解码方式  ·  ${picked.label}（下次播放生效）"
+                                },
+                            )
+                        }
                     toggle("自动连播", library.autoNext) { library.autoNext = it }
                     toggle("跨季自动连播（需开启自动连播）", library.seasonAutoplay) { library.seasonAutoplay = it }
                 }
@@ -3544,6 +3562,7 @@ class MainActivity : Activity() {
                     model = Build.MODEL,
                     androidVersion = Build.VERSION.RELEASE,
                     appVersion = BuildConfig.VERSION_NAME,
+                    buildType = if (BuildConfig.DEBUG) "debug" else "",
                     failure = lastPlaybackFailure,
                     recoveryAttempts = recovery.attempts,
                     total = recovery.total,
@@ -3561,6 +3580,15 @@ class MainActivity : Activity() {
     private fun playbackDriftListener(p: ExoPlayer): AnalyticsListener {
         val guard = PlaybackSyncGuard()
         return object : AnalyticsListener {
+            override fun onVideoDecoderInitialized(
+                eventTime: AnalyticsListener.EventTime,
+                decoderName: String,
+                initializedTimestampMs: Long,
+                initializationDurationMs: Long,
+            ) {
+                activeDecoder = decoderName
+            }
+
             override fun onVideoFrameProcessingOffset(
                 eventTime: AnalyticsListener.EventTime,
                 totalProcessingOffsetUs: Long,
@@ -3586,6 +3614,43 @@ class MainActivity : Activity() {
                     }
             }
         }
+    }
+
+    /** 播放设置里的只读状态行：当前实际解码器、硬/软解判定与本机候选数量。 */
+    private fun decoderStatusLine(): String {
+        val mode = DecoderMode.read(decoderPrefs)
+        val base = DecoderMode.describe(activeDecoder, mode)
+        val stats = decoderCandidates()
+        // 候选统计用来区分「过滤器没生效」和「本机确实没有硬解」。
+        val lines = mutableListOf(base)
+        stats?.let { (hevc, avc) ->
+            lines += "本机 HEVC：硬 ${hevc.first} / 软 ${hevc.second}　H.264：硬 ${avc.first} / 软 ${avc.second}"
+            if (mode == DecoderMode.HARDWARE && hevc.first == 0)
+                lines += if (avc.first > 0) "HEVC 硬解不可用，选档已优先 H.264"
+                else "本机没有可用的硬件解码器，只能软解"
+        }
+        return lines.joinToString("\n")
+    }
+
+    private var decoderStats: Pair<Pair<Int, Int>, Pair<Int, Int>>? = null
+
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun decoderCandidates(): Pair<Pair<Int, Int>, Pair<Int, Int>>? {
+        decoderStats?.let { return it }
+        fun count(mime: String): Pair<Int, Int>? =
+            runCatching {
+                    androidx.media3.exoplayer.mediacodec.MediaCodecSelector.DEFAULT
+                        .getDecoderInfos(mime, false, false)
+                }
+                .getOrNull()
+                ?.let { infos ->
+                    val soft = infos.count { it.softwareOnly }
+                    (infos.size - soft) to soft
+                }
+
+        val hevc = count(android.media.MediaFormat.MIMETYPE_VIDEO_HEVC) ?: return null
+        val avc = count(android.media.MediaFormat.MIMETYPE_VIDEO_AVC) ?: return null
+        return (hevc to avc).also { decoderStats = it }
     }
 
     private fun playedQualityLabel(opened: OpenedStream, maxQuality: Int): String {
@@ -3977,7 +4042,7 @@ class MainActivity : Activity() {
             allowSlowRecovery = false
             recovery.reset()
         }
-        lastPlaybackFailure = playbackFailureSummary(problem)
+        lastPlaybackFailure = playbackFailureSummary(problem, DecoderMode.read(decoderPrefs))
         lastPlaybackDetail = diagnosticDetail(problem)
         retryPosition = currentPosition().coerceAtLeast(0)
         retryAutoplay = requestedAutoplay && !sleepStopped
@@ -4057,6 +4122,23 @@ class MainActivity : Activity() {
         controls.addView(actions)
         val retryButton = addButton(actions, "立即重试") { playEpisode(episodeIndex, retryPosition, retryAutoplay) }
         if (recovery.attempts == 0) retryButton.requestFocus()
+        if (noPlayableQuality) {
+            // 强制硬解下没有可用档位时，就地给出改解码方式的入口，省得回设置页找。
+            addButton(actions, "改解码方式") {
+                val modes = DecoderMode.entries
+                tvTools.choose(
+                    "解码方式",
+                    modes.map { it.label },
+                    actions,
+                    { index ->
+                        val picked = modes.getOrElse(index) { DecoderMode.AUTO }
+                        DecoderMode.write(decoderPrefs, picked)
+                        playEpisode(episodeIndex, retryPosition, retryAutoplay)
+                    },
+                    selected = modes.indexOf(DecoderMode.read(decoderPrefs)),
+                )
+            }
+        }
         lowerTier?.let { lower ->
             addButton(actions, "尝试 ${lower}P") {
                 library.maxQuality = lower
@@ -4391,6 +4473,7 @@ class MainActivity : Activity() {
                     tvTools.choose(
                         "播放设置",
                         listOf(
+                            decoderStatusLine(),
                             "倍速 ${PlaybackSpeed.label(library.playbackSpeed)}",
                             "清晰度 ${library.maxQuality}P",
                             "画面 ${library.frameMode.label}",
@@ -4405,24 +4488,42 @@ class MainActivity : Activity() {
                             main.post {
                                 if (screen == "player" && more.isAttachedToWindow)
                                     when (choice) {
-                                        0 -> showSpeedPicker(more)
-                                        1 -> showQualityPicker(more, true)
-                                        2 -> showFramePicker(more, true)
-                                        3 -> {
-                                            val next = DecoderMode.read(decoderPrefs).next()
-                                            DecoderMode.write(decoderPrefs, next)
-                                            // 只影响下次创建播放器；提示用户切集或重开生效。
-                                            playbackText.text =
-                                                "解码方式：${next.label}（切集或重开本集后生效）"
-                                            showPanel()
+                                        0 -> {} // 只读状态行，不响应
+                                        1 -> showSpeedPicker(more)
+                                        2 -> showQualityPicker(more, true)
+                                        3 -> showFramePicker(more, true)
+                                        4 -> {
+                                            // 选择列表 + 立即按新模式重建播放器（保留当前播放位置）。
+                                            val modes = DecoderMode.entries
+                                            tvTools.choose(
+                                                "解码方式",
+                                                modes.map { it.label },
+                                                more,
+                                                { index ->
+                                                    val picked = modes.getOrElse(index) { DecoderMode.AUTO }
+                                                    DecoderMode.write(decoderPrefs, picked)
+                                                    val position = currentPosition()
+                                                    val playing = player?.playWhenReady ?: requestedAutoplay
+                                                    val episode = episodeIndex
+                                                    // 重建会释放播放器并关闭当前弹窗，放到弹窗回调之后执行，
+                                                    // 避免在 choose 的回调栈里重入关闭自身。
+                                                    main.post {
+                                                        if (!isFinishing && currentFocus != null)
+                                                            playbackText.text = "解码方式：${picked.label}，正在重建播放器…"
+                                                        releasePlayer(keepPrepared = true)
+                                                        playEpisode(episode, position, playing)
+                                                    }
+                                                },
+                                                selected = modes.indexOf(DecoderMode.read(decoderPrefs)),
+                                            )
                                         }
-                                        4 -> showSleepPicker(more)
-                                        5 -> showRelaySettings(more)
-                                        6 -> {
+                                        5 -> showSleepPicker(more)
+                                        6 -> showRelaySettings(more)
+                                        7 -> {
                                             seekTo(0)
                                             hidePanel()
                                         }
-                                        7 -> {
+                                        8 -> {
                                             val count = CodecCapabilities.learnedCount()
                                             CodecCapabilities.resetLearned()
                                             android.util.Log.i(
@@ -4643,6 +4744,8 @@ class MainActivity : Activity() {
         playerView = null
         player?.release()
         player = null
+        // 解码器随播放器销毁，重建后由 onVideoDecoderInitialized 重新上报。
+        activeDecoder = null
         playbackReady = false
         transportPlay = null
         sleepButton = null

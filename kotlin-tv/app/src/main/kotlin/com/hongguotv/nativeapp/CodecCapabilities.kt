@@ -3,8 +3,10 @@ package com.hongguotv.nativeapp
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
+import android.os.Build
 import com.hongguotv.core.Rendition
 import com.hongguotv.core.VideoTracks
 
@@ -17,6 +19,8 @@ import com.hongguotv.core.VideoTracks
 object CodecCapabilities {
     private val lessons = DecoderLessons()
     private var prefs: SharedPreferences? = null
+    private var playbackPrefs: SharedPreferences? = null
+    private val hardwareByMime = HashMap<String, Boolean>()
     private val verdicts = HashMap<String, Boolean>()
     @Volatile private var logged = false
 
@@ -24,6 +28,7 @@ object CodecCapabilities {
         if (prefs != null) return
         val store = context.getSharedPreferences("native-decoder-lessons-v1", Context.MODE_PRIVATE)
         prefs = store
+        playbackPrefs = context.getSharedPreferences("native-playback-v1", Context.MODE_PRIVATE)
         lessons.restore(store.getStringSet("failures", emptySet()) ?: emptySet())
     }
 
@@ -41,9 +46,23 @@ object CodecCapabilities {
             else -> null
         }
 
-    fun supports(codec: String, width: Int?, height: Int?): Boolean {
+    fun supports(
+        codec: String,
+        width: Int?,
+        height: Int?,
+        respectHardwareMode: Boolean = true,
+    ): Boolean {
         if (lessons.fails(codec, width, height)) return false
+        // bytevc2（VVC 变体）没有系统解码器，不能按"未知编码视为支持"处理，
+        // 否则它会占住候选列表，导致宽松回退拿不到真正可播的 HEVC 档。
+        if (codec.lowercase() in setOf("bytevc2", "bvc2")) return false
         val type = mime(codec) ?: return true
+        // 强制硬解时跳过本机没有硬件解码器的编码（例如只有软解的 HEVC），让选档回落到 AVC。
+        // 放宽模式用于「硬解把全部档位排除后」的回退，避免用户什么也看不了。
+        if (respectHardwareMode) {
+            val mode = playbackPrefs?.let { DecoderMode.read(it) } ?: DecoderMode.AUTO
+            if (DecoderMode.shouldSkipForHardware(mode, hasHardwareDecoder(type))) return false
+        }
         if (width == null || height == null || width <= 0 || height <= 0) return true
         val key = "$type $width $height"
         synchronized(verdicts) {
@@ -69,10 +88,36 @@ object CodecCapabilities {
         return verdict
     }
 
+    /** 该 MIME 是否存在硬件解码器；探测失败按「有」处理，避免误杀可播档位。 */
+    fun hasHardwareDecoder(type: String): Boolean =
+        synchronized(hardwareByMime) {
+            hardwareByMime.getOrPut(type) {
+                runCatching {
+                        MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
+                            !info.isEncoder &&
+                                !info.isSoftwareDecoder() &&
+                                runCatching { info.getCapabilitiesForType(type) }.isSuccess
+                        }
+                    }
+                    .getOrDefault(true)
+            }
+        }
+
+    private fun MediaCodecInfo.isSoftwareDecoder(): Boolean =
+        if (Build.VERSION.SDK_INT >= 29) isSoftwareOnly
+        else {
+            val lower = name.lowercase()
+            lower.startsWith("c2.android.") ||
+                lower.startsWith("omx.google.") ||
+                lower.contains(".sw.") ||
+                lower.contains("software")
+        }
+
     fun supports(rendition: Rendition) =
         supports(rendition.codec, rendition.width, rendition.height)
 
-    fun supports(track: VideoTracks.Track) = supports(track.fourcc, track.width, track.height)
+    fun supports(track: VideoTracks.Track, respectHardwareMode: Boolean = true) =
+        supports(track.fourcc, track.width, track.height, respectHardwareMode)
 
     /**
      * Records a runtime decode failure; true when the static probe had claimed support

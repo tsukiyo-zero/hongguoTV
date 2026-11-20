@@ -11,12 +11,16 @@ import com.hongguotv.core.VideoTracks
 import okhttp3.OkHttpClient
 
 /** 只展示已知错误类别，不把响应正文、媒体地址或查询凭据带到界面和日志。 */
-internal fun playbackFailureSummary(problem: Throwable): String {
+internal fun playbackFailureSummary(problem: Throwable, decoderMode: DecoderMode = DecoderMode.AUTO): String {
     val causes = generateSequence(problem) { it.cause }.take(8).toList()
     if (causes.any { it is com.hongguotv.core.PlaybackDeviceRegistrationException })
         return "播放设备注册失败"
     if (causes.any { it is NoPlayableQualityException })
-        return "本集低档为 VVC（bytevc2）编码，电视无法解码，可尝试其他集数"
+        return when (decoderMode) {
+            DecoderMode.HARDWARE -> "强制硬解下本集没有可硬解的清晰度，可改回「自动」或换集"
+            DecoderMode.SOFTWARE -> "本集没有可软解的清晰度（如 VVC 编码），可尝试其他集数"
+            DecoderMode.AUTO -> "本集编码在本机没有可用解码器，可尝试其他集数"
+        }
     if (causes.any { it is EmptyPlaybackResponseException }) return "播放信息接口返回空响应"
     causes.filterIsInstance<ContentHttpException>().firstOrNull()?.let {
         return "播放信息请求失败（HTTP ${it.statusCode}）"
@@ -91,7 +95,7 @@ internal class OpenedStream(
  * 上层不应再进入自动恢复预算；手动重试保留（服务端转码推进后该集供给可能翻转为 bytevc1）。
  */
 internal class NoPlayableQualityException :
-    java.io.IOException("本集低档为 VVC（bytevc2）编码，电视无法解码，可尝试其他集数")
+    java.io.IOException("本集没有本机可解码的清晰度")
 
 /**
  * 试播后移换集：候选集固定为前三集（绝对上限，试播兜底不无限后移），从 start 集起依次尝试，
@@ -131,23 +135,29 @@ internal fun openStream(
     supportsTrack: (VideoTracks.Track?) -> Boolean,
 ): OpenedStream? {
     val ladder = repository.streamLadder(id, metadataAhead, speculative)
-    for (rendition in ladder.playbackOrder(maxQuality, supportsRendition)) {
-        val video = RemoteVideo(http, rendition.toStreamInfo())
-        try {
-            video.prepare(initialBytes)
-            val track = video.trackInfo()
-            if (supportsTrack(track))
-                return OpenedStream(video, rendition, ladder.renditions, track)
-            Log.i(
-                "HongguoTV",
-                "Skipped ${rendition.quality}P ${rendition.codec}: coded ${track?.width}x${track?.height} beyond decoder capability",
-            )
-            video.close()
-        } catch (error: Exception) {
-            video.close()
-            throw error
+    fun tryOrder(order: List<Rendition>, trackCheck: (VideoTracks.Track?) -> Boolean): OpenedStream? {
+        for (rendition in order) {
+            val video = RemoteVideo(http, rendition.toStreamInfo())
+            try {
+                video.prepare(initialBytes)
+                val track = video.trackInfo()
+                if (trackCheck(track))
+                    return OpenedStream(video, rendition, ladder.renditions, track)
+                Log.i(
+                    "HongguoTV",
+                    "Skipped ${rendition.quality}P ${rendition.codec}: coded ${track?.width}x${track?.height} beyond decoder capability",
+                )
+                video.close()
+            } catch (error: Exception) {
+                video.close()
+                throw error
+            }
         }
+        return null
     }
+    // 严格按当前解码模式选档：强制硬解下没有可用硬解档位时即为确定性失败，
+    // 由错误页提供「改解码方式」入口，不在播放层擅自退让。
+    tryOrder(ladder.playbackOrder(maxQuality, supportsRendition), supportsTrack)?.let { return it }
     // 空阶梯维持 null（供给异常语义，由调用方提示）；非空阶梯走到这里说明每一档都被
     // 能力判定（metadata 过滤或 moov 复核）拒掉，属确定性失败。
     if (ladder.renditions.isNotEmpty()) throw NoPlayableQualityException()

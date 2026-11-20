@@ -42,6 +42,50 @@ class DecoderModeTest {
     }
 
     @Test
+    fun describesHardwareAndSoftwareDecoders() {
+        assertEquals(
+            "解码 HEVC · 硬解 · c2.qti.hevc.decoder",
+            DecoderMode.describe("c2.qti.hevc.decoder", DecoderMode.AUTO),
+        )
+        assertEquals(
+            "解码 HEVC · 软解 · c2.android.hevc.decoder",
+            DecoderMode.describe("c2.android.hevc.decoder", DecoderMode.AUTO),
+        )
+        assertEquals(
+            "解码 H.264 · 硬解 · OMX.qcom.video.decoder.avc",
+            DecoderMode.describe("OMX.qcom.video.decoder.avc", DecoderMode.HARDWARE),
+        )
+    }
+
+    @Test
+    fun warnsWhenActualDecoderContradictsMode() {
+        assertTrue(
+            DecoderMode.describe("c2.android.hevc.decoder", DecoderMode.HARDWARE)
+                .endsWith("（与所选模式不一致）")
+        )
+        assertTrue(
+            DecoderMode.describe("c2.qti.hevc.decoder", DecoderMode.SOFTWARE)
+                .endsWith("（与所选模式不一致）")
+        )
+    }
+
+    @Test
+    fun withoutPlaybackShowsPendingHint() {
+        assertEquals("解码 自动 · 起播后显示实际解码器", DecoderMode.describe(null, DecoderMode.AUTO))
+    }
+
+    @Test
+    fun hardwareModeSkipsCodecsWithoutHardwareDecoder() {
+        // 强制硬解 + 无硬解 → 跳过该编码（回落到 H.264）
+        assertTrue(DecoderMode.shouldSkipForHardware(DecoderMode.HARDWARE, hasHardwareDecoder = false))
+        // 强制硬解 + 有硬解 → 保留
+        assertTrue(!DecoderMode.shouldSkipForHardware(DecoderMode.HARDWARE, hasHardwareDecoder = true))
+        // 自动 / 强制软解 不受影响
+        assertTrue(!DecoderMode.shouldSkipForHardware(DecoderMode.AUTO, hasHardwareDecoder = false))
+        assertTrue(!DecoderMode.shouldSkipForHardware(DecoderMode.SOFTWARE, hasHardwareDecoder = false))
+    }
+
+    @Test
     fun storesAndReadsBack() {
         DecoderMode.write(prefs, DecoderMode.SOFTWARE)
         assertEquals(DecoderMode.SOFTWARE, DecoderMode.read(prefs))
