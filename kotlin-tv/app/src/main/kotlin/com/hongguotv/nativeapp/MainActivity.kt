@@ -2307,6 +2307,21 @@ class MainActivity : Activity() {
                     speed = setting("默认倍速  ·  ${PlaybackSpeed.label(library.playbackSpeed)}") { showSpeedPicker(speed, false) }
                     lateinit var frame: TextView
                     frame = setting("画面模式  ·  ${library.frameMode.label}") { showFramePicker(frame, false) }
+                    lateinit var decode: TextView
+                    decode =
+                        setting("解码方式  ·  ${DecoderMode.read(decoderPrefs).label}") {
+                            val modes = DecoderMode.entries
+                            tvTools.choose(
+                                "解码方式",
+                                modes.map { it.label },
+                                decode,
+                                { choice ->
+                                    val picked = modes.getOrElse(choice) { DecoderMode.AUTO }
+                                    DecoderMode.write(decoderPrefs, picked)
+                                    decode.text = "解码方式  ·  ${picked.label}"
+                                },
+                            )
+                        }
                     toggle("自动连播", library.autoNext) { library.autoNext = it }
                     toggle("跨季自动连播（需开启自动连播）", library.seasonAutoplay) { library.seasonAutoplay = it }
                 }
