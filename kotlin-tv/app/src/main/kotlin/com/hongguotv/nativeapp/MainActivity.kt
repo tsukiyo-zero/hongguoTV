@@ -2318,7 +2318,8 @@ class MainActivity : Activity() {
                                 { choice ->
                                     val picked = modes.getOrElse(choice) { DecoderMode.AUTO }
                                     DecoderMode.write(decoderPrefs, picked)
-                                    decode.text = "解码方式  ·  ${picked.label}"
+                                    // 设置页没有播放器实例，只能下次起播生效。
+                                    decode.text = "解码方式  ·  ${picked.label}（下次播放生效）"
                                 },
                             )
                         }
@@ -4503,10 +4504,14 @@ class MainActivity : Activity() {
                                                     val position = currentPosition()
                                                     val playing = player?.playWhenReady ?: requestedAutoplay
                                                     val episode = episodeIndex
-                                                    playbackText.text = "解码方式：${picked.label}，正在重建播放器…"
-                                                    // 解码器在播放器构造时选定，必须重建才能真正切换。
-                                                    releasePlayer(keepPrepared = true)
-                                                    playEpisode(episode, position, playing)
+                                                    // 重建会释放播放器并关闭当前弹窗，放到弹窗回调之后执行，
+                                                    // 避免在 choose 的回调栈里重入关闭自身。
+                                                    main.post {
+                                                        if (!isFinishing && currentFocus != null)
+                                                            playbackText.text = "解码方式：${picked.label}，正在重建播放器…"
+                                                        releasePlayer(keepPrepared = true)
+                                                        playEpisode(episode, position, playing)
+                                                    }
                                                 },
                                                 selected = modes.indexOf(DecoderMode.read(decoderPrefs)),
                                             )
