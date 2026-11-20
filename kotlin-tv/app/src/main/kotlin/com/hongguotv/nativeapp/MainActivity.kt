@@ -3614,9 +3614,29 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 播放设置里的只读状态行：当前实际解码器与硬/软解判定。 */
-    private fun decoderStatusLine(): String =
-        DecoderMode.describe(activeDecoder, DecoderMode.read(decoderPrefs))
+    /** 播放设置里的只读状态行：当前实际解码器、硬/软解判定与本机候选数量。 */
+    private fun decoderStatusLine(): String {
+        val mode = DecoderMode.read(decoderPrefs)
+        val base = DecoderMode.describe(activeDecoder, mode)
+        val stats = decoderCandidates()
+        // 候选统计用来区分「过滤器没生效」和「本机确实没有硬解」。
+        return if (stats == null) base else base + "\n本机 HEVC 解码器：硬解 ${stats.first} / 软解 ${stats.second}"
+    }
+
+    private var decoderStats: Pair<Int, Int>? = null
+
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun decoderCandidates(): Pair<Int, Int>? {
+        decoderStats?.let { return it }
+        val infos =
+            runCatching {
+                    androidx.media3.exoplayer.mediacodec.MediaCodecSelector.DEFAULT
+                        .getDecoderInfos(androidx.media3.common.MimeTypes.VIDEO_H265, false, false)
+                }
+                .getOrNull() ?: return null
+        val soft = infos.count { it.softwareOnly }
+        return (infos.size - soft) to soft
+    }
 
     private fun playedQualityLabel(opened: OpenedStream, maxQuality: Int): String {
         val rendition = opened.rendition ?: return opened.video.info.quality
