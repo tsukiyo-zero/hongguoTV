@@ -32,6 +32,7 @@ import java.util.concurrent.TimeUnit
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class MainActivity : Activity() {
+    private val decoderPrefs by lazy { getSharedPreferences("native-playback-v1", 0) }
     private val bg = TvStyle.background
     private val surface = TvStyle.surface
     private val accent = TvStyle.accent
@@ -3608,6 +3609,9 @@ class MainActivity : Activity() {
                     androidx.media3.exoplayer
                         .DefaultRenderersFactory(this)
                         .setEnableDecoderFallback(true)
+                        .setMediaCodecSelector(
+                            DecoderMode.selector(DecoderMode.read(decoderPrefs))
+                        )
                 ExoPlayer.Builder(this, renderers).setLoadControl(load).build().also {
                     player = it
                     playerView?.player = it
@@ -4390,6 +4394,7 @@ class MainActivity : Activity() {
                             "倍速 ${PlaybackSpeed.label(library.playbackSpeed)}",
                             "清晰度 ${library.maxQuality}P",
                             "画面 ${library.frameMode.label}",
+                            "解码 ${DecoderMode.read(decoderPrefs).label}",
                             "定时 ${sleepTimer.label()}",
                             "伴机代解码 ${if (relayStore.enabled) "开" else "关"}",
                             "从头播放",
@@ -4403,13 +4408,21 @@ class MainActivity : Activity() {
                                         0 -> showSpeedPicker(more)
                                         1 -> showQualityPicker(more, true)
                                         2 -> showFramePicker(more, true)
-                                        3 -> showSleepPicker(more)
-                                        4 -> showRelaySettings(more)
-                                        5 -> {
+                                        3 -> {
+                                            val next = DecoderMode.read(decoderPrefs).next()
+                                            DecoderMode.write(decoderPrefs, next)
+                                            // 只影响下次创建播放器；提示用户切集或重开生效。
+                                            playbackText.text =
+                                                "解码方式：${next.label}（切集或重开本集后生效）"
+                                            showPanel()
+                                        }
+                                        4 -> showSleepPicker(more)
+                                        5 -> showRelaySettings(more)
+                                        6 -> {
                                             seekTo(0)
                                             hidePanel()
                                         }
-                                        6 -> {
+                                        7 -> {
                                             val count = CodecCapabilities.learnedCount()
                                             CodecCapabilities.resetLearned()
                                             android.util.Log.i(
