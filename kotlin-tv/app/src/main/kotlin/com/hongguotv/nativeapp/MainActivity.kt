@@ -3637,25 +3637,34 @@ class MainActivity : Activity() {
         val stats = decoderCandidates()
         // 候选统计用来区分「过滤器没生效」和「本机确实没有硬解」。
         val lines = mutableListOf(base)
-        if (stats != null) lines += "本机 HEVC 解码器：硬解 ${stats.first} / 软解 ${stats.second}"
-        if (mode == DecoderMode.HARDWARE && stats != null && stats.first == 0)
-            lines += "HEVC 硬解不可用，选档已优先 H.264"
+        stats?.let { (hevc, avc) ->
+            lines += "本机 HEVC：硬 ${hevc.first} / 软 ${hevc.second}　H.264：硬 ${avc.first} / 软 ${avc.second}"
+            if (mode == DecoderMode.HARDWARE && hevc.first == 0)
+                lines += if (avc.first > 0) "HEVC 硬解不可用，选档已优先 H.264"
+                else "本机没有可用的硬件解码器，只能软解"
+        }
         return lines.joinToString("\n")
     }
 
-    private var decoderStats: Pair<Int, Int>? = null
+    private var decoderStats: Pair<Pair<Int, Int>, Pair<Int, Int>>? = null
 
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-    private fun decoderCandidates(): Pair<Int, Int>? {
+    private fun decoderCandidates(): Pair<Pair<Int, Int>, Pair<Int, Int>>? {
         decoderStats?.let { return it }
-        val infos =
+        fun count(mime: String): Pair<Int, Int>? =
             runCatching {
                     androidx.media3.exoplayer.mediacodec.MediaCodecSelector.DEFAULT
-                        .getDecoderInfos(androidx.media3.common.MimeTypes.VIDEO_H265, false, false)
+                        .getDecoderInfos(mime, false, false)
                 }
-                .getOrNull() ?: return null
-        val soft = infos.count { it.softwareOnly }
-        return (infos.size - soft) to soft
+                .getOrNull()
+                ?.let { infos ->
+                    val soft = infos.count { it.softwareOnly }
+                    (infos.size - soft) to soft
+                }
+
+        val hevc = count(android.media.MediaFormat.MIMETYPE_VIDEO_HEVC) ?: return null
+        val avc = count(android.media.MediaFormat.MIMETYPE_VIDEO_AVC) ?: return null
+        return (hevc to avc).also { decoderStats = it }
     }
 
     private fun playedQualityLabel(opened: OpenedStream, maxQuality: Int): String {
