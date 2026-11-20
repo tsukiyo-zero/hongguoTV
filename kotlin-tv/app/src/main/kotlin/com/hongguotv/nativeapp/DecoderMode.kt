@@ -46,6 +46,35 @@ enum class DecoderMode(val label: String) {
             return wanted.ifEmpty { infos }
         }
 
+        /** Media3 的解码器命名约定：`c2.android.*` / `OMX.google.*` 属于软件实现。 */
+        fun isSoftware(decoderName: String): Boolean =
+            decoderName.startsWith("c2.android.") || decoderName.startsWith("OMX.google.")
+
+        fun codecLabel(decoderName: String): String =
+            when {
+                decoderName.contains("hevc", true) || decoderName.contains("h265", true) -> "HEVC"
+                decoderName.contains("avc", true) || decoderName.contains("h264", true) -> "H.264"
+                else -> "未知编码"
+            }
+
+        /**
+         * 播放设置里的只读状态行：当前实际解码器 + 硬/软解判定 + 是否与所选模式一致。
+         * [decoderName] 为空表示还没起播。
+         */
+        fun describe(decoderName: String?, mode: DecoderMode): String {
+            if (decoderName.isNullOrBlank()) return "解码 ${mode.label} · 起播后显示实际解码器"
+            val software = isSoftware(decoderName)
+            val kind = if (software) "软解" else "硬解"
+            val mismatch =
+                when (mode) {
+                    AUTO -> false
+                    HARDWARE -> software
+                    SOFTWARE -> !software
+                }
+            val suffix = if (mismatch) "（与所选模式不一致）" else ""
+            return "解码 ${codecLabel(decoderName)} · $kind · $decoderName$suffix"
+        }
+
         fun selector(mode: DecoderMode): MediaCodecSelector =
             if (mode == AUTO) MediaCodecSelector.DEFAULT
             else

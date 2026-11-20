@@ -33,6 +33,8 @@ import java.util.concurrent.TimeUnit
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class MainActivity : Activity() {
     private val decoderPrefs by lazy { getSharedPreferences("native-playback-v1", 0) }
+    /** 当前实际初始化的视频解码器名；null 表示尚未起播或未上报。 */
+    private var activeDecoder: String? = null
     private val bg = TvStyle.background
     private val surface = TvStyle.surface
     private val accent = TvStyle.accent
@@ -3561,6 +3563,15 @@ class MainActivity : Activity() {
     private fun playbackDriftListener(p: ExoPlayer): AnalyticsListener {
         val guard = PlaybackSyncGuard()
         return object : AnalyticsListener {
+            override fun onVideoDecoderInitialized(
+                eventTime: AnalyticsListener.EventTime,
+                decoderName: String,
+                initializedTimestampMs: Long,
+                initializationDurationMs: Long,
+            ) {
+                activeDecoder = decoderName
+            }
+
             override fun onVideoFrameProcessingOffset(
                 eventTime: AnalyticsListener.EventTime,
                 totalProcessingOffsetUs: Long,
@@ -3587,6 +3598,10 @@ class MainActivity : Activity() {
             }
         }
     }
+
+    /** 播放设置里的只读状态行：当前实际解码器与硬/软解判定。 */
+    private fun decoderStatusLine(): String =
+        DecoderMode.describe(activeDecoder, DecoderMode.read(decoderPrefs))
 
     private fun playedQualityLabel(opened: OpenedStream, maxQuality: Int): String {
         val rendition = opened.rendition ?: return opened.video.info.quality
@@ -4391,6 +4406,7 @@ class MainActivity : Activity() {
                     tvTools.choose(
                         "播放设置",
                         listOf(
+                            decoderStatusLine(),
                             "倍速 ${PlaybackSpeed.label(library.playbackSpeed)}",
                             "清晰度 ${library.maxQuality}P",
                             "画面 ${library.frameMode.label}",
@@ -4405,10 +4421,11 @@ class MainActivity : Activity() {
                             main.post {
                                 if (screen == "player" && more.isAttachedToWindow)
                                     when (choice) {
-                                        0 -> showSpeedPicker(more)
-                                        1 -> showQualityPicker(more, true)
-                                        2 -> showFramePicker(more, true)
-                                        3 -> {
+                                        0 -> {} // 只读状态行，不响应
+                                        1 -> showSpeedPicker(more)
+                                        2 -> showQualityPicker(more, true)
+                                        3 -> showFramePicker(more, true)
+                                        4 -> {
                                             val next = DecoderMode.read(decoderPrefs).next()
                                             DecoderMode.write(decoderPrefs, next)
                                             // 只影响下次创建播放器；提示用户切集或重开生效。
@@ -4416,13 +4433,13 @@ class MainActivity : Activity() {
                                                 "解码方式：${next.label}（切集或重开本集后生效）"
                                             showPanel()
                                         }
-                                        4 -> showSleepPicker(more)
-                                        5 -> showRelaySettings(more)
-                                        6 -> {
+                                        5 -> showSleepPicker(more)
+                                        6 -> showRelaySettings(more)
+                                        7 -> {
                                             seekTo(0)
                                             hidePanel()
                                         }
-                                        7 -> {
+                                        8 -> {
                                             val count = CodecCapabilities.learnedCount()
                                             CodecCapabilities.resetLearned()
                                             android.util.Log.i(
