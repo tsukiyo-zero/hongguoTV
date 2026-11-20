@@ -41,7 +41,7 @@ class PlaybackSourcesTest {
     @Test
     fun noPlayableQualitySurfacesAsActionableMessage() {
         val message =
-            "本集没有本机可解码的清晰度，可尝试其他集数或改解码方式"
+            "本集编码在本机没有可用解码器，可尝试其他集数"
         assertEquals(message, playbackFailureSummary(NoPlayableQualityException()))
         // 包在异常链里（openStream 由 playEpisode 的包装层传递）也要能识别。
         assertEquals(message, playbackFailureSummary(java.io.IOException("wrapper", NoPlayableQualityException())))

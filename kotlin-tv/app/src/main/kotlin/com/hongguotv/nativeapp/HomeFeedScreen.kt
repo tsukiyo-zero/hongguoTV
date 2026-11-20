@@ -573,7 +573,7 @@ internal class HomeFeedScreen(
                             status.text = "推荐接口未返回新作品 · 最近已去重 ${error.rememberedCount} 部\n可稍后换一批，或切换漫剧、真人剧继续发现"
                         } else if (recoverTrial && trialRecoveryAttempts > 0) {
                             val detail = diagnosticDetail(error)?.take(180)
-                            status.text = "试播恢复未成功 · ${playbackFailureSummary(error)}\n可重试试播或按 ↑ ↓ 换一部" +
+                            status.text = "试播恢复未成功 · ${playbackFailureSummary(error, DecoderMode.read(context.getSharedPreferences("native-playback-v1", 0)))}\n可重试试播或按 ↑ ↓ 换一部" +
                                 (detail?.let { "\n$it" } ?: "")
                         } else status.text = "暂时无法加载 · ${message.ifBlank { "请重试或换一部" }}"
                         paintActions()

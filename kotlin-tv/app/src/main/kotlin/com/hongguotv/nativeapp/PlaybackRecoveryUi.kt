@@ -34,9 +34,11 @@ internal fun diagnosticLine(
     recoveryAttempts: Int,
     total: Int,
     detail: String?,
+    buildType: String = "",
 ): String {
+    val version = "v${appVersion.take(16)}" + if (buildType.isBlank()) "" else "-$buildType"
     val head =
-        "诊断: ${model.take(24)} / Android ${androidVersion.take(16)} / v${appVersion.take(16)} / ${failure.take(40)}"
+        "诊断: ${model.take(24)} / Android ${androidVersion.take(16)} / $version / ${failure.take(40)}"
     val rest = buildList {
         if (recoveryAttempts > 0) add("恢复$recoveryAttempts/$total")
         if (!detail.isNullOrBlank()) add(detail.take(180))

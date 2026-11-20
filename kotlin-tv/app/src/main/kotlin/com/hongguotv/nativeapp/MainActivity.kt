@@ -3562,6 +3562,7 @@ class MainActivity : Activity() {
                     model = Build.MODEL,
                     androidVersion = Build.VERSION.RELEASE,
                     appVersion = BuildConfig.VERSION_NAME,
+                    buildType = if (BuildConfig.DEBUG) "debug" else "",
                     failure = lastPlaybackFailure,
                     recoveryAttempts = recovery.attempts,
                     total = recovery.total,
@@ -4041,7 +4042,7 @@ class MainActivity : Activity() {
             allowSlowRecovery = false
             recovery.reset()
         }
-        lastPlaybackFailure = playbackFailureSummary(problem)
+        lastPlaybackFailure = playbackFailureSummary(problem, DecoderMode.read(decoderPrefs))
         lastPlaybackDetail = diagnosticDetail(problem)
         retryPosition = currentPosition().coerceAtLeast(0)
         retryAutoplay = requestedAutoplay && !sleepStopped
