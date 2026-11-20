@@ -37,7 +37,7 @@ class PlaybackRetryConnectionTest {
             val error = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
             val requests = (1..2).map { server.takeRequest(5, TimeUnit.SECONDS)!! }
             assertEquals(listOf(0, 0), requests.map { it.sequenceNumber })
-            assertTrue(requests.all { it.path!!.startsWith("/novel/player/multi_video_model/player/v1") })
+            assertTrue(requests.all { it.path!!.startsWith("/novel/player/multi_video_model/v1") })
             assertEquals("stage=mobile-model", error.detail)
             server.enqueue(MockResponse().setBody("still usable"))
             http.newCall(Request.Builder().url(server.url("/other")).build()).execute().use {
