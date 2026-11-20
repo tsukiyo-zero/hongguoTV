@@ -133,27 +133,35 @@ internal fun openStream(
     supportsTrack: (VideoTracks.Track?) -> Boolean,
 ): OpenedStream? {
     val ladder = repository.streamLadder(id, metadataAhead, speculative)
-    val strict = ladder.playbackOrder(maxQuality, supportsRendition)
-    val order =
-        if (strict.isEmpty() && relaxedSupportsRendition != null)
-            ladder.playbackOrder(maxQuality, relaxedSupportsRendition)
-        else strict
-    for (rendition in order) {
-        val video = RemoteVideo(http, rendition.toStreamInfo())
-        try {
-            video.prepare(initialBytes)
-            val track = video.trackInfo()
-            if (supportsTrack(track))
-                return OpenedStream(video, rendition, ladder.renditions, track)
-            Log.i(
-                "HongguoTV",
-                "Skipped ${rendition.quality}P ${rendition.codec}: coded ${track?.width}x${track?.height} beyond decoder capability",
-            )
-            video.close()
-        } catch (error: Exception) {
-            video.close()
-            throw error
+    fun tryOrder(order: List<Rendition>): OpenedStream? {
+        for (rendition in order) {
+            val video = RemoteVideo(http, rendition.toStreamInfo())
+            try {
+                video.prepare(initialBytes)
+                val track = video.trackInfo()
+                if (supportsTrack(track))
+                    return OpenedStream(video, rendition, ladder.renditions, track)
+                Log.i(
+                    "HongguoTV",
+                    "Skipped ${rendition.quality}P ${rendition.codec}: coded ${track?.width}x${track?.height} beyond decoder capability",
+                )
+                video.close()
+            } catch (error: Exception) {
+                video.close()
+                throw error
+            }
         }
+        return null
+    }
+    /**
+     * 先按严格判定逐个尝试；一个都没成（档位被硬解过滤、或 moov 复核不通过）时，
+     * 再用宽松判定重试一次，避免「选了强制硬解反而什么也看不了」。
+     */
+    val strict = ladder.playbackOrder(maxQuality, supportsRendition)
+    tryOrder(strict)?.let { return it }
+    if (relaxedSupportsRendition != null) {
+        val relaxed = ladder.playbackOrder(maxQuality, relaxedSupportsRendition)
+        if (relaxed != strict) tryOrder(relaxed)?.let { return it }
     }
     // 空阶梯维持 null（供给异常语义，由调用方提示）；非空阶梯走到这里说明每一档都被
     // 能力判定（metadata 过滤或 moov 复核）拒掉，属确定性失败。

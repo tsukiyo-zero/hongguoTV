@@ -53,6 +53,9 @@ object CodecCapabilities {
         respectHardwareMode: Boolean = true,
     ): Boolean {
         if (lessons.fails(codec, width, height)) return false
+        // bytevc2（VVC 变体）没有系统解码器，不能按"未知编码视为支持"处理，
+        // 否则它会占住候选列表，导致宽松回退拿不到真正可播的 HEVC 档。
+        if (codec.lowercase() in setOf("bytevc2", "bvc2")) return false
         val type = mime(codec) ?: return true
         // 强制硬解时跳过本机没有硬件解码器的编码（例如只有软解的 HEVC），让选档回落到 AVC。
         // 放宽模式用于「硬解把全部档位排除后」的回退，避免用户什么也看不了。
