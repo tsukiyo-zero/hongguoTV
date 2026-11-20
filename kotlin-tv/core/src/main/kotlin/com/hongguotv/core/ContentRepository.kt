@@ -884,6 +884,13 @@ constructor(
                     if (fresh) it.newBuilder().connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS)).build() else it
                 }
                 return try {
+                    // 2026-11-20 起匿名 POST（含 v1 与 :dr_scene 变体）全部返回空体，
+                    // 而 GET video_tab 仍可拿到模型，因此先走 GET，失败再退回 POST。
+                    runCatching {
+                            tabVideoModel(id, profile, PlaybackRequestTrace(), client)
+                        }
+                        .getOrNull()
+                        ?.let { return it }
                     MobilePlayback.model(id, profile.values, client, MobilePlayback.signer, clock())
                 } finally {
                     if (fresh) client.connectionPool.evictAll()
