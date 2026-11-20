@@ -128,10 +128,17 @@ internal fun openStream(
     initialBytes: Int = 256 * 1024,
     metadataAhead: List<String> = emptyList(),
     speculative: Boolean = false,
+    /** 硬解模式把全部档位排除时的放宽判定；为空表示不做放宽回退。 */
+    relaxedSupportsRendition: ((Rendition) -> Boolean)? = null,
     supportsTrack: (VideoTracks.Track?) -> Boolean,
 ): OpenedStream? {
     val ladder = repository.streamLadder(id, metadataAhead, speculative)
-    for (rendition in ladder.playbackOrder(maxQuality, supportsRendition)) {
+    val strict = ladder.playbackOrder(maxQuality, supportsRendition)
+    val order =
+        if (strict.isEmpty() && relaxedSupportsRendition != null)
+            ladder.playbackOrder(maxQuality, relaxedSupportsRendition)
+        else strict
+    for (rendition in order) {
         val video = RemoteVideo(http, rendition.toStreamInfo())
         try {
             video.prepare(initialBytes)

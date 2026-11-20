@@ -46,12 +46,20 @@ object CodecCapabilities {
             else -> null
         }
 
-    fun supports(codec: String, width: Int?, height: Int?): Boolean {
+    fun supports(
+        codec: String,
+        width: Int?,
+        height: Int?,
+        respectHardwareMode: Boolean = true,
+    ): Boolean {
         if (lessons.fails(codec, width, height)) return false
         val type = mime(codec) ?: return true
         // 强制硬解时跳过本机没有硬件解码器的编码（例如只有软解的 HEVC），让选档回落到 AVC。
-        val mode = playbackPrefs?.let { DecoderMode.read(it) } ?: DecoderMode.AUTO
-        if (DecoderMode.shouldSkipForHardware(mode, hasHardwareDecoder(type))) return false
+        // 放宽模式用于「硬解把全部档位排除后」的回退，避免用户什么也看不了。
+        if (respectHardwareMode) {
+            val mode = playbackPrefs?.let { DecoderMode.read(it) } ?: DecoderMode.AUTO
+            if (DecoderMode.shouldSkipForHardware(mode, hasHardwareDecoder(type))) return false
+        }
         if (width == null || height == null || width <= 0 || height <= 0) return true
         val key = "$type $width $height"
         synchronized(verdicts) {

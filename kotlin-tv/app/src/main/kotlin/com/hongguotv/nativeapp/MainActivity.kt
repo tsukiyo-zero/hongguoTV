@@ -3062,6 +3062,14 @@ class MainActivity : Activity() {
                             maxQuality,
                             CodecCapabilities::supports,
                             metadataAhead = data.episodes.drop(selectedIndex + 1).take(2),
+                            relaxedSupportsRendition = {
+                                CodecCapabilities.supports(
+                                    it.codec,
+                                    it.width,
+                                    it.height,
+                                    respectHardwareMode = false,
+                                )
+                            },
                         ) {
                             it == null || CodecCapabilities.supports(it)
                         }
@@ -3346,6 +3354,14 @@ class MainActivity : Activity() {
                                     initialBytes = 32 * 1024,
                                     metadataAhead = metadataAhead,
                                     speculative = true,
+                                    relaxedSupportsRendition = {
+                                        CodecCapabilities.supports(
+                                            it.codec,
+                                            it.width,
+                                            it.height,
+                                            respectHardwareMode = false,
+                                        )
+                                    },
                                 ) {
                                     it == null || CodecCapabilities.supports(it)
                                 } ?: throw java.io.IOException("没有电视可播放的清晰度")
