@@ -202,9 +202,10 @@ class AppUpdateRepository : java.io.Closeable {
             .header("Cache-Control", "no-cache")
             .build()
 
-    private fun readMetadata(url: String): String {
+    private fun readMetadata(url: String, timeoutSeconds: Long = 25): String {
         val call = http.newCall(request(url))
-        call.timeout().timeout(25, TimeUnit.SECONDS)
+        // 清单只有几百字节；回退链上每个源给 8 秒，避免全不通时让用户等两分钟。
+        call.timeout().timeout(timeoutSeconds, TimeUnit.SECONDS)
         return call.execute().use { response ->
             if (!response.isSuccessful)
                 throw IOException(if (response.code == 404) "尚无可用的自动更新版本" else "无法检查更新，请稍后重试")
@@ -223,23 +224,23 @@ class AppUpdateRepository : java.io.Closeable {
     }
 
     fun latest(): AppUpdate {
-        var lastError: Throwable? = null
         // 1) GitCode API（主源，会按账号限流）
         runCatching { fromRelease(readMetadata(AppUpdate.LATEST_API), AppUpdate.RELEASES) }
             .onSuccess { return it }
-            .onFailure { lastError = it }
+            .onFailure { }
         // 2) `releases/latest/download/update.json`：不需要任何 API，GitHub 直连与国内镜像依次尝试。
         for (prefix in AppUpdate.MANIFEST_MIRRORS) {
             runCatching {
                     fromManifest(
-                        readMetadata(AppUpdate.latestManifestUrl(prefix)),
+                        readMetadata(AppUpdate.latestManifestUrl(prefix), 8),
                         AppUpdate.releasesBaseOf(prefix),
                     )
                 }
                 .onSuccess { return it }
-                .onFailure { lastError = it }
+                .onFailure { }
         }
-        throw (lastError as? IOException ?: IOException("无法检查更新，请稍后重试"))
+        // 只有所有源都失败才提示；单源失败会被下一源吞掉。
+        throw IOException("所有更新源都不可用（共 ${AppUpdate.MANIFEST_MIRRORS.size + 1} 个），请稍后重试")
     }
 
     /** 从 API 返回的发行版 JSON 读取 tag 并下载该 tag 的清单。 */
