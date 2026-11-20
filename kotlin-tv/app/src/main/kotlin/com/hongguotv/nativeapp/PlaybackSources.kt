@@ -16,7 +16,7 @@ internal fun playbackFailureSummary(problem: Throwable): String {
     if (causes.any { it is com.hongguotv.core.PlaybackDeviceRegistrationException })
         return "播放设备注册失败"
     if (causes.any { it is NoPlayableQualityException })
-        return "本集低档为 VVC（bytevc2）编码，电视无法解码，可尝试其他集数"
+        return "本集没有本机可解码的清晰度，可尝试其他集数或改解码方式"
     if (causes.any { it is EmptyPlaybackResponseException }) return "播放信息接口返回空响应"
     causes.filterIsInstance<ContentHttpException>().firstOrNull()?.let {
         return "播放信息请求失败（HTTP ${it.statusCode}）"
@@ -91,7 +91,7 @@ internal class OpenedStream(
  * 上层不应再进入自动恢复预算；手动重试保留（服务端转码推进后该集供给可能翻转为 bytevc1）。
  */
 internal class NoPlayableQualityException :
-    java.io.IOException("本集低档为 VVC（bytevc2）编码，电视无法解码，可尝试其他集数")
+    java.io.IOException("本集没有本机可解码的清晰度")
 
 /**
  * 试播后移换集：候选集固定为前三集（绝对上限，试播兜底不无限后移），从 start 集起依次尝试，

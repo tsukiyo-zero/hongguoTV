@@ -3062,17 +3062,6 @@ class MainActivity : Activity() {
                             maxQuality,
                             CodecCapabilities::supports,
                             metadataAhead = data.episodes.drop(selectedIndex + 1).take(2),
-                            relaxedSupportsRendition = {
-                                CodecCapabilities.supports(
-                                    it.codec,
-                                    it.width,
-                                    it.height,
-                                    respectHardwareMode = false,
-                                )
-                            },
-                            relaxedSupportsTrack = {
-                                it == null || CodecCapabilities.supports(it, respectHardwareMode = false)
-                            },
                         ) {
                             it == null || CodecCapabilities.supports(it)
                         }
@@ -3357,18 +3346,6 @@ class MainActivity : Activity() {
                                     initialBytes = 32 * 1024,
                                     metadataAhead = metadataAhead,
                                     speculative = true,
-                                    relaxedSupportsRendition = {
-                                        CodecCapabilities.supports(
-                                            it.codec,
-                                            it.width,
-                                            it.height,
-                                            respectHardwareMode = false,
-                                        )
-                                    },
-                                    relaxedSupportsTrack = {
-                                        it == null ||
-                                            CodecCapabilities.supports(it, respectHardwareMode = false)
-                                    },
                                 ) {
                                     it == null || CodecCapabilities.supports(it)
                                 } ?: throw java.io.IOException("没有电视可播放的清晰度")
@@ -4143,6 +4120,23 @@ class MainActivity : Activity() {
         controls.addView(actions)
         val retryButton = addButton(actions, "立即重试") { playEpisode(episodeIndex, retryPosition, retryAutoplay) }
         if (recovery.attempts == 0) retryButton.requestFocus()
+        if (noPlayableQuality) {
+            // 强制硬解下没有可用档位时，就地给出改解码方式的入口，省得回设置页找。
+            addButton(actions, "改解码方式") {
+                val modes = DecoderMode.entries
+                tvTools.choose(
+                    "解码方式",
+                    modes.map { it.label },
+                    actions,
+                    { index ->
+                        val picked = modes.getOrElse(index) { DecoderMode.AUTO }
+                        DecoderMode.write(decoderPrefs, picked)
+                        playEpisode(episodeIndex, retryPosition, retryAutoplay)
+                    },
+                    selected = modes.indexOf(DecoderMode.read(decoderPrefs)),
+                )
+            }
+        }
         lowerTier?.let { lower ->
             addButton(actions, "尝试 ${lower}P") {
                 library.maxQuality = lower

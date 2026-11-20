@@ -39,9 +39,9 @@ class PlaybackSourcesTest {
     }
 
     @Test
-    fun noPlayableQualitySurfacesAsDeterministicVvcMessage() {
+    fun noPlayableQualitySurfacesAsActionableMessage() {
         val message =
-            "本集低档为 VVC（bytevc2）编码，电视无法解码，可尝试其他集数"
+            "本集没有本机可解码的清晰度，可尝试其他集数或改解码方式"
         assertEquals(message, playbackFailureSummary(NoPlayableQualityException()))
         // 包在异常链里（openStream 由 playEpisode 的包装层传递）也要能识别。
         assertEquals(message, playbackFailureSummary(java.io.IOException("wrapper", NoPlayableQualityException())))
