@@ -3070,6 +3070,9 @@ class MainActivity : Activity() {
                                     respectHardwareMode = false,
                                 )
                             },
+                            relaxedSupportsTrack = {
+                                it == null || CodecCapabilities.supports(it, respectHardwareMode = false)
+                            },
                         ) {
                             it == null || CodecCapabilities.supports(it)
                         }
@@ -3361,6 +3364,10 @@ class MainActivity : Activity() {
                                             it.height,
                                             respectHardwareMode = false,
                                         )
+                                    },
+                                    relaxedSupportsTrack = {
+                                        it == null ||
+                                            CodecCapabilities.supports(it, respectHardwareMode = false)
                                     },
                                 ) {
                                     it == null || CodecCapabilities.supports(it)

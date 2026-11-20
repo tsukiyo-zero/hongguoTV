@@ -130,16 +130,18 @@ internal fun openStream(
     speculative: Boolean = false,
     /** 硬解模式把全部档位排除时的放宽判定；为空表示不做放宽回退。 */
     relaxedSupportsRendition: ((Rendition) -> Boolean)? = null,
+    /** 放宽重试时使用的 track 判定；为空则沿用 supportsTrack。 */
+    relaxedSupportsTrack: ((VideoTracks.Track?) -> Boolean)? = null,
     supportsTrack: (VideoTracks.Track?) -> Boolean,
 ): OpenedStream? {
     val ladder = repository.streamLadder(id, metadataAhead, speculative)
-    fun tryOrder(order: List<Rendition>): OpenedStream? {
+    fun tryOrder(order: List<Rendition>, trackCheck: (VideoTracks.Track?) -> Boolean): OpenedStream? {
         for (rendition in order) {
             val video = RemoteVideo(http, rendition.toStreamInfo())
             try {
                 video.prepare(initialBytes)
                 val track = video.trackInfo()
-                if (supportsTrack(track))
+                if (trackCheck(track))
                     return OpenedStream(video, rendition, ladder.renditions, track)
                 Log.i(
                     "HongguoTV",
@@ -158,10 +160,11 @@ internal fun openStream(
      * 再用宽松判定重试一次，避免「选了强制硬解反而什么也看不了」。
      */
     val strict = ladder.playbackOrder(maxQuality, supportsRendition)
-    tryOrder(strict)?.let { return it }
+    tryOrder(strict, supportsTrack)?.let { return it }
     if (relaxedSupportsRendition != null) {
         val relaxed = ladder.playbackOrder(maxQuality, relaxedSupportsRendition)
-        if (relaxed != strict) tryOrder(relaxed)?.let { return it }
+        if (relaxed != strict)
+            tryOrder(relaxed, relaxedSupportsTrack ?: supportsTrack)?.let { return it }
     }
     // 空阶梯维持 null（供给异常语义，由调用方提示）；非空阶梯走到这里说明每一档都被
     // 能力判定（metadata 过滤或 moov 复核）拒掉，属确定性失败。

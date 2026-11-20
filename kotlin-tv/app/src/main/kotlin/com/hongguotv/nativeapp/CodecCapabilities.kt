@@ -116,7 +116,8 @@ object CodecCapabilities {
     fun supports(rendition: Rendition) =
         supports(rendition.codec, rendition.width, rendition.height)
 
-    fun supports(track: VideoTracks.Track) = supports(track.fourcc, track.width, track.height)
+    fun supports(track: VideoTracks.Track, respectHardwareMode: Boolean = true) =
+        supports(track.fourcc, track.width, track.height, respectHardwareMode)
 
     /**
      * Records a runtime decode failure; true when the static probe had claimed support

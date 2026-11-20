@@ -210,6 +210,9 @@ internal class PublicFeedBackend(
                     respectHardwareMode = false,
                 )
             },
+            relaxedSupportsTrack = {
+                it == null || CodecCapabilities.supports(it, respectHardwareMode = false)
+            },
         ) {
             it == null || CodecCapabilities.supports(it)
         } ?: throw java.io.IOException("该作品暂时没有可试播的剧集")
