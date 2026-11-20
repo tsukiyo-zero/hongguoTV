@@ -36,15 +36,16 @@ internal object MobilePlayback {
         require(id.matches(Regex("[0-9]{1,30}")))
         RequestScope.ensureActive()
         val query = linkedMapOf("aid" to "8662", "app_name" to "novelread",
-            "version_code" to "74332", "version_name" to "7.4.3.32",
+            "version_code" to "74532", "version_name" to "7.4.5.32",
             "channel" to "vivo_8662_64", "device_platform" to "android",
-            "device_type" to "PGT-AN10", "os_version" to "12", "update_version_code" to "74332",
+            "device_type" to "PGT-AN10", "os_version" to "12", "update_version_code" to "74532",
             "iid" to device.getValue("iid"), "cdid" to device.getValue("cdid"),
             "device_id" to device.getValue("device_id"), "_rticket" to now.toString())
-        val url = "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1"
+        // 7.4.5.32 起新版客户端回到 v1 路径；:dr_scene 变体（player/default）对匿名请求返回空体。
+        val url = "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/v1"
             .toHttpUrl().newBuilder().apply { query.forEach { (k,v) -> addQueryParameter(k,v) } }.build()
         // 电视使用系统解码器，以等级 1 协商兼容资源；仍需按返回的实际编码过滤。
-        val payload = JSONObject("""{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]},"dr_scene":"player"}""")
+        val payload = JSONObject("""{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]}}""")
         val output = ByteArrayOutputStream()
         GZIPOutputStream(output).use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
         val bytes = output.toByteArray()

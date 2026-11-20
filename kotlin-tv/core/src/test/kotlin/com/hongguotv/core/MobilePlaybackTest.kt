@@ -49,7 +49,8 @@ class MobilePlaybackTest {
             val bytes = Buffer().apply { request.body!!.writeTo(this) }.readByteArray()
             assertArrayEquals(signed, bytes)
             assertEquals(target, request.url.toString())
-            assertEquals("/novel/player/multi_video_model/player/v1", request.url.encodedPath)
+            // 7.4.5.32 起回到 v1 路径；:dr_scene 变体只服务已登录的播放场景。
+            assertEquals("/novel/player/multi_video_model/v1", request.url.encodedPath)
             assertEquals("123456", request.url.queryParameter("device_id"))
             assertEquals("gzip", request.header("Content-Encoding"))
             assertEquals("synthetic", request.header("x-medusa"))
