@@ -33,6 +33,8 @@ import java.util.concurrent.TimeUnit
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class MainActivity : Activity() {
     private val decoderPrefs by lazy { getSharedPreferences("native-playback-v1", 0) }
+    /** 当前实际初始化的视频解码器名；null 表示尚未起播或未上报。 */
+    private var activeDecoder: String? = null
     private val bg = TvStyle.background
     private val surface = TvStyle.surface
     private val accent = TvStyle.accent
@@ -2305,6 +2307,21 @@ class MainActivity : Activity() {
                     speed = setting("默认倍速  ·  ${PlaybackSpeed.label(library.playbackSpeed)}") { showSpeedPicker(speed, false) }
                     lateinit var frame: TextView
                     frame = setting("画面模式  ·  ${library.frameMode.label}") { showFramePicker(frame, false) }
+                    lateinit var decode: TextView
+                    decode =
+                        setting("解码方式  ·  ${DecoderMode.read(decoderPrefs).label}") {
+                            val modes = DecoderMode.entries
+                            tvTools.choose(
+                                "解码方式",
+                                modes.map { it.label },
+                                decode,
+                                { choice ->
+                                    val picked = modes.getOrElse(choice) { DecoderMode.AUTO }
+                                    DecoderMode.write(decoderPrefs, picked)
+                                    decode.text = "解码方式  ·  ${picked.label}"
+                                },
+                            )
+                        }
                     toggle("自动连播", library.autoNext) { library.autoNext = it }
                     toggle("跨季自动连播（需开启自动连播）", library.seasonAutoplay) { library.seasonAutoplay = it }
                 }
@@ -3561,6 +3578,15 @@ class MainActivity : Activity() {
     private fun playbackDriftListener(p: ExoPlayer): AnalyticsListener {
         val guard = PlaybackSyncGuard()
         return object : AnalyticsListener {
+            override fun onVideoDecoderInitialized(
+                eventTime: AnalyticsListener.EventTime,
+                decoderName: String,
+                initializedTimestampMs: Long,
+                initializationDurationMs: Long,
+            ) {
+                activeDecoder = decoderName
+            }
+
             override fun onVideoFrameProcessingOffset(
                 eventTime: AnalyticsListener.EventTime,
                 totalProcessingOffsetUs: Long,
@@ -3586,6 +3612,34 @@ class MainActivity : Activity() {
                     }
             }
         }
+    }
+
+    /** 播放设置里的只读状态行：当前实际解码器、硬/软解判定与本机候选数量。 */
+    private fun decoderStatusLine(): String {
+        val mode = DecoderMode.read(decoderPrefs)
+        val base = DecoderMode.describe(activeDecoder, mode)
+        val stats = decoderCandidates()
+        // 候选统计用来区分「过滤器没生效」和「本机确实没有硬解」。
+        val lines = mutableListOf(base)
+        if (stats != null) lines += "本机 HEVC 解码器：硬解 ${stats.first} / 软解 ${stats.second}"
+        if (mode == DecoderMode.HARDWARE && stats != null && stats.first == 0)
+            lines += "HEVC 硬解不可用，选档已优先 H.264"
+        return lines.joinToString("\n")
+    }
+
+    private var decoderStats: Pair<Int, Int>? = null
+
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun decoderCandidates(): Pair<Int, Int>? {
+        decoderStats?.let { return it }
+        val infos =
+            runCatching {
+                    androidx.media3.exoplayer.mediacodec.MediaCodecSelector.DEFAULT
+                        .getDecoderInfos(androidx.media3.common.MimeTypes.VIDEO_H265, false, false)
+                }
+                .getOrNull() ?: return null
+        val soft = infos.count { it.softwareOnly }
+        return (infos.size - soft) to soft
     }
 
     private fun playedQualityLabel(opened: OpenedStream, maxQuality: Int): String {
@@ -4391,6 +4445,7 @@ class MainActivity : Activity() {
                     tvTools.choose(
                         "播放设置",
                         listOf(
+                            decoderStatusLine(),
                             "倍速 ${PlaybackSpeed.label(library.playbackSpeed)}",
                             "清晰度 ${library.maxQuality}P",
                             "画面 ${library.frameMode.label}",
@@ -4405,24 +4460,38 @@ class MainActivity : Activity() {
                             main.post {
                                 if (screen == "player" && more.isAttachedToWindow)
                                     when (choice) {
-                                        0 -> showSpeedPicker(more)
-                                        1 -> showQualityPicker(more, true)
-                                        2 -> showFramePicker(more, true)
-                                        3 -> {
-                                            val next = DecoderMode.read(decoderPrefs).next()
-                                            DecoderMode.write(decoderPrefs, next)
-                                            // 只影响下次创建播放器；提示用户切集或重开生效。
-                                            playbackText.text =
-                                                "解码方式：${next.label}（切集或重开本集后生效）"
-                                            showPanel()
+                                        0 -> {} // 只读状态行，不响应
+                                        1 -> showSpeedPicker(more)
+                                        2 -> showQualityPicker(more, true)
+                                        3 -> showFramePicker(more, true)
+                                        4 -> {
+                                            // 选择列表 + 立即按新模式重建播放器（保留当前播放位置）。
+                                            val modes = DecoderMode.entries
+                                            tvTools.choose(
+                                                "解码方式",
+                                                modes.map { it.label },
+                                                more,
+                                                { index ->
+                                                    val picked = modes.getOrElse(index) { DecoderMode.AUTO }
+                                                    DecoderMode.write(decoderPrefs, picked)
+                                                    val position = currentPosition()
+                                                    val playing = player?.playWhenReady ?: requestedAutoplay
+                                                    val episode = episodeIndex
+                                                    playbackText.text = "解码方式：${picked.label}，正在重建播放器…"
+                                                    // 解码器在播放器构造时选定，必须重建才能真正切换。
+                                                    releasePlayer(keepPrepared = true)
+                                                    playEpisode(episode, position, playing)
+                                                },
+                                                selected = modes.indexOf(DecoderMode.read(decoderPrefs)),
+                                            )
                                         }
-                                        4 -> showSleepPicker(more)
-                                        5 -> showRelaySettings(more)
-                                        6 -> {
+                                        5 -> showSleepPicker(more)
+                                        6 -> showRelaySettings(more)
+                                        7 -> {
                                             seekTo(0)
                                             hidePanel()
                                         }
-                                        7 -> {
+                                        8 -> {
                                             val count = CodecCapabilities.learnedCount()
                                             CodecCapabilities.resetLearned()
                                             android.util.Log.i(
@@ -4643,6 +4712,8 @@ class MainActivity : Activity() {
         playerView = null
         player?.release()
         player = null
+        // 解码器随播放器销毁，重建后由 onVideoDecoderInitialized 重新上报。
+        activeDecoder = null
         playbackReady = false
         transportPlay = null
         sleepButton = null
