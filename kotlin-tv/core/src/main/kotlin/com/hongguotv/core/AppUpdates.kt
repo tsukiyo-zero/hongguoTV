@@ -42,6 +42,25 @@ data class AppUpdate(
 
         const val GITHUB_RELEASES = "https://github.com/$REPOSITORY/releases"
 
+        /**
+         * `releases/latest/download/<file>` 不需要 API 就能取最新清单，适合做成兜底：
+         * GitCode API 限流（429）时依次尝试 GitHub 直连与国内加速前缀。
+         * 清单与安装包仍受 sha256、包名与签名校验约束，镜像无法把 APK 换成别的内容。
+         */
+        val MANIFEST_MIRRORS =
+            listOf(
+                "https://github.com",
+                "https://ghproxy.net/https://github.com",
+                "https://gh-proxy.com/https://github.com",
+                "https://ghfast.top/https://github.com",
+            )
+
+        /** 每个镜像对应的 releases 根地址，用于拼安装包下载链接。 */
+        fun releasesBaseOf(prefix: String) = "$prefix/$REPOSITORY/releases"
+
+        fun latestManifestUrl(prefix: String) =
+            "${releasesBaseOf(prefix)}/latest/download/update.json"
+
         fun latestTag(json: String): String {
             val release = JSONObject(json)
             require(!release.optBoolean("prerelease", false)) { "不能使用预发布版本" }
@@ -166,6 +185,9 @@ class AppUpdateRepository : java.io.Closeable {
                                 "api.github.com",
                                 "github.com",
                                 "objects.githubusercontent.com",
+                                "ghproxy.net",
+                                "gh-proxy.com",
+                                "ghfast.top",
                             )
                 )
                     throw IOException("更新下载地址不受支持")
@@ -201,32 +223,51 @@ class AppUpdateRepository : java.io.Closeable {
     }
 
     fun latest(): AppUpdate {
-        // GitCode API 会因账号级限流返回 429；此时回退到 GitHub 的同一份发行版清单，
-        // 两个平台发布的是同一套 tag 与 update.json。
-        val primary = runCatching { readMetadata(AppUpdate.LATEST_API) }
-        val (release, releasesBase) =
-            primary.fold(
-                onSuccess = { it to AppUpdate.RELEASES },
-                onFailure = {
-                    readMetadata(AppUpdate.LATEST_API_GITHUB) to AppUpdate.GITHUB_RELEASES
-                },
-            )
+        var lastError: Throwable? = null
+        // 1) GitCode API（主源，会按账号限流）
+        runCatching { fromRelease(readMetadata(AppUpdate.LATEST_API), AppUpdate.RELEASES) }
+            .onSuccess { return it }
+            .onFailure { lastError = it }
+        // 2) `releases/latest/download/update.json`：不需要任何 API，GitHub 直连与国内镜像依次尝试。
+        for (prefix in AppUpdate.MANIFEST_MIRRORS) {
+            runCatching {
+                    fromManifest(
+                        readMetadata(AppUpdate.latestManifestUrl(prefix)),
+                        AppUpdate.releasesBaseOf(prefix),
+                    )
+                }
+                .onSuccess { return it }
+                .onFailure { lastError = it }
+        }
+        throw (lastError as? IOException ?: IOException("无法检查更新，请稍后重试"))
+    }
+
+    /** 从 API 返回的发行版 JSON 读取 tag 并下载该 tag 的清单。 */
+    private fun fromRelease(release: String, releasesBase: String): AppUpdate {
         val tag =
             try {
                 AppUpdate.latestTag(release)
             } catch (_: Exception) {
                 throw IOException("最新发行版信息格式不正确")
             }
-        val metadata = readMetadata("$releasesBase/download/$tag/update.json")
+        return fromManifest(readMetadata("$releasesBase/download/$tag/update.json"), releasesBase, tag)
+    }
+
+    /** 解析清单并核对包名、标签；[expectedTag] 为空表示清单已是最新版本的直链。 */
+    private fun fromManifest(
+        metadata: String,
+        releasesBase: String,
+        expectedTag: String? = null,
+    ): AppUpdate {
         if (
             runCatching { JSONObject(metadata).optString("packageName") }.getOrDefault("") ==
                 "com.hongguotv.nativeapp"
         )
             throw IOException("当前发行版仍为旧包名，果映 TV 新包名正式更新尚未发布")
         return try {
-            AppUpdate.parse(metadata)
-                .copy(releasesBase = releasesBase)
-                .also { require(it.tag == tag) { "清单标签不匹配" } }
+            AppUpdate.parse(metadata).copy(releasesBase = releasesBase).also {
+                if (expectedTag != null) require(it.tag == expectedTag) { "清单标签不匹配" }
+            }
         } catch (_: Exception) {
             throw IOException("更新信息格式不正确")
         }
