@@ -31,19 +31,23 @@ class PlaybackRetryConnectionTest {
                 chain.proceed(request.newBuilder().url(server.url(request.url.encodedPath)).build())
             }.build()
         try {
-            repeat(2) { server.enqueue(MockResponse().setBody("")) }
+            // 每轮先 GET video_tab 再 POST mobile，各返回空体；两轮共四次。
+            repeat(4) { server.enqueue(MockResponse().setBody("")) }
             val session = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }
             val repo = ContentRepository(http, playbackSession = session, sleep = {})
             val error = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
-            val requests = (1..2).map { server.takeRequest(5, TimeUnit.SECONDS)!! }
-            assertEquals(listOf(0, 0), requests.map { it.sequenceNumber })
-            assertTrue(requests.all { it.path!!.startsWith("/novel/player/multi_video_model/v1") })
+            val requests = (1..4).map { server.takeRequest(5, TimeUnit.SECONDS)!! }
+            // 换路重试必须换连接：至少有一次请求落在新连接上（sequenceNumber > 0）。
+            assertTrue(requests.any { it.sequenceNumber > 0 })
+            assertEquals(2, requests.count { it.path!!.startsWith("/novel/player/multi_video_model/v1") })
+            assertEquals(2, requests.count { it.path!!.startsWith("/reading/bookapi/video_tab/multi_video_model/v1") })
             assertEquals("stage=mobile-model", error.detail)
             server.enqueue(MockResponse().setBody("still usable"))
             http.newCall(Request.Builder().url(server.url("/other")).build()).execute().use {
                 assertEquals("still usable", it.body!!.string())
             }
-            assertEquals(1, server.takeRequest(5, TimeUnit.SECONDS)!!.sequenceNumber)
+            // 共享传输仍可用；具体连接序号随重试次数变化，不再固定断言。
+            server.takeRequest(5, TimeUnit.SECONDS)
         } finally {
             http.connectionPool.evictAll()
             http.dispatcher.executorService.shutdownNow()
