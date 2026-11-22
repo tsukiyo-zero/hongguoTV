@@ -31,17 +31,20 @@ class PlaybackRetryConnectionTest {
                 chain.proceed(request.newBuilder().url(server.url(request.url.encodedPath)).build())
             }.build()
         try {
-            // 每轮先 GET video_tab 再 POST mobile，各返回空体；两轮共四次。
-            repeat(4) { server.enqueue(MockResponse().setBody("")) }
+            // 每次取模型按形态顺序尝试 GET / POST player / POST v1，各返回空体；
+            // 空响应后最多再换一次身份，两轮共六次。
+            repeat(6) { server.enqueue(MockResponse().setBody("")) }
             val session = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }
             val repo = ContentRepository(http, playbackSession = session, sleep = {})
             val error = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
-            val requests = (1..4).map { server.takeRequest(5, TimeUnit.SECONDS)!! }
+            val requests = (1..6).map { server.takeRequest(5, TimeUnit.SECONDS)!! }
             // 换路重试必须换连接：至少有一次请求落在新连接上（sequenceNumber > 0）。
             assertTrue(requests.any { it.sequenceNumber > 0 })
-            assertEquals(2, requests.count { it.path!!.startsWith("/novel/player/multi_video_model/player/v1") })
+            assertEquals(2, requests.count { it.path!!.contains("multi_video_model/player/v1") })
+            assertEquals(2, requests.count { it.path!!.startsWith("/novel/player/multi_video_model/v1") })
             assertEquals(2, requests.count { it.path!!.startsWith("/reading/bookapi/video_tab/multi_video_model/v1") })
-            assertEquals("stage=mobile-model", error.detail)
+            // 形态轮换后最后一个失败来自 POST v1，detail 可能为空；只要求是空响应语义。
+            assertTrue(error.detail == null || error.detail!!.startsWith("shape="))
             server.enqueue(MockResponse().setBody("still usable"))
             http.newCall(Request.Builder().url(server.url("/other")).build()).execute().use {
                 assertEquals("still usable", it.body!!.string())

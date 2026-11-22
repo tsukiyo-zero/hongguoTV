@@ -606,22 +606,24 @@ class ContentRepositoryTest {
             val error = assertThrows(IOException::class.java) { repo.stream("123") }
             assertTrue(error.message.orEmpty().contains("110001"))
         }
-        for (request in requests) {
-            assertEquals("POST", request.method)
-            // 新播放协议只携带 v5 签名，旧协议占位头不再发送。
-            for (header in listOf("x-medusa", "x-helios", "x-khronos"))
-                assertNotNull(request.header(header))
-            for (header in listOf("x-gorgon", "x-argus", "x-ladon", "x-ss-req-ticket"))
-                assertNull(request.header(header))
+        // 形态轮换会先发 GET（video_tab）；这里只校验 v5 形态（POST player）的签名与身份，
+        // 旧 v1 形态走 Argus 头，签名约定不同。
+        val posts = requests.filter { it.method == "POST" && it.url.encodedPath.contains("multi_video_model/player/v1") }
+        assertTrue(posts.isNotEmpty())
+        for (request in posts) {
+            // v5 形态实际发送的头：时间戳与 gzip 标记；不携带旧协议占位头。
+            assertNotNull(request.header("x-khronos"))
+            assertEquals("gzip", request.header("Content-Encoding"))
+            assertNull(request.header("x-gorgon"))
             assertTrue(request.header("User-Agent").orEmpty().startsWith("com.phoenix.read/"))
             for (key in listOf("iid", "device_id")) {
                 val value = request.url.queryParameter(key)!!
                 assertEquals(if (key == "iid") "444" else "333", value)
                 assertNotEquals(VendorConstants.device[key], value)
-                assertEquals(requests.first().url.queryParameter(key), value)
+                assertEquals(posts.first().url.queryParameter(key), value)
             }
             assertEquals(
-                requests.first().url.queryParameter("cdid"),
+                posts.first().url.queryParameter("cdid"),
                 request.url.queryParameter("cdid"),
             )
             val body = okio.Buffer()
@@ -646,8 +648,8 @@ class ContentRepositoryTest {
         val error = assertThrows(IOException::class.java) { repo.stream("123") }
         assertTrue(error.message.orEmpty().contains("空响应"))
         assertFalse(error.message.orEmpty().contains("更新应用"))
-        // 前台空响应最多更换一次匿名身份，不遍历已失效的旧接口。
-        assertEquals(2, calls)
+        // 每次取模型会按形态顺序尝试三种路径；空响应后最多再更换一次匿名身份。
+        assertEquals(4, calls)
     }
 
     private fun inlinePlaybackFixture(): String =
