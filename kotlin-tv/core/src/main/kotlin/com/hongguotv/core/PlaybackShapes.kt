@@ -24,14 +24,16 @@ enum class PlaybackShape(val label: String) {
  */
 object PlaybackShapeMemory {
     @Volatile private var preferred: PlaybackShape? = null
+    private val failures = mutableMapOf<PlaybackShape, Int>()
 
-    /** 形态变化回调；app 层用它把结果写进 SharedPreferences。 */
-    @Volatile var onChange: ((PlaybackShape) -> Unit)? = null
+    /** 形态变化回调（null 表示清空记忆）；app 层用它把结果写进 SharedPreferences。 */
+    @Volatile var onChange: ((PlaybackShape?) -> Unit)? = null
 
     fun current(): PlaybackShape? = preferred
 
     fun restore(shape: PlaybackShape?) {
         preferred = shape
+        failures.clear()
     }
 
     fun order(): List<PlaybackShape> =
@@ -41,8 +43,23 @@ object PlaybackShapeMemory {
         }
 
     fun success(shape: PlaybackShape) {
+        failures.clear()
         if (preferred == shape) return
         preferred = shape
         onChange?.invoke(shape)
+    }
+
+    /**
+     * 记录一次失败：首选形态连续失败两次就清空记忆，
+     * 否则平台长期关掉某条路径时，每次起播都会先白试一次它。
+     */
+    fun failure(shape: PlaybackShape) {
+        val count = (failures[shape] ?: 0) + 1
+        failures[shape] = count
+        if (count >= 2 && preferred == shape) {
+            preferred = null
+            failures.clear()
+            onChange?.invoke(null)
+        }
     }
 }

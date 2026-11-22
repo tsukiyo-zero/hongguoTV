@@ -916,14 +916,27 @@ constructor(
                 ?: throw IOException("后台播放准备等待前台设备注册")
                 else playbackSession.profile(transport())
             fun fetch(profile: PlaybackDeviceSession.Profile, fresh: Boolean = false): JSONObject {
-                val client = transport().let {
-                    if (fresh) it.newBuilder().connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS)).build() else it
-                }
+                // 平台在 GET / POST player / POST v1 三种形态间反复切换；
+                // 按「上次成功的形态优先」依次尝试，成功即记住，避免每次改常量发版。
+                val shapes = PlaybackShapeMemory.order()
+                var last: IOException? = null
                 return try {
-                    // 平台在 GET / POST player / POST v1 三种形态间反复切换；
-                    // 按「上次成功的形态优先」依次尝试，成功即记住，避免每次改常量发版。
-                    var last: IOException? = null
-                    for (shape in PlaybackShapeMemory.order()) {
+                    for ((index, shape) in shapes.withIndex()) {
+                        // 均分剩余预算：否则第一条形态超时会吃掉全部额度，后面两条根本试不到。
+                        val left =
+                            TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()).coerceAtLeast(1)
+                        val budget = (left / (shapes.size - index)).coerceAtLeast(600)
+                        val client =
+                            transport()
+                                .newBuilder()
+                                .callTimeout(budget, TimeUnit.MILLISECONDS)
+                                .readTimeout(minOf(budget, 4000), TimeUnit.MILLISECONDS)
+                                .connectTimeout(minOf(budget, 4000), TimeUnit.MILLISECONDS)
+                                .let {
+                                    if (fresh)
+                                        it.connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS)).build()
+                                    else it.build()
+                                }
                         try {
                             val model =
                                 when (shape) {
@@ -944,12 +957,15 @@ constructor(
                             return model
                         } catch (error: IOException) {
                             if (Thread.currentThread().isInterrupted) throw error
+                            PlaybackShapeMemory.failure(shape)
                             last = error
+                        } finally {
+                            if (fresh) client.connectionPool.evictAll()
                         }
                     }
                     throw last ?: IOException("播放接口暂不可用")
-                } finally {
-                    if (fresh) client.connectionPool.evictAll()
+                } catch (error: IOException) {
+                    throw error
                 }
             }
             var owner = identity

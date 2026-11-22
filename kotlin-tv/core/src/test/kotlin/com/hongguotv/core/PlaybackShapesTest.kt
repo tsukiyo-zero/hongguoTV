@@ -42,6 +42,25 @@ class PlaybackShapesTest {
     }
 
     @Test
+    fun repeatedFailureClearsPreference() {
+        PlaybackShapeMemory.restore(PlaybackShape.POST_PLAYER)
+        PlaybackShapeMemory.failure(PlaybackShape.POST_PLAYER)
+        assertEquals(PlaybackShape.POST_PLAYER, PlaybackShapeMemory.current())
+        PlaybackShapeMemory.failure(PlaybackShape.POST_PLAYER)
+        assertNull(PlaybackShapeMemory.current())
+    }
+
+    @Test
+    fun successResetsFailureCounters() {
+        PlaybackShapeMemory.restore(PlaybackShape.POST_PLAYER)
+        PlaybackShapeMemory.failure(PlaybackShape.POST_PLAYER)
+        PlaybackShapeMemory.success(PlaybackShape.POST_PLAYER)
+        PlaybackShapeMemory.failure(PlaybackShape.POST_PLAYER)
+        // 成功一次后计数清零，单次失败不应清空记忆。
+        assertEquals(PlaybackShape.POST_PLAYER, PlaybackShapeMemory.current())
+    }
+
+    @Test
     fun parseRoundTripsLabels() {
         PlaybackShape.entries.forEach { assertEquals(it, PlaybackShape.parse(it.label)) }
         assertNull(PlaybackShape.parse("unknown"))

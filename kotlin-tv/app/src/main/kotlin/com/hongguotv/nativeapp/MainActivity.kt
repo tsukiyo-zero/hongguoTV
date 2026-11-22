@@ -40,7 +40,11 @@ class MainActivity : Activity() {
             com.hongguotv.core.PlaybackShape.parse(decoderPrefs.getString("playback-shape", null))
         )
         com.hongguotv.core.PlaybackShapeMemory.onChange = { shape ->
-            decoderPrefs.edit().putString("playback-shape", shape.label).apply()
+            decoderPrefs.edit()
+                .apply {
+                    if (shape == null) remove("playback-shape") else putString("playback-shape", shape.label)
+                }
+                .apply()
         }
     }
     /** 当前实际初始化的视频解码器名；null 表示尚未起播或未上报。 */
