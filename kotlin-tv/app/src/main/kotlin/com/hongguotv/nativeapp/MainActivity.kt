@@ -33,6 +33,16 @@ import java.util.concurrent.TimeUnit
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class MainActivity : Activity() {
     private val decoderPrefs by lazy { getSharedPreferences("native-playback-v1", 0) }
+
+    /** 播放形态记忆：恢复上次成功的一条，并把它写回偏好。 */
+    private fun initPlaybackShape() {
+        com.hongguotv.core.PlaybackShapeMemory.restore(
+            com.hongguotv.core.PlaybackShape.parse(decoderPrefs.getString("playback-shape", null))
+        )
+        com.hongguotv.core.PlaybackShapeMemory.onChange = { shape ->
+            decoderPrefs.edit().putString("playback-shape", shape.label).apply()
+        }
+    }
     /** 当前实际初始化的视频解码器名；null 表示尚未起播或未上报。 */
     private var activeDecoder: String? = null
     private val bg = TvStyle.background
@@ -426,6 +436,7 @@ class MainActivity : Activity() {
     // 启动入口：创建根容器，初始化账户、更新和媒体控制，再异步读取本机记录。
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
+        initPlaybackShape()
         window.decorView.systemUiVisibility =
             View.SYSTEM_UI_FLAG_FULLSCREEN or
                 View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or

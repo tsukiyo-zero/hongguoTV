@@ -352,6 +352,42 @@ constructor(
         }
     }
 
+    /**
+     * 形态「POST v1」：`/novel/player/multi_video_model/v1/`。
+     * 2026-11-20 早与 11-22 之外的时段可用；由 [PlaybackShapeMemory] 决定是否优先尝试。
+     */
+    private fun postModelV1(
+        id: String,
+        identity: PlaybackDeviceSession.Profile,
+        client: OkHttpClient,
+    ): JSONObject {
+        val payload =
+            """{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]}}"""
+                .toByteArray()
+        val request =
+            playbackRequest(
+                "https://${PlayRetryPlan.hosts.first()}/novel/player/multi_video_model/v1/",
+                identity,
+                body = payload,
+            )
+        val text =
+            fetchPlaybackModel(request, client, PlaybackRequestTrace(), PlaybackRequestTrace.Stage.POST)
+        val data =
+            try {
+                JSONObject(text)
+            } catch (_: Exception) {
+                throw IOException("播放信息格式异常")
+            }
+        val code = data.optInt("Code", data.optInt("code", 0))
+        if (code != 0) throw IOException("播放接口暂不可用（错误码 $code）")
+        val map = data.optJSONObject("data") ?: throw IOException("播放信息为空")
+        val row =
+            map.optJSONObject(id)
+                ?: map.keys().asSequence().mapNotNull { map.optJSONObject(it) }.firstOrNull()
+                ?: throw IOException("播放信息为空")
+        return JSONObject().put("video_model", row.opt("video_model") ?: row)
+    }
+
     private fun fetchPlaybackModel(
         request: Request.Builder,
         client: OkHttpClient,
@@ -884,14 +920,34 @@ constructor(
                     if (fresh) it.newBuilder().connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS)).build() else it
                 }
                 return try {
-                    // 2026-11-20 起匿名 POST（含 v1 与 :dr_scene 变体）全部返回空体，
-                    // 而 GET video_tab 仍可拿到模型，因此先走 GET，失败再退回 POST。
-                    runCatching {
-                            tabVideoModel(id, profile, PlaybackRequestTrace(), client)
+                    // 平台在 GET / POST player / POST v1 三种形态间反复切换；
+                    // 按「上次成功的形态优先」依次尝试，成功即记住，避免每次改常量发版。
+                    var last: IOException? = null
+                    for (shape in PlaybackShapeMemory.order()) {
+                        try {
+                            val model =
+                                when (shape) {
+                                    PlaybackShape.GET_VIDEO_TAB ->
+                                        tabVideoModel(id, profile, PlaybackRequestTrace(), client)
+                                            ?: throw EmptyPlaybackResponseException("shape=get")
+                                    PlaybackShape.POST_PLAYER ->
+                                        MobilePlayback.model(
+                                            id,
+                                            profile.values,
+                                            client,
+                                            MobilePlayback.signer,
+                                            clock(),
+                                        )
+                                    PlaybackShape.POST_V1 -> postModelV1(id, profile, client)
+                                }
+                            PlaybackShapeMemory.success(shape)
+                            return model
+                        } catch (error: IOException) {
+                            if (Thread.currentThread().isInterrupted) throw error
+                            last = error
                         }
-                        .getOrNull()
-                        ?.let { return it }
-                    MobilePlayback.model(id, profile.values, client, MobilePlayback.signer, clock())
+                    }
+                    throw last ?: IOException("播放接口暂不可用")
                 } finally {
                     if (fresh) client.connectionPool.evictAll()
                 }
