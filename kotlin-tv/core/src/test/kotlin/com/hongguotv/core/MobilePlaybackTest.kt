@@ -50,7 +50,8 @@ class MobilePlaybackTest {
             assertArrayEquals(signed, bytes)
             assertEquals(target, request.url.toString())
             // 7.4.5.32 起回到 v1 路径；:dr_scene 变体只服务已登录的播放场景。
-            assertEquals("/novel/player/multi_video_model/v1", request.url.encodedPath)
+            // 2026-11-22：v1 关闭、player 变体恢复；路径随平台在两形态间切换。
+            assertEquals("/novel/player/multi_video_model/player/v1", request.url.encodedPath)
             assertEquals("123456", request.url.queryParameter("device_id"))
             assertEquals("gzip", request.header("Content-Encoding"))
             assertEquals("synthetic", request.header("x-medusa"))

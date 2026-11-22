@@ -39,7 +39,7 @@ class PlaybackRetryConnectionTest {
             val requests = (1..4).map { server.takeRequest(5, TimeUnit.SECONDS)!! }
             // 换路重试必须换连接：至少有一次请求落在新连接上（sequenceNumber > 0）。
             assertTrue(requests.any { it.sequenceNumber > 0 })
-            assertEquals(2, requests.count { it.path!!.startsWith("/novel/player/multi_video_model/v1") })
+            assertEquals(2, requests.count { it.path!!.startsWith("/novel/player/multi_video_model/player/v1") })
             assertEquals(2, requests.count { it.path!!.startsWith("/reading/bookapi/video_tab/multi_video_model/v1") })
             assertEquals("stage=mobile-model", error.detail)
             server.enqueue(MockResponse().setBody("still usable"))

@@ -393,11 +393,13 @@ class ContentRepositoryTest {
                             assertEquals("1024", request.url.queryParameter("video_platform"))
                             fixtureResponse(request, videoTabModel)
                         }
-                        "/novel/player/multi_video_model/v1/" -> {
-                            legacyCalls.incrementAndGet()
-                            fixtureResponse(request, playbackModel)
-                        }
-                        else -> fixtureResponse(request, "")
+                        // 平台会在 v1 / player 变体之间切换，路径后续还可能再变；
+                        // 这里对所有 POST 都返回模型，只让 GET video_tab 保持 PARAM_INVALID。
+                        else ->
+                            if (request.method == "POST" && request.url.encodedPath.contains("multi_video_model")) {
+                                legacyCalls.incrementAndGet()
+                                fixtureResponse(request, playbackModel)
+                            } else fixtureResponse(request, "")
                     }
                 }
                 .build()
@@ -410,26 +412,24 @@ class ContentRepositoryTest {
 
     /** 新接口参数不合法或降级时回退旧接口，不改变既有空响应恢复路径。 */
     @Test
-    fun videoTabParamInvalidFallsBackToLegacyEndpoint() {
-        val legacyCalls = AtomicInteger()
+    fun streamLadderPrefersGetVideoTabOverLegacyPost() {
+        val postCalls = java.util.concurrent.atomic.AtomicInteger()
         val http =
             OkHttpClient.Builder()
                 .addInterceptor { chain ->
                     val request = chain.request()
-                    when (request.url.encodedPath) {
-                        "/service/2/device_register/" ->
+                    when {
+                        request.url.encodedPath == "/service/2/device_register/" ->
                             fixtureResponse(
                                 request,
                                 """{"device_id":"333","install_id":"444"}""",
                                 setCookie = true,
                             )
-                        "/reading/bookapi/video_tab/multi_video_model/v1/" ->
-                            fixtureResponse(
-                                request,
-                                """{"code":100103,"message":"PARAM_INVALID","data":null}""",
-                            )
-                        "/novel/player/multi_video_model/v1/" -> {
-                            legacyCalls.incrementAndGet()
+                        request.url.encodedPath.startsWith(
+                            "/reading/bookapi/video_tab/multi_video_model/v1"
+                        ) -> fixtureResponse(request, videoTabModel)
+                        request.method == "POST" -> {
+                            postCalls.incrementAndGet()
                             fixtureResponse(request, playbackModel)
                         }
                         else -> fixtureResponse(request, "")
@@ -437,10 +437,12 @@ class ContentRepositoryTest {
                 }
                 .build()
         val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession())
-        val ladder = repo.legacyStreamLadder("123")
+        val ladder = repo.streamLadder("123")
         assertEquals(1, ladder.renditions.size)
-        assertEquals(1, legacyCalls.get())
+        // GET video_tab 可用时不应再打 POST（平台 2026-11-20 起只放 GET）。
+        assertEquals(0, postCalls.get())
     }
+
 
     @Test
     fun inlinePlaybackModelUsesItsOwnMetadataAndKeyWithoutFallbackRequest() {
