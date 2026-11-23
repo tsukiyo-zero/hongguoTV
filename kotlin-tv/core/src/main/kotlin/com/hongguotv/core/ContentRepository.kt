@@ -941,8 +941,13 @@ constructor(
                             val model =
                                 when (shape) {
                                     PlaybackShape.GET_VIDEO_TAB ->
-                                        tabVideoModel(id, profile, PlaybackRequestTrace(), client)
-                                            ?: throw EmptyPlaybackResponseException("shape=get")
+                                        MobilePlayback.getVideoTab(
+                                            id,
+                                            profile.values,
+                                            client,
+                                            MobilePlayback.signer,
+                                            clock(),
+                                        )
                                     PlaybackShape.POST_PLAYER ->
                                         MobilePlayback.model(
                                             id,

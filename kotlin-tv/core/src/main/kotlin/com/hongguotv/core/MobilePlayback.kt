@@ -31,6 +31,79 @@ internal object MobilePlayback {
         MobileSignedRequest(request.url, request.headers)
     }
 
+    /**
+     * 形态「GET video_tab」：与 [model] 共用同一套 v5 签名与 7.4.5.32 参数，
+     * 只是改成 GET + 查询参数，响应结构为 `data.video_model_data[id].video_model`。
+     * 平台 11-23 起只放行这一条，旧的 Argus 签名 GET 会被静默丢弃。
+     */
+    fun getVideoTab(
+        id: String,
+        device: Map<String, String>,
+        http: OkHttpClient,
+        signer: MobilePlaybackSigner,
+        now: Long,
+    ): JSONObject {
+        require(id.matches(Regex("[0-9]{1,30}")))
+        RequestScope.ensureActive()
+        val query =
+            linkedMapOf(
+                "aid" to "8662", "app_name" to "novelread",
+                "version_code" to "74532", "version_name" to "7.4.5.32",
+                "channel" to "vivo_8662_64", "device_platform" to "android",
+                "device_type" to "PGT-AN10", "os_version" to "12",
+                "update_version_code" to "74532",
+                "iid" to device.getValue("iid"), "cdid" to device.getValue("cdid"),
+                "device_id" to device.getValue("device_id"), "_rticket" to now.toString(),
+                "video_id" to id, "video_id_type" to "0", "device_level" to "1",
+                "need_all_video_definition" to "1", "need_mp4_align" to "0",
+                "use_os_player" to "0", "video_platform" to "1024",
+                "source" to "0", "from_video_id" to "",
+            )
+        val url =
+            "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1"
+                .toHttpUrl()
+                .newBuilder()
+                .apply { query.forEach { (k, v) -> addQueryParameter(k, v) } }
+                .build()
+        val signed = signer.sign(url.toString(), ByteArray(0), device)
+        val request =
+            Request.Builder()
+                .url(signed.url)
+                .header(
+                    "User-Agent",
+                    "com.phoenix.read/74532 (Linux; U; Android 12; zh_CN_#Hans; PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)",
+                )
+                .header("Accept", "application/json")
+                .apply { signed.headers.forEach { (k, v) -> header(k, v) } }
+                .get()
+        val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+        return RequestScope.execute(transport.newCall(request.build())) { response ->
+            if (!response.isSuccessful) throw IOException("播放接口 HTTP ${response.code}")
+            val text = response.body?.string().orEmpty()
+            if (text.isBlank()) throw EmptyPlaybackResponseException("shape=get")
+            val root =
+                runCatching { JSONObject(text) }.getOrElse { throw IOException("播放信息格式异常") }
+            val code = root.optInt("code", root.optInt("Code", -1))
+            if (code != 0) throw IOException("播放接口暂不可用（错误码 $code）")
+            val data = root.optJSONObject("data") ?: throw IOException("播放信息为空")
+            val rows = data.optJSONObject("video_model_data") ?: data
+            val row =
+                rows.optJSONObject(id)
+                    ?: rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.firstOrNull()
+                    ?: throw IOException("播放信息为空")
+            val raw = row.opt("video_model") ?: throw IOException("播放信息没有可用资源")
+            val model =
+                when (raw) {
+                    is JSONObject -> raw
+                    is String -> runCatching { JSONObject(raw) }.getOrNull()
+                    else -> null
+                } ?: throw IOException("播放信息没有可用资源")
+            if ((model.optJSONArray("video_list")?.length() ?: 0) == 0 && !model.has("fallback_api"))
+                throw IOException("播放信息没有可用资源")
+            JSONObject().put("video_model", model)
+        }
+    }
+
     fun model(id: String, device: Map<String, String>, http: OkHttpClient,
                signer: MobilePlaybackSigner, now: Long): JSONObject {
         require(id.matches(Regex("[0-9]{1,30}")))
