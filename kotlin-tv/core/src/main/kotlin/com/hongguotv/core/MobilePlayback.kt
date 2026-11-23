@@ -105,7 +105,8 @@ internal object MobilePlayback {
     }
 
     fun model(id: String, device: Map<String, String>, http: OkHttpClient,
-               signer: MobilePlaybackSigner, now: Long): JSONObject {
+               signer: MobilePlaybackSigner, now: Long,
+               segment: String = "novel/player/multi_video_model/player/v1"): JSONObject {
         require(id.matches(Regex("[0-9]{1,30}")))
         RequestScope.ensureActive()
         val query = linkedMapOf("aid" to "8662", "app_name" to "novelread",
@@ -117,7 +118,7 @@ internal object MobilePlayback {
         // 2026-11-22：v1 路径被关，`:dr_scene=player` 变体重新可用（与 11-20 恰好相反）。
         // 平台在这两者之间来回切换，保持两条路径轮换探测比写死一条更稳。
         val url =
-            "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1"
+            "https://api5-normal-sinfonlinea.fqnovel.com/$segment"
             .toHttpUrl().newBuilder().apply { query.forEach { (k,v) -> addQueryParameter(k,v) } }.build()
         // 电视使用系统解码器，以等级 1 协商兼容资源；仍需按返回的实际编码过滤。
         val payload = JSONObject("""{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]}}""")

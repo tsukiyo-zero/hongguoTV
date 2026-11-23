@@ -2,25 +2,53 @@
 package com.hongguotv.core
 
 /**
- * 播放模型的请求形态。
+ * 播放模型的请求路径。
  *
- * 平台在这三条路径之间反复切换（2026-11-20 早：v1 可用；11-20 晚：仅 GET；11-22：player 可用）。
- * 与其每次改常量发版，不如把三种形态都实现，运行时轮换并记住可用的一条。
+ * 平台在 2026-11 反复切换：11-20 早只放 v1、11-20 晚只放 GET、11-22 恢复 player、
+ * 11-23 再次只放 GET。
  */
-enum class PlaybackShape(val label: String) {
-    GET_VIDEO_TAB("get-video-tab"),
-    POST_PLAYER("post-player"),
-    POST_V1("post-v1");
+enum class PlaybackPath(val label: String, val segment: String) {
+    GET_VIDEO_TAB("get", "reading/bookapi/video_tab/multi_video_model/v1"),
+    POST_PLAYER("player", "novel/player/multi_video_model/player/v1"),
+    POST_V1("v1", "novel/player/multi_video_model/v1"),
+}
+
+/** 播放请求的签名规范：v5（x-khronos/x-ss-stub）与旧 Argus（x-argus/x-ladon）。 */
+enum class PlaybackSigner(val label: String) {
+    V5("v5"),
+    ARGUS("argus"),
+}
+
+/**
+ * 形态 = 路径 × 签名规范。
+ *
+ * 只换路径不换签名是不够的：11-23 的故障正是「路径没变、签名规范变了」，
+ * 固定签名会让轮换在同一条路径上反复空转。因此把两者都纳入形态维度。
+ */
+data class PlaybackShape(val path: PlaybackPath, val signer: PlaybackSigner) {
+    val label: String = "${path.label}-${signer.label}"
 
     companion object {
-        fun parse(value: String?): PlaybackShape? = entries.firstOrNull { it.label == value }
+        /** 默认顺序：近期验证过的组合优先，其余作为兜底矩阵。 */
+        val all: List<PlaybackShape> =
+            listOf(
+                PlaybackShape(PlaybackPath.GET_VIDEO_TAB, PlaybackSigner.V5),
+                PlaybackShape(PlaybackPath.POST_PLAYER, PlaybackSigner.V5),
+                PlaybackShape(PlaybackPath.POST_V1, PlaybackSigner.ARGUS),
+                PlaybackShape(PlaybackPath.GET_VIDEO_TAB, PlaybackSigner.ARGUS),
+                PlaybackShape(PlaybackPath.POST_V1, PlaybackSigner.V5),
+                PlaybackShape(PlaybackPath.POST_PLAYER, PlaybackSigner.ARGUS),
+            )
+
+        fun parse(value: String?): PlaybackShape? = all.firstOrNull { it.label == value }
     }
 }
 
 /**
  * 记住最近一次成功的形态：进程内生效，[onChange] 由 app 层接到偏好存储上。
  *
- * 顺序规则：优先上次成功的形态，其余按枚举顺序兜底——平台切换后第一条失败会很快落到下一条。
+ * 顺序规则：优先上次成功的形态，其余按 [PlaybackShape.all] 兜底；
+ * 首选形态连续失败两次即清空，避免平台长期关掉某条组合时每次都白试。
  */
 object PlaybackShapeMemory {
     @Volatile private var preferred: PlaybackShape? = null
@@ -39,7 +67,7 @@ object PlaybackShapeMemory {
     fun order(): List<PlaybackShape> =
         buildList {
             preferred?.let { add(it) }
-            PlaybackShape.entries.filterTo(this) { it != preferred }
+            PlaybackShape.all.filterTo(this) { it != preferred }
         }
 
     fun success(shape: PlaybackShape) {
@@ -49,10 +77,6 @@ object PlaybackShapeMemory {
         onChange?.invoke(shape)
     }
 
-    /**
-     * 记录一次失败：首选形态连续失败两次就清空记忆，
-     * 否则平台长期关掉某条路径时，每次起播都会先白试一次它。
-     */
     fun failure(shape: PlaybackShape) {
         val count = (failures[shape] ?: 0) + 1
         failures[shape] = count

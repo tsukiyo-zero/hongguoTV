@@ -4,10 +4,15 @@ package com.hongguotv.core
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** 形态记忆：顺序、恢复与成功回调。 */
+/** 形态（路径 × 签名）记忆：顺序、恢复、成功与失败降级。 */
 class PlaybackShapesTest {
+    private val getV5 = PlaybackShape(PlaybackPath.GET_VIDEO_TAB, PlaybackSigner.V5)
+    private val playerV5 = PlaybackShape(PlaybackPath.POST_PLAYER, PlaybackSigner.V5)
+    private val v1Argus = PlaybackShape(PlaybackPath.POST_V1, PlaybackSigner.ARGUS)
+
     @After
     fun reset() {
         PlaybackShapeMemory.restore(null)
@@ -15,55 +20,68 @@ class PlaybackShapesTest {
     }
 
     @Test
-    fun defaultOrderFollowsEnumOrder() {
+    fun coversAllPathAndSignerCombinations() {
+        // 3 条路径 × 2 种签名 = 6 种形态，缺一种就少一条兜底。
+        assertEquals(6, PlaybackShape.all.size)
+        assertEquals(PlaybackShape.all.size, PlaybackShape.all.map { it.label }.toSet().size)
+        PlaybackPath.entries.forEach { path ->
+            PlaybackSigner.entries.forEach { signer ->
+                assertTrue(
+                    "missing ${path.label}-${signer.label}",
+                    PlaybackShape.all.contains(PlaybackShape(path, signer)),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun defaultOrderStartsWithRecentlyVerifiedCombination() {
         PlaybackShapeMemory.restore(null)
-        assertEquals(
-            listOf(PlaybackShape.GET_VIDEO_TAB, PlaybackShape.POST_PLAYER, PlaybackShape.POST_V1),
-            PlaybackShapeMemory.order(),
-        )
+        val order = PlaybackShapeMemory.order()
+        assertEquals(getV5, order.first())
+        assertEquals(PlaybackShape.all.size, order.size)
     }
 
     @Test
     fun preferredShapeMovesToFront() {
-        PlaybackShapeMemory.restore(PlaybackShape.POST_PLAYER)
-        val order = PlaybackShapeMemory.order()
-        assertEquals(PlaybackShape.POST_PLAYER, order.first())
-        assertEquals(3, order.size)
+        PlaybackShapeMemory.restore(v1Argus)
+        assertEquals(v1Argus, PlaybackShapeMemory.order().first())
     }
 
     @Test
     fun successUpdatesPreferenceAndNotifiesOnce() {
         var changes = 0
         PlaybackShapeMemory.onChange = { changes++ }
-        PlaybackShapeMemory.success(PlaybackShape.POST_V1)
-        PlaybackShapeMemory.success(PlaybackShape.POST_V1)
+        PlaybackShapeMemory.success(playerV5)
+        PlaybackShapeMemory.success(playerV5)
         assertEquals(1, changes)
-        assertEquals(PlaybackShape.POST_V1, PlaybackShapeMemory.current())
+        assertEquals(playerV5, PlaybackShapeMemory.current())
     }
 
     @Test
     fun repeatedFailureClearsPreference() {
-        PlaybackShapeMemory.restore(PlaybackShape.POST_PLAYER)
-        PlaybackShapeMemory.failure(PlaybackShape.POST_PLAYER)
-        assertEquals(PlaybackShape.POST_PLAYER, PlaybackShapeMemory.current())
-        PlaybackShapeMemory.failure(PlaybackShape.POST_PLAYER)
+        PlaybackShapeMemory.restore(playerV5)
+        PlaybackShapeMemory.failure(playerV5)
+        assertEquals(playerV5, PlaybackShapeMemory.current())
+        PlaybackShapeMemory.failure(playerV5)
         assertNull(PlaybackShapeMemory.current())
     }
 
     @Test
     fun successResetsFailureCounters() {
-        PlaybackShapeMemory.restore(PlaybackShape.POST_PLAYER)
-        PlaybackShapeMemory.failure(PlaybackShape.POST_PLAYER)
-        PlaybackShapeMemory.success(PlaybackShape.POST_PLAYER)
-        PlaybackShapeMemory.failure(PlaybackShape.POST_PLAYER)
-        // 成功一次后计数清零，单次失败不应清空记忆。
-        assertEquals(PlaybackShape.POST_PLAYER, PlaybackShapeMemory.current())
+        PlaybackShapeMemory.restore(playerV5)
+        PlaybackShapeMemory.failure(playerV5)
+        PlaybackShapeMemory.success(playerV5)
+        PlaybackShapeMemory.failure(playerV5)
+        assertEquals(playerV5, PlaybackShapeMemory.current())
     }
 
     @Test
     fun parseRoundTripsLabels() {
-        PlaybackShape.entries.forEach { assertEquals(it, PlaybackShape.parse(it.label)) }
+        PlaybackShape.all.forEach { assertEquals(it, PlaybackShape.parse(it.label)) }
         assertNull(PlaybackShape.parse("unknown"))
         assertNull(PlaybackShape.parse(null))
+        // 旧版只存了路径名，解析不出来的按「无记忆」处理。
+        assertNull(PlaybackShape.parse("POST_PLAYER"))
     }
 }
