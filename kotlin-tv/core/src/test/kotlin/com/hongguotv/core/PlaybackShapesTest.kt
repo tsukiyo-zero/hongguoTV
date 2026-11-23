@@ -21,8 +21,8 @@ class PlaybackShapesTest {
 
     @Test
     fun coversAllPathAndSignerCombinations() {
-        // 3 条路径 × 2 种签名 = 6 种形态，缺一种就少一条兜底。
-        assertEquals(6, PlaybackShape.all.size)
+        // 4 条路径 × 2 种签名 = 8 种形态，缺一种就少一条兜底。
+        assertEquals(8, PlaybackShape.all.size)
         assertEquals(PlaybackShape.all.size, PlaybackShape.all.map { it.label }.toSet().size)
         PlaybackPath.entries.forEach { path ->
             PlaybackSigner.entries.forEach { signer ->

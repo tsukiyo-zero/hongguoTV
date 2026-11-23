@@ -972,6 +972,17 @@ constructor(
                                                 client,
                                                 segment = shape.path.segment,
                                             )
+                                    PlaybackPath.POST_VIDEO_MODEL ->
+                                        if (shape.signer == PlaybackSigner.V5)
+                                            MobilePlayback.model(
+                                                id,
+                                                profile.values,
+                                                client,
+                                                MobilePlayback.signer,
+                                                clock(),
+                                                segment = shape.path.segment,
+                                            )
+                                        else postModelV1(id, profile, client, segment = shape.path.segment)
                                     PlaybackPath.POST_V1 ->
                                         if (shape.signer == PlaybackSigner.V5)
                                             MobilePlayback.model(

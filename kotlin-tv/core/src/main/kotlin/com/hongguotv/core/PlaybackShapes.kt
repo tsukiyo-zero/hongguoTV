@@ -8,6 +8,12 @@ package com.hongguotv.core
  * 11-23 再次只放 GET。
  */
 enum class PlaybackPath(val label: String, val segment: String) {
+    /**
+     * 2026-11-23 起官方客户端实际调用的模型接口（由 logcat 的 FeatureInterceptor 与 APK 的
+     * `RpcOperation("$POST /novel/player/video_model/v1/")` 共同确认）。平台只对该组合放行时，
+     * 其余形态都会返回空体。
+     */
+    POST_VIDEO_MODEL("video-model", "novel/player/video_model/v1/"),
     GET_VIDEO_TAB("get", "reading/bookapi/video_tab/multi_video_model/v1"),
     POST_PLAYER("player", "novel/player/multi_video_model/player/v1"),
     POST_V1("v1", "novel/player/multi_video_model/v1"),
@@ -33,6 +39,8 @@ data class PlaybackShape(val path: PlaybackPath, val signer: PlaybackSigner) {
         val all: List<PlaybackShape> =
             listOf(
                 PlaybackShape(PlaybackPath.GET_VIDEO_TAB, PlaybackSigner.V5),
+                PlaybackShape(PlaybackPath.POST_VIDEO_MODEL, PlaybackSigner.V5),
+                PlaybackShape(PlaybackPath.POST_VIDEO_MODEL, PlaybackSigner.ARGUS),
                 PlaybackShape(PlaybackPath.POST_PLAYER, PlaybackSigner.V5),
                 PlaybackShape(PlaybackPath.POST_V1, PlaybackSigner.ARGUS),
                 PlaybackShape(PlaybackPath.GET_VIDEO_TAB, PlaybackSigner.ARGUS),
