@@ -59,6 +59,7 @@ internal object MobilePlayback {
                 "device_id" to device.getValue("device_id"),
                 "_rticket" to now.toString(),
             )
+        // 域名与路径都是实测唯一可用的组合：换成 fqnovel 网关或 player 变体都会返回空体。
         val url =
             "https://reading.snssdk.com/novel/player/multi_video_model/preload/v1"
                 .toHttpUrl()
