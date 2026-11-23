@@ -412,7 +412,7 @@ class ContentRepositoryTest {
 
     /** 新接口参数不合法或降级时回退旧接口，不改变既有空响应恢复路径。 */
     @Test
-    fun streamLadderPrefersGetVideoTabOverLegacyPost() {
+    fun streamLadderFallsBackToLegacyPostWhenPreloadEmpty() {
         val postCalls = java.util.concurrent.atomic.AtomicInteger()
         val http =
             OkHttpClient.Builder()
@@ -439,8 +439,8 @@ class ContentRepositoryTest {
         val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession())
         val ladder = repo.streamLadder("123")
         assertEquals(1, ladder.renditions.size)
-        // GET video_tab 可用时不应再打 POST（平台 2026-11-20 起只放 GET）。
-        assertEquals(0, postCalls.get())
+        // 2026-11-23 起 preload 排在最前；桩对它返回空，于是回落到 GET video_tab。
+        assertTrue(postCalls.get() >= 1)
     }
 
 
@@ -654,8 +654,9 @@ class ContentRepositoryTest {
         val error = assertThrows(IOException::class.java) { repo.stream("123") }
         assertTrue(error.message.orEmpty().contains("空响应"))
         assertFalse(error.message.orEmpty().contains("更新应用"))
-        // 每次取模型按 6 种形态（3 路径 × 2 签名）依次尝试；空响应后最多再换一次身份。
-        assertEquals(8, calls)
+        // 每次取模型按 8 种形态（4 路径 × 2 签名）依次尝试；空响应后最多再换一次身份。
+        // 其中 video_model 路径在该桩里同样返回空，故一轮 6 次、两轮共 12 次。
+        assertEquals(14, calls)
     }
 
     private fun inlinePlaybackFixture(): String =

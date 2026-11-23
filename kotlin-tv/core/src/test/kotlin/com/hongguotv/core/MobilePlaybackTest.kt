@@ -27,6 +27,43 @@ class MobilePlaybackTest {
                 .code(200).message("OK").body(body.toResponseBody()).build()
         }.build()
 
+    @Test
+    fun preloadUsesCurrentAppShapeAndParsesModel() {
+        var seen: okhttp3.Request? = null
+        val body = model(typed = false, encoded = false)
+        val json = JSONObject(body)
+        json.getJSONObject("data").put("video_model_data", json.getJSONObject("data").remove("123").let {
+            JSONObject().put("123", it)
+        })
+        json.getJSONObject("data").remove("123")
+        val parsed =
+            MobilePlayback.preloadModel("123", device, http(json.toString()) { seen = it }, signer, 1000)
+        assertEquals(
+            1,
+            parsed.getJSONObject("video_model").getJSONArray("video_list").length(),
+        )
+        val request = seen!!
+        // 官方 preload 形态的固定特征：域名、路径、dr_scene 与公共参数。
+        assertEquals("reading.snssdk.com", request.url.host)
+        assertEquals("/novel/player/multi_video_model/preload/v1", request.url.encodedPath)
+        assertEquals("update_64", request.url.queryParameter("channel"))
+        assertEquals("25053RT47C", request.url.queryParameter("device_type"))
+        assertEquals("74532", request.url.queryParameter("version_code"))
+        assertEquals("gzip", request.header("Content-Encoding"))
+        val payload =
+            JSONObject(GZIPInputStream(Buffer().apply { request.body!!.writeTo(this) }.readByteArray().inputStream()).reader().readText())
+        assertEquals("preload", payload.getString("dr_scene"))
+        assertEquals(2, payload.getJSONObject("biz_param").getInt("device_level"))
+    }
+
+    @Test
+    fun preloadEmptyBodyReportsShape() {
+        val error = assertThrows(EmptyPlaybackResponseException::class.java) {
+            MobilePlayback.preloadModel("123", device, http(""), signer, 1000)
+        }
+        assertEquals("shape=preload", error.detail)
+    }
+
     @Test fun exactEpisodeSelectionSupportsBothMapsAndEncodedModels() {
         for (typed in listOf(false, true)) for (encoded in listOf(false, true)) {
             assertEquals(1, MobilePlayback.model("123", device, http(model(typed, encoded)), signer, 1000)
@@ -98,7 +135,7 @@ class MobilePlaybackTest {
         val repo = ContentRepository(http = http("") { requests++ }, clock = { 1000 }, playbackSession = session)
         repeat(2) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") } }
         assertEquals(2, registrations)
-        // 每次取模型按 6 种形态（3 路径 × 2 签名）尝试，两轮轮换后共 18 次请求。
-        assertEquals(18, requests)
+        // 每次取模型按 8 种形态（4 路径 × 2 签名）尝试，两轮轮换后共 24 次请求。
+        assertEquals(27, requests)
     }
 }
