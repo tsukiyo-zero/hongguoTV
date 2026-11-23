@@ -360,13 +360,14 @@ constructor(
         id: String,
         identity: PlaybackDeviceSession.Profile,
         client: OkHttpClient,
+        segment: String = "novel/player/multi_video_model/v1/",
     ): JSONObject {
         val payload =
             """{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]}}"""
                 .toByteArray()
         val request =
             playbackRequest(
-                "https://${PlayRetryPlan.hosts.first()}/novel/player/multi_video_model/v1/",
+                "https://${PlayRetryPlan.hosts.first()}/$segment",
                 identity,
                 body = payload,
             )
@@ -939,19 +940,55 @@ constructor(
                                 }
                         try {
                             val model =
-                                when (shape) {
-                                    PlaybackShape.GET_VIDEO_TAB ->
-                                        tabVideoModel(id, profile, PlaybackRequestTrace(), client)
-                                            ?: throw EmptyPlaybackResponseException("shape=get")
-                                    PlaybackShape.POST_PLAYER ->
-                                        MobilePlayback.model(
-                                            id,
-                                            profile.values,
-                                            client,
-                                            MobilePlayback.signer,
-                                            clock(),
-                                        )
-                                    PlaybackShape.POST_V1 -> postModelV1(id, profile, client)
+                                when (shape.path) {
+                                    PlaybackPath.GET_VIDEO_TAB ->
+                                        if (shape.signer == PlaybackSigner.V5)
+                                            MobilePlayback.getVideoTab(
+                                                id,
+                                                profile.values,
+                                                client,
+                                                MobilePlayback.signer,
+                                                clock(),
+                                            )
+                                        else
+                                            tabVideoModel(id, profile, PlaybackRequestTrace(), client)
+                                                ?: throw EmptyPlaybackResponseException(
+                                                    "shape=${shape.label}"
+                                                )
+                                    PlaybackPath.POST_PLAYER ->
+                                        if (shape.signer == PlaybackSigner.V5)
+                                            MobilePlayback.model(
+                                                id,
+                                                profile.values,
+                                                client,
+                                                MobilePlayback.signer,
+                                                clock(),
+                                                segment = shape.path.segment,
+                                            )
+                                        else
+                                            postModelV1(
+                                                id,
+                                                profile,
+                                                client,
+                                                segment = shape.path.segment,
+                                            )
+                                    PlaybackPath.POST_V1 ->
+                                        if (shape.signer == PlaybackSigner.V5)
+                                            MobilePlayback.model(
+                                                id,
+                                                profile.values,
+                                                client,
+                                                MobilePlayback.signer,
+                                                clock(),
+                                                segment = shape.path.segment,
+                                            )
+                                        else
+                                            postModelV1(
+                                                id,
+                                                profile,
+                                                client,
+                                                segment = shape.path.segment,
+                                            )
                                 }
                             PlaybackShapeMemory.success(shape)
                             return model

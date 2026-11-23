@@ -98,7 +98,7 @@ class MobilePlaybackTest {
         val repo = ContentRepository(http = http("") { requests++ }, clock = { 1000 }, playbackSession = session)
         repeat(2) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") } }
         assertEquals(2, registrations)
-        // 每次取模型按形态顺序尝试 GET / POST player / POST v1，两轮轮换后共 9 次请求。
-        assertEquals(9, requests)
+        // 每次取模型按 6 种形态（3 路径 × 2 签名）尝试，两轮轮换后共 18 次请求。
+        assertEquals(18, requests)
     }
 }
