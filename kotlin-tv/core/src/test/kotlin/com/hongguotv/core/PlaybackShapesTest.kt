@@ -21,11 +21,13 @@ class PlaybackShapesTest {
 
     @Test
     fun coversAllPathAndSignerCombinations() {
-        // 4 条路径 × 2 种签名 = 8 种形态，缺一种就少一条兜底。
-        assertEquals(8, PlaybackShape.all.size)
+        // 5 种形态：preload 只用 v5，其余 4 条路径各有 v5/argus 两版。
+        assertEquals(9, PlaybackShape.all.size)
         assertEquals(PlaybackShape.all.size, PlaybackShape.all.map { it.label }.toSet().size)
         PlaybackPath.entries.forEach { path ->
             PlaybackSigner.entries.forEach { signer ->
+                // preload 形态只走 v5 签名器，其余路径两种签名都保留。
+                if (path == PlaybackPath.POST_PRELOAD && signer == PlaybackSigner.ARGUS) return@forEach
                 assertTrue(
                     "missing ${path.label}-${signer.label}",
                     PlaybackShape.all.contains(PlaybackShape(path, signer)),
@@ -38,7 +40,8 @@ class PlaybackShapesTest {
     fun defaultOrderStartsWithRecentlyVerifiedCombination() {
         PlaybackShapeMemory.restore(null)
         val order = PlaybackShapeMemory.order()
-        assertEquals(getV5, order.first())
+        // 2026-11-23 起 preload 是唯一可用的形态，排在最前。
+        assertEquals(PlaybackShape(PlaybackPath.POST_PRELOAD, PlaybackSigner.V5), order.first())
         assertEquals(PlaybackShape.all.size, order.size)
     }
 

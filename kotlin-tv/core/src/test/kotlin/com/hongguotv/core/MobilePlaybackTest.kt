@@ -99,6 +99,6 @@ class MobilePlaybackTest {
         repeat(2) { assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") } }
         assertEquals(2, registrations)
         // 每次取模型按 8 种形态（4 路径 × 2 签名）尝试，两轮轮换后共 24 次请求。
-        assertEquals(24, requests)
+        assertEquals(27, requests)
     }
 }

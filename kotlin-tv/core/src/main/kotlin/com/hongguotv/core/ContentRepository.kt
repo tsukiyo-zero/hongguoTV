@@ -941,6 +941,14 @@ constructor(
                         try {
                             val model =
                                 when (shape.path) {
+                                    PlaybackPath.POST_PRELOAD ->
+                                        MobilePlayback.preloadModel(
+                                            id,
+                                            profile.values,
+                                            client,
+                                            MobilePlayback.signer,
+                                            clock(),
+                                        )
                                     PlaybackPath.GET_VIDEO_TAB ->
                                         if (shape.signer == PlaybackSigner.V5)
                                             MobilePlayback.getVideoTab(

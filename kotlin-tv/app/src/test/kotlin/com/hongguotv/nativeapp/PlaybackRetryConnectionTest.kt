@@ -31,13 +31,13 @@ class PlaybackRetryConnectionTest {
                 chain.proceed(request.newBuilder().url(server.url(request.url.encodedPath)).build())
             }.build()
         try {
-            // 每次取模型按 8 种形态（4 路径 × 2 签名）尝试，各返回空体；
-            // 空响应后最多再换一次身份，两轮共 16 次。
-            repeat(16) { server.enqueue(MockResponse().setBody("")) }
+            // 每次取模型按 9 种形态尝试，各返回空体；
+            // 空响应后最多再换一次身份，两轮共 18 次。
+            repeat(18) { server.enqueue(MockResponse().setBody("")) }
             val session = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }
             val repo = ContentRepository(http, playbackSession = session, sleep = {})
             val error = assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
-            val requests = (1..16).map { server.takeRequest(5, TimeUnit.SECONDS)!! }
+            val requests = (1..18).map { server.takeRequest(5, TimeUnit.SECONDS)!! }
             // 换路重试必须换连接：至少有一次请求落在新连接上（sequenceNumber > 0）。
             assertTrue(requests.any { it.sequenceNumber > 0 })
             // 每条路径各被两种签名各试一轮，共 4 次。

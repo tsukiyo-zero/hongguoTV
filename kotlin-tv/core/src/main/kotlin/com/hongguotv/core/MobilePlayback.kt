@@ -32,6 +32,87 @@ internal object MobilePlayback {
     }
 
     /**
+     * 官方 7.4.5.32 当前客户端的播放预加载形态（2026-11-23 起唯一可用）：
+     * `POST https://reading.snssdk.com/novel/player/multi_video_model/preload/v1`，
+     * 使用更新后的公共参数集与 `dr_scene=preload` / `device_level=2`，
+     * UA 取系统默认值（与官方 App 的预加载请求一致）。
+     */
+    fun preloadModel(
+        id: String,
+        device: Map<String, String>,
+        http: OkHttpClient,
+        signer: MobilePlaybackSigner,
+        now: Long,
+    ): JSONObject {
+        require(id.matches(Regex("[0-9]{1,30}")))
+        RequestScope.ensureActive()
+        val query =
+            linkedMapOf(
+                "aid" to "8662", "app_name" to "novelread",
+                "version_code" to "74532", "version_name" to "7.4.5.32",
+                "update_version_code" to "74532", "manifest_version_code" to "74532",
+                "os" to "android", "ssmix" to "a", "channel" to "update_64",
+                "device_platform" to "android", "device_type" to "25053RT47C",
+                "device_brand" to "Redmi", "os_version" to "16", "os_api" to "36",
+                "ac" to "wifi", "language" to "zh", "host_abi" to "arm64-v8a",
+                "iid" to device.getValue("iid"), "cdid" to device.getValue("cdid"),
+                "device_id" to device.getValue("device_id"),
+                "_rticket" to now.toString(),
+            )
+        val url =
+            "https://reading.snssdk.com/novel/player/multi_video_model/preload/v1"
+                .toHttpUrl()
+                .newBuilder()
+                .apply { query.forEach { (k, v) -> addQueryParameter(k, v) } }
+                .build()
+        val payload =
+            JSONObject(
+                """{"biz_param":{"detail_page_version":0,"device_level":2,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]},"dr_scene":"preload"}"""
+            )
+        val output = ByteArrayOutputStream()
+        GZIPOutputStream(output).use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+        val bytes = output.toByteArray()
+        val request =
+            Request.Builder()
+                .url(url)
+                .header("User-Agent", System.getProperty("http.agent", "okhttp/4.12.0"))
+                .header("Accept", "application/json")
+                .header("Content-Encoding", "gzip")
+                .header(
+                    "x-ss-stub",
+                    MessageDigest.getInstance("MD5").digest(bytes).joinToString("") { "%02X".format(it) },
+                )
+        val signed = signer.sign(url.toString(), bytes, device)
+        request.url(signed.url)
+        signed.headers.forEach { (k, v) -> request.header(k, v) }
+        RequestScope.ensureActive()
+        request.post(bytes.toRequestBody("application/json; charset=utf-8".toMediaType()))
+        val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+        return RequestScope.execute(transport.newCall(request.build())) { response ->
+            if (!response.isSuccessful) throw IOException("播放接口 HTTP ${response.code}")
+            val text = response.body?.string().orEmpty()
+            if (text.isBlank()) throw EmptyPlaybackResponseException("shape=preload")
+            val root = runCatching { JSONObject(text) }.getOrElse { throw IOException("播放信息格式异常") }
+            val code = root.optInt("code", root.optInt("Code", -1))
+            if (code != 0) throw IOException("播放接口暂不可用（错误码 $code）")
+            val data = root.optJSONObject("data") ?: throw IOException("播放信息为空")
+            val rows = data.optJSONObject("video_model_data") ?: data
+            val row =
+                rows.optJSONObject(id)
+                    ?: rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.firstOrNull()
+                    ?: throw IOException("播放信息为空")
+            val raw = row.opt("video_model") ?: throw IOException("播放信息没有可用资源")
+            val model =
+                when (raw) {
+                    is JSONObject -> raw
+                    is String -> runCatching { JSONObject(raw) }.getOrNull()
+                    else -> null
+                } ?: throw IOException("播放信息没有可用资源")
+            JSONObject().put("video_model", model)
+        }
+    }
+
+    /**
      * 形态「GET video_tab」：与 [model] 共用同一套 v5 签名与 7.4.5.32 参数，
      * 只是改成 GET + 查询参数，响应结构为 `data.video_model_data[id].video_model`。
      * 平台 11-23 起只放行这一条，旧的 Argus 签名 GET 会被静默丢弃。

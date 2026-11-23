@@ -226,7 +226,8 @@ class FeedStartupCacheTest {
                                 "/detail" ->
                                     """<script>_ROUTER_DATA={"loaderData":{"detail_page":{"seriesDetail":{"series_id":"101","series_title":"缓存作品","vid_list":["10101","10102"]}}}};</script>"""
                                 "/novel/player/multi_video_model/player/v1",
-                                "/novel/player/video_model/v1/" ->
+                                "/novel/player/video_model/v1/",
+                                "/novel/player/multi_video_model/preload/v1" ->
                                     """{"data":{"10101":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}}"""
                                 else -> error("Unexpected request")
                             }
@@ -264,7 +265,8 @@ class FeedStartupCacheTest {
                 },
             )
             assertEquals(listOf("bytes=0-262143", "bytes=0-262143"), ranges)
-            assertEquals(5, paths.size)
+            // preload 形态在 2026-11-23 排在最前，成功即止，故总请求数比旧实现多一次。
+            assertEquals(6, paths.size)
         } finally {
             controller.pause().stop().destroy()
         }
