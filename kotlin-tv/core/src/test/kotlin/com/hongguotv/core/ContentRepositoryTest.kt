@@ -413,7 +413,7 @@ class ContentRepositoryTest {
     @Test
     fun unusablePreloadFallsThroughToAPlayableModel() {
         val preload = PlaybackShape(PlaybackPath.POST_PRELOAD, PlaybackSigner.V5)
-        val get = PlaybackShape(PlaybackPath.GET_VIDEO_TAB, PlaybackSigner.V5)
+        val current = PlaybackShape(PlaybackPath.POST_VIDEO_MODEL, PlaybackSigner.V5)
         val previous = PlaybackShapeMemory.current()
         PlaybackShapeMemory.restore(preload)
         val requests = mutableListOf<String>()
@@ -426,8 +426,8 @@ class ContentRepositoryTest {
                     JSONObject(inlinePlaybackFixture()).put("code", 0).toString()
             }
             assertEquals("https://example.com/video", repo.streamLadder("123").renditions.single().url)
-            assertEquals(listOf(preload.path.segment, get.path.segment), requests.map { it.trim('/') })
-            assertEquals(get, PlaybackShapeMemory.current())
+            assertEquals(listOf(preload.path.segment, current.path.segment.trimEnd('/')), requests.map { it.trim('/') })
+            assertEquals(current, PlaybackShapeMemory.current())
         } finally {
             PlaybackShapeMemory.restore(previous)
         }
@@ -435,7 +435,7 @@ class ContentRepositoryTest {
 
     @Test
     fun legacyShapesRejectOtherwisePlayableModelsForAnotherEpisode() {
-        val preload = PlaybackShape(PlaybackPath.POST_PRELOAD, PlaybackSigner.V5)
+        val current = PlaybackShape(PlaybackPath.POST_VIDEO_MODEL, PlaybackSigner.V5)
         val previous = PlaybackShapeMemory.current()
         try {
             for (path in listOf(PlaybackPath.GET_VIDEO_TAB, PlaybackPath.POST_VIDEO_MODEL)) {
@@ -450,7 +450,7 @@ class ContentRepositoryTest {
                 assertEquals("https://example.com/video", repo.streamLadder("123").renditions.single().url)
                 assertTrue(requests.first().startsWith("/${path.segment}"))
                 assertEquals(2, requests.size)
-                assertEquals(preload, PlaybackShapeMemory.current())
+                assertEquals(current, PlaybackShapeMemory.current())
             }
         } finally {
             PlaybackShapeMemory.restore(previous)

@@ -28,6 +28,35 @@ class MobilePlaybackTest {
         }.build()
 
     @Test
+    fun currentVideoModelUsesSingleEpisodeAndParsesDirectResponse() {
+        val model = JSONObject(model(typed = false, encoded = false))
+            .getJSONObject("data").getJSONObject("123").getJSONObject("video_model")
+        val body = JSONObject().put("code", 0)
+            .put("data", JSONObject().put("video_model", model.toString())).toString()
+        val client = http(body) { request ->
+            assertEquals("reading.snssdk.com", request.url.host)
+            assertEquals("/novel/player/video_model/v1/", request.url.encodedPath)
+            val bytes = Buffer().apply { request.body!!.writeTo(this) }.readByteArray()
+            val json = JSONObject(GZIPInputStream(bytes.inputStream()).reader().readText())
+            assertEquals("123", json.getString("video_id"))
+            assertFalse(json.has("mixed_video_id_map"))
+        }
+        val result = MobilePlayback.videoModelCurrent("123", device, client, signer, 1000)
+        assertEquals(1, result.getJSONObject("video_model").getJSONArray("video_list").length())
+    }
+
+    @Test
+    fun currentVideoModelRejectsDifferentEpisodeInWrappedOrDirectResponse() {
+        val wrapped = model(typed = false, encoded = false, id = "456")
+        val direct = """{"code":0,"data":{"video_id":"456","video_model":{"video_list":[{}]}}}"""
+        for (body in listOf(wrapped, direct)) {
+            assertThrows(IOException::class.java) {
+                MobilePlayback.videoModelCurrent("123", device, http(body), signer, 1000)
+            }
+        }
+    }
+
+    @Test
     fun preloadUsesCurrentAppShapeAndParsesModel() {
         var seen: okhttp3.Request? = null
         val body = model(typed = false, encoded = false)

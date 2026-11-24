@@ -32,6 +32,107 @@ internal object MobilePlayback {
     }
 
     /**
+     * 本轮线上验证能取到高清模型的单集播放形态（2026-11-24）：
+     * `POST https://reading.snssdk.com/novel/player/video_model/v1/`，
+     * 使用与 preload 相同的公共参数集，body 为 `video_id` + `biz_param`。
+     */
+    fun videoModelCurrent(
+        id: String,
+        device: Map<String, String>,
+        http: OkHttpClient,
+        signer: MobilePlaybackSigner,
+        now: Long,
+    ): JSONObject =
+        currentAppPost(
+            id = id,
+            device = device,
+            http = http,
+            signer = signer,
+            now = now,
+            path = "/novel/player/video_model/v1/",
+            payload =
+                """{"video_id":"$id","biz_param":{"detail_page_version":0,"device_level":2,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024}}""",
+            shapeLabel = "video-model-current",
+        )
+
+    /** 当前客户端公共参数集（preload 与 video_model 共用）。 */
+    private fun currentAppQuery(device: Map<String, String>, now: Long): Map<String, String> =
+        linkedMapOf(
+            "aid" to "8662", "app_name" to "novelread",
+            "version_code" to "74532", "version_name" to "7.4.5.32",
+            "update_version_code" to "74532", "manifest_version_code" to "74532",
+            "os" to "android", "ssmix" to "a", "channel" to "update_64",
+            "device_platform" to "android", "device_type" to "25053RT47C",
+            "device_brand" to "Redmi", "os_version" to "16", "os_api" to "36",
+            "ac" to "wifi", "language" to "zh", "host_abi" to "arm64-v8a",
+            "iid" to device.getValue("iid"), "cdid" to device.getValue("cdid"),
+            "device_id" to device.getValue("device_id"), "_rticket" to now.toString(),
+        )
+
+    private fun currentAppPost(
+        id: String,
+        device: Map<String, String>,
+        http: OkHttpClient,
+        signer: MobilePlaybackSigner,
+        now: Long,
+        path: String,
+        payload: String,
+        shapeLabel: String,
+    ): JSONObject {
+        require(id.matches(Regex("[0-9]{1,30}")))
+        RequestScope.ensureActive()
+        val url =
+            ("https://reading.snssdk.com" + path)
+                .toHttpUrl()
+                .newBuilder()
+                .apply { currentAppQuery(device, now).forEach { (k, v) -> addQueryParameter(k, v) } }
+                .build()
+        val output = ByteArrayOutputStream()
+        GZIPOutputStream(output).use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+        val bytes = output.toByteArray()
+        val request =
+            Request.Builder()
+                .url(url)
+                .header("User-Agent", System.getProperty("http.agent", "okhttp/4.12.0"))
+                .header("Accept", "application/json")
+                .header("Content-Encoding", "gzip")
+                .header(
+                    "x-ss-stub",
+                    MessageDigest.getInstance("MD5").digest(bytes).joinToString("") { "%02X".format(it) },
+                )
+        val signed = signer.sign(url.toString(), bytes, device)
+        request.url(signed.url)
+        signed.headers.forEach { (k, v) -> request.header(k, v) }
+        RequestScope.ensureActive()
+        request.post(bytes.toRequestBody("application/json; charset=utf-8".toMediaType()))
+        val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+        return RequestScope.execute(transport.newCall(request.build())) { response ->
+            if (!response.isSuccessful) throw IOException("播放接口 HTTP ${response.code}")
+            val text = response.body?.string().orEmpty()
+            if (text.isBlank()) throw EmptyPlaybackResponseException("shape=$shapeLabel")
+            val root = runCatching { JSONObject(text) }.getOrElse { throw IOException("播放信息格式异常") }
+            val code = root.optInt("code", root.optInt("Code", -1))
+            if (code != 0) throw IOException("播放接口暂不可用（错误码 $code）")
+            val data = root.optJSONObject("data") ?: throw IOException("播放信息为空")
+            // 两种响应形态都出现过：
+            //   data.video_model_data[id].video_model（预加载批量）
+            //   data.video_model（单集 video_model/v1，当前客户端）
+            val rows = data.optJSONObject("video_model_data") ?: data
+            val explicitId = data.optString("video_id")
+            if (explicitId.isNotEmpty() && explicitId != id) throw IOException("播放信息未包含指定剧集")
+            val raw = data.opt("video_model") ?: rows.optJSONObject(id)?.opt("video_model")
+                ?: throw IOException("播放信息未包含指定剧集")
+            val model =
+                when (raw) {
+                    is JSONObject -> raw
+                    is String -> runCatching { JSONObject(raw) }.getOrNull()
+                    else -> null
+                } ?: throw IOException("播放信息没有可用资源")
+            JSONObject().put("video_model", model)
+        }
+    }
+
+    /**
      * 官方 7.4.5.32 当前客户端的播放预加载形态（2026-11-23 起唯一可用）：
      * `POST https://reading.snssdk.com/novel/player/multi_video_model/preload/v1`，
      * 使用更新后的公共参数集与 `dr_scene=preload` / `device_level=2`，

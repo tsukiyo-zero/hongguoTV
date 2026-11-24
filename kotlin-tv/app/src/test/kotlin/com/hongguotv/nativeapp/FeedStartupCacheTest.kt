@@ -228,13 +228,15 @@ class FeedStartupCacheTest {
                                 "/novel/player/multi_video_model/player/v1",
                                 "/novel/player/video_model/v1/",
                                 "/novel/player/multi_video_model/preload/v1" ->
-                                    """{"data":{"10101":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}}"""
+                                    """{"code":0,"data":{"10101":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}}"""
                                 else -> error("Unexpected request")
                             }
                         builder.code(200).body(json.toResponseBody()).build()
                     }
                 }
                 .build()
+        val previousShape = PlaybackShapeMemory.current()
+        PlaybackShapeMemory.restore(null)
         try {
             repeat(2) {
                 val backend =
@@ -256,18 +258,11 @@ class FeedStartupCacheTest {
                 }
             }
             assertEquals(1, paths.count { it == "/detail" })
-            // 形态矩阵会先试 GET video_tab（桩返回 PARAM_INVALID），再落到第一个可用的 POST 形态。
-            assertEquals(
-                2,
-                paths.count {
-                    it == "/novel/player/multi_video_model/player/v1" ||
-                        it == "/novel/player/video_model/v1/"
-                },
-            )
+            assertEquals(2, paths.count { it == "/novel/player/video_model/v1/" })
             assertEquals(listOf("bytes=0-262143", "bytes=0-262143"), ranges)
-            // preload 形态在 2026-11-23 排在最前，成功即止，故总请求数比旧实现多一次。
-            assertEquals(6, paths.size)
+            assertEquals(5, paths.size)
         } finally {
+            PlaybackShapeMemory.restore(previousShape)
             controller.pause().stop().destroy()
         }
     }

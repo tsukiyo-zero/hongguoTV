@@ -45,9 +45,9 @@ data class PlaybackShape(val path: PlaybackPath, val signer: PlaybackSigner) {
         /** 默认顺序：近期验证过的组合优先，其余作为兜底矩阵。 */
         val all: List<PlaybackShape> =
             listOf(
+                PlaybackShape(PlaybackPath.POST_VIDEO_MODEL, PlaybackSigner.V5),
                 PlaybackShape(PlaybackPath.POST_PRELOAD, PlaybackSigner.V5),
                 PlaybackShape(PlaybackPath.GET_VIDEO_TAB, PlaybackSigner.V5),
-                PlaybackShape(PlaybackPath.POST_VIDEO_MODEL, PlaybackSigner.V5),
                 PlaybackShape(PlaybackPath.POST_VIDEO_MODEL, PlaybackSigner.ARGUS),
                 PlaybackShape(PlaybackPath.POST_PLAYER, PlaybackSigner.V5),
                 PlaybackShape(PlaybackPath.POST_V1, PlaybackSigner.ARGUS),
