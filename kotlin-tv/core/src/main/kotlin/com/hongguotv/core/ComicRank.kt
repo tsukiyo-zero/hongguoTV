@@ -11,16 +11,19 @@ import org.jsoup.nodes.Document
 internal object ComicRank {
     fun parse(html: String, page: Int, board: RankBoard = RankBoard.COMIC): CatalogPage {
         try {
+            val route =
+                runCatching { ContentRepository.extractRouter(html) }.getOrNull()
+                    ?.optJSONObject("loaderData")
+                    ?.optJSONObject(board.loader)
+            val updatedText = route?.str("updatedText").orEmpty()
+            val inline = route?.optJSONObject("content")?.takeIf { it.has("isSuccess") }
+            if (inline != null) {
+                if (route.str("rankKey") != board.key || route.optInt("pageNum") != page)
+                    throw IOException("剧集分页信息异常")
+                return parsePayload(inline, page, updatedText)
+            }
+
             val document = Jsoup.parse(html)
-            val updatedText =
-                runCatching {
-                        ContentRepository.extractRouter(html)
-                            .optJSONObject("loaderData")
-                            ?.optJSONObject(board.loader)
-                            ?.str("updatedText")
-                    }
-                    .getOrNull()
-                    .orEmpty()
             for (tag in document.select("script[data-fn-name][data-fn-args]")) {
                 val name = tag.attr("data-fn-name")
                 if (name != "r" && name != "mergeLoaderData") continue
@@ -44,62 +47,9 @@ internal object ComicRank {
                         is String -> JSONObject(raw)
                         else -> continue
                     }
-                if (!payload.optBoolean("isSuccess")) throw IOException("剧集榜单暂不可用")
-                val rows = payload.optJSONArray("rankList") ?: throw IOException("剧集榜单格式已变化")
-                val pagination =
-                    payload.optJSONObject("pagination") ?: throw IOException("剧集分页信息缺失")
-                val totalPages = pagination.optInt("totalPages", 0)
-                if (totalPages < 1 || pagination.optInt("pageNum", page) != page)
-                    throw IOException("剧集分页信息异常")
-                val positions = linkedMapOf<String, RankPosition>()
-                val items =
-                    rows
-                        .objects()
-                        .map { row ->
-                            val count =
-                                row.optInt(
-                                    "episodeCount",
-                                    row.optJSONArray("episodeVids")?.length() ?: 0,
-                                )
-                            val tags = row.optJSONArray("tags") ?: JSONArray()
-                            val id = row.str("seriesId").ifEmpty { row.str("id") }
-                            if (id !in positions)
-                                positions[id] =
-                                    RankPosition(
-                                        row.optInt("rank").takeIf { it > 0 },
-                                        row.str("heatText"),
-                                        listOf(
-                                                row.str("scoreText"),
-                                                row.str("favoriteText"),
-                                                row.str("likeText"),
-                                            )
-                                            .filter(String::isNotBlank)
-                                            .joinToString(" · "),
-                                    )
-                            Series(
-                                id,
-                                row.str("title"),
-                                cleanUrl(row.str("cover")),
-                                row.str("description"),
-                                if (count > 0) "全 $count 集" else row.str("heatText"),
-                                (0 until minOf(tags.length(), 5)).joinToString(" · ") {
-                                    tags.optString(it)
-                                },
-                            )
-                        }
-                        .filter { it.id.matches(Regex("[0-9]{1,30}")) && it.title.isNotBlank() }
-                        .distinctBy { it.id }
-                return CatalogPage(
-                    items,
-                    items.isNotEmpty() && page < minOf(totalPages, 100),
-                    ComicRanking(
-                        positions.filterKeys { id -> items.any { it.id == id } },
-                        minOf(totalPages, 100),
-                        updatedText,
-                    ),
-                )
+                return parsePayload(payload, page, updatedText)
             }
-            return renderedPage(document, html, page, board)
+            return renderedPage(document, route, page, board)
         } catch (e: IOException) {
             throw e
         } catch (e: Exception) {
@@ -107,17 +57,76 @@ internal object ComicRank {
         }
     }
 
+    private fun parsePayload(payload: JSONObject, page: Int, updatedText: String): CatalogPage {
+        if (!payload.optBoolean("isSuccess")) throw IOException("剧集榜单暂不可用")
+        val rows = payload.optJSONArray("rankList") ?: throw IOException("剧集榜单格式已变化")
+        val pagination =
+            payload.optJSONObject("pagination") ?: throw IOException("剧集分页信息缺失")
+        val totalPages = pagination.optInt("totalPages", 0)
+        if (totalPages < 1 || pagination.optInt("pageNum", page) != page)
+            throw IOException("剧集分页信息异常")
+        val positions = linkedMapOf<String, RankPosition>()
+        val items =
+            rows
+                .objects()
+                .map { row ->
+                    val count =
+                        row.optInt(
+                            "episodeCount",
+                            row.optJSONArray("episodeVids")?.length() ?: 0,
+                        )
+                    val tags = row.optJSONArray("tags") ?: JSONArray()
+                    val id = row.str("seriesId").ifEmpty { row.str("id") }
+                    if (id !in positions)
+                        positions[id] =
+                            RankPosition(
+                                row.optInt("rank").takeIf { it > 0 },
+                                row.str("heatText"),
+                                listOf(
+                                        row.str("scoreText"),
+                                        row.str("favoriteText"),
+                                        row.str("likeText"),
+                                    )
+                                    .filter(String::isNotBlank)
+                                    .joinToString(" · "),
+                            )
+                    Series(
+                        id,
+                        row.str("title"),
+                        cleanUrl(row.str("cover")),
+                        row.str("description"),
+                        if (count > 0) "全 $count 集" else row.str("heatText"),
+                        rankTopics((0 until minOf(tags.length(), 5)).mapNotNull { tags.opt(it) as? String }),
+                    )
+                }
+                .filter { it.id.matches(Regex("[0-9]{1,30}")) && it.title.isNotBlank() }
+                .distinctBy { it.id }
+        return CatalogPage(
+            items,
+            items.isNotEmpty() && page < minOf(totalPages, 100),
+            ComicRanking(
+                positions.filterKeys { id -> items.any { it.id == id } },
+                minOf(totalPages, 100),
+                updatedText,
+            ),
+        )
+    }
+
+    // 结构化标签里用中点拼接演员或角色；只保留独立题材，避免把人名拆成筛选项。
+    private fun rankTopics(tags: List<String>) =
+        tags.map(String::trim)
+            .filter { it.isNotBlank() && '·' !in it && it !in setOf("真人剧", "漫剧", "AI剧", "AI 剧") }
+            .distinct()
+            .joinToString(" · ")
+
     private fun renderedPage(
         document: Document,
-        html: String,
+        route: JSONObject?,
         page: Int,
         board: RankBoard,
     ): CatalogPage {
         // Some responses contain rendered cards while the deferred JSON is still unresolved.
-        val route =
-            ContentRepository.extractRouter(html)
-                .optJSONObject("loaderData")
-                ?.optJSONObject(board.loader) ?: throw IOException("页面没有剧集榜单数据")
+        if (route == null) throw IOException("页面没有剧集榜单数据")
         if (route.str("rankKey") != board.key || route.optInt("pageNum") != page)
             throw IOException("剧集分页信息异常")
         val positions = linkedMapOf<String, RankPosition>()
@@ -145,9 +154,7 @@ internal object ComicRank {
                         article.selectFirst("img[src]")?.attr("src").orEmpty(),
                         article.selectFirst("p[class*=description-]")?.text().orEmpty(),
                         article.selectFirst("p[class*=metrics-]")?.text().orEmpty(),
-                        article.select("p[class*=categories-] > span").take(5).joinToString(" · ") {
-                            it.text()
-                        },
+                        rankTopics(article.select("p[class*=categories-] > span").take(5).map { it.text() }),
                     )
                 }
                 .distinctBy { it.id }

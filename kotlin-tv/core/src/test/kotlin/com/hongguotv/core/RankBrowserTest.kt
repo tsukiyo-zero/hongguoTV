@@ -32,6 +32,32 @@ class RankBrowserTest {
     }
 
     @Test
+    fun readsInlineTopicsEvenWhenRenderedLabelsArePlainText() {
+        val board = RankBoard.REAL
+        val html = inlineRank(board, 2, board.key) +
+            """<article aria-labelledby="rank-title-123"><h2 id="rank-title-123">测试作品</h2>
+                <p class="pc-categories-demo">爱情 · 家庭 · 演员甲 · 演员乙</p></article>"""
+        val parsed = ComicRank.parse(html, 2, board)
+        val snapshot = RankSnapshot(board, parsed.items, parsed.ranking!!)
+        assertEquals(setOf("爱情", "家庭"), snapshot.topics.toSet())
+        assertEquals("123", snapshot.filtered("家庭").single().id)
+        assertTrue(snapshot.filtered("演员甲").isEmpty())
+        assertEquals(26, snapshot.ranking.positions["123"]?.rank)
+        assertEquals(5, snapshot.ranking.totalPages)
+        assertEquals("今日已更新", snapshot.ranking.updatedText)
+    }
+
+    @Test
+    fun rejectsInlinePayloadForWrongPageOrBoard() {
+        val board = RankBoard.REAL
+        assertThrows(IOException::class.java) { ComicRank.parse(inlineRank(board, 2, board.key), 1, board) }
+        assertThrows(IOException::class.java) { ComicRank.parse(inlineRank(board, 2, "comic"), 2, board) }
+    }
+
+    private fun inlineRank(board: RankBoard, page: Int, key: String): String =
+        """<script>_ROUTER_DATA = {"loaderData":{"${board.loader}":{"rankKey":"$key","pageNum":$page,"updatedText":"今日已更新","content":{"isSuccess":true,"rankList":[{"seriesId":"123","title":"测试作品","rank":26,"tags":["爱情","家庭","演员甲 · 演员乙","真人剧","123"]}],"pagination":{"pageNum":$page,"totalPages":5}}}}};</script>"""
+
+    @Test
     fun allVerifiedBoardsUseTheirOwnRoutesAndIncludeLaterPageTopics() {
         for (board in RankBoard.entries) {
             var requests = 0
