@@ -701,7 +701,7 @@ class HomeFeedScreenTest {
             screen.start(true, false)
             pump(screen)
             player.saved = 12345
-            texts(screen).first { it.text == "观看全集" }.performClick()
+            texts(screen).first { it.text == "观看剧集" }.performClick()
             assertEquals("1", watched)
             assertEquals(12345L, state.position)
             assertFalse(player.playing)

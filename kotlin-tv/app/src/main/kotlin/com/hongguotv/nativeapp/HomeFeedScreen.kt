@@ -66,7 +66,7 @@ internal class HomeFeedScreen(
     private val stage = FrameLayout(activity)
     private val title = label("发现下一部好剧", 25f)
     private val meta = label("第一集试播", 13f, TvStyle.accent)
-    private val intro = label("喜欢这部作品，就选择观看全集。", 15f, TvStyle.muted)
+    private val intro = label("喜欢这部作品，就选择观看剧集。", 15f, TvStyle.muted)
     private val status = label("正在准备热门作品…", 15f)
     private val tag = label("热门发现", 12f, TvStyle.accent)
     private val actions = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
@@ -207,7 +207,7 @@ internal class HomeFeedScreen(
         addView(content, lp(-1, 0).apply { weight = 1f })
         pauseButton = button("暂停试播") { toggle() }
         watchButton =
-            button("观看全集") {
+            button("观看剧集") {
                 state.current?.let {
                     remember()
                     pause()
@@ -398,7 +398,7 @@ internal class HomeFeedScreen(
                     .filter(String::isNotBlank)
                     .joinToString(" · ")
         intro.text =
-            series?.description?.ifBlank { "先试试看，喜欢这部作品就选择观看全集。" } ?: "选择漫剧或真人剧，上下换一部，找到想追的故事。"
+            series?.description?.ifBlank { "先试试看，喜欢这部作品就选择观看剧集。" } ?: "选择漫剧或真人剧，上下换一部，找到想追的故事。"
         tag.text = if (state.recommendation) "推荐 · 第一集试播" else "${state.category.label}推荐 · 第一集试播"
         paintActions()
     }

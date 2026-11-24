@@ -167,6 +167,34 @@ class TvUsabilityTest {
     }
 
     @Test
+    fun movingTopBarFocusSwitchesTabsWithoutConfirmationAndKeepsFocus() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+        val activity = controller.get()
+        try {
+            val library = get(activity, "library") as Library
+            (get(library, "loader") as ExecutorService).submit {}.get(5, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper()
+            MainActivity::class.java.getDeclaredMethod("switchTab", Int::class.javaPrimitiveType)
+                .apply { isAccessible = true }
+                .invoke(activity, 6)
+            fun tab(index: Int) = (get(activity, "nav") as List<*>)[index] as View
+
+            assertTrue(tab(3).requestFocus())
+            ShadowLooper.idleMainLooper()
+            assertEquals(3, get(activity, "tab"))
+            assertTrue(tab(3).hasFocus())
+            assertEquals(tab(4).id, tab(3).nextFocusRightId)
+
+            assertTrue(tab(4).requestFocus())
+            ShadowLooper.idleMainLooper()
+            assertEquals(4, get(activity, "tab"))
+            assertTrue(tab(4).hasFocus())
+        } finally {
+            controller.destroy()
+        }
+    }
+
+    @Test
     fun settingsSeparatesAccountDataAndUpdatesWithValidFocusLinks() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).create()
         val activity = controller.get()

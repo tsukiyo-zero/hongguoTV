@@ -82,7 +82,7 @@ class CloudResumePlaybackTest {
         }
     }
 
-    private fun open(activity: MainActivity, resume: Boolean, remote: CloudProgress? = null) {
+    private fun open(activity: MainActivity, resume: Boolean, remote: CloudProgress? = null, resumeLatest: Boolean = false) {
         MainActivity::class
             .java
             .getDeclaredMethod(
@@ -92,9 +92,10 @@ class CloudResumePlaybackTest {
                 Boolean::class.javaPrimitiveType,
                 CloudProgress::class.java,
                 Boolean::class.javaPrimitiveType,
+                Boolean::class.javaPrimitiveType,
             )
             .apply { isAccessible = true }
-            .invoke(activity, series, resume, true, remote, false)
+            .invoke(activity, series, resume, true, remote, false, resumeLatest)
         (get(activity, "workJob") as? Future<*>)?.get(5, TimeUnit.SECONDS)
         ShadowLooper.idleMainLooper()
     }
@@ -112,6 +113,14 @@ class CloudResumePlaybackTest {
             open(activity, true, cloud)
             assertPlayback(activity, 2, 45000)
             assertEquals("102", library.progress(series.id)!!.episodeId)
+        }
+
+    @Test
+    fun homepageDirectPlayResumesTheNewestRecordWithoutOpeningDetails() =
+        fixture { activity, library, _ ->
+            library.save(WatchProgress(series, "102", 1, 12000, 90000, false, 1000))
+            open(activity, true, resumeLatest = true)
+            assertPlayback(activity, 2, 45000)
         }
 
     @Test

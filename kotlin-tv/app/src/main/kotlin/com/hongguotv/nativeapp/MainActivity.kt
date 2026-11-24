@@ -123,6 +123,7 @@ class MainActivity : Activity() {
     private var playerListener: Player.Listener? = null
     private lateinit var playbackTitle: TextView
     private var directPlayback = false
+    private var pendingResumeLatest = false
     private var collection: String? = null
     private var collectionReturn: CatalogState? = null
     private var collectionFocus = ""
@@ -708,18 +709,20 @@ class MainActivity : Activity() {
         parent.addView(text(label, 17f, muted).apply { setPadding(0, dp(28), 0, dp(18)) })
     }
 
-    private fun error(parent: LinearLayout, problem: Throwable, retry: () -> Unit) {
+    private fun error(parent: LinearLayout, problem: Throwable, focusRetry: Boolean = true, retry: () -> Unit) {
         message(parent, "暂时无法加载，请检查网络后重试。")
         val detail =
             if (problem is java.net.UnknownHostException) "无法连接内容网站"
             else if (problem is java.net.SocketTimeoutException) "连接超时"
             else problem.message.orEmpty().replace(Regex("https?://\\S+"), "[地址]").take(160)
         parent.addView(text(detail, 13f, muted))
-        addButton(parent, "重试", onClick = retry).requestFocus()
+        val button = addButton(parent, "重试", onClick = retry)
+        if (focusRetry) button.requestFocus()
     }
 
-    // 导航按钮的点击入口：记录当前栏目状态，再切换到目标栏目。
+    // 保留当前栏目状态；用方向键切换后，焦点继续留在新栏目的顶栏。
     private fun switchTab(next: Int) {
+        val keepNav = next != tab && nav.getOrNull(next)?.hasFocus() == true
         if (tab == 1) {
             saveDiscoveryDraft()
             continuousCatalog?.capture()?.let { catalogFocus = it.id }
@@ -734,7 +737,7 @@ class MainActivity : Activity() {
         hasMore = saved?.hasMore ?: false
         ranking = saved?.ranking
         catalogFocus = tabFocus[next].orEmpty()
-        showCatalog(load = (next <= 2 && catalog.isEmpty()))
+        showCatalog(load = next <= 2 && catalog.isEmpty(), focusNav = keepNav)
         refreshAccountSection()
     }
 
@@ -912,8 +915,22 @@ class MainActivity : Activity() {
                 item.setTypeface(null, if (focused || index == tab) Typeface.BOLD else Typeface.NORMAL)
             }
             paint(false)
-            item.setOnFocusChangeListener { _, focused -> paint(focused) }
+            item.setOnFocusChangeListener { _, focused ->
+                paint(focused)
+                if (focused && index != tab) {
+                    // 焦点回调结束后再重建页面，忽略快速移动时已经离开的栏目。
+                    main.post {
+                        if (screen == "catalog" && nav.getOrNull(index) === item && item.hasFocus() && index != tab) {
+                            switchTab(index)
+                        }
+                    }
+                }
+            }
             nav += item
+        }
+        nav.forEachIndexed { index, item ->
+            item.nextFocusLeftId = nav.getOrNull(index - 1)?.id ?: item.id
+            item.nextFocusRightId = nav.getOrNull(index + 1)?.id ?: item.id
         }
         container.addView(top)
         container.addView(
@@ -940,7 +957,7 @@ class MainActivity : Activity() {
                     this,
                     homeFeedState,
                     nav.toList(),
-                    { openDetail(it, false) },
+                    { openDetail(it, resume = true, resumeLatest = true) },
                     ::accountFavoriteAction,
                     cloudAccount::favoriteActionLabel,
                     PublicFeedBackend(
@@ -1307,7 +1324,8 @@ class MainActivity : Activity() {
             if (tab == 0) catalogGrid(body, focusNav, focusType, loading = true)
             else {
                 message(body, "正在加载…")
-                if (tvSearchPanel != null) tvSearchPanel?.entry()?.requestFocus()
+                if (focusNav) nav[tab].requestFocus()
+                else if (tvSearchPanel != null) tvSearchPanel?.entry()?.requestFocus()
                 else if (focusType) typeButtons[library.contentType]?.requestFocus()
                 else nav[tab].requestFocus()
             }
@@ -1352,7 +1370,7 @@ class MainActivity : Activity() {
                         rankSubtitle?.text =
                             ranking?.updatedText?.ifBlank { "来源：红果漫剧热播榜" } ?: "来源：红果漫剧热播榜"
                         body.removeAllViews()
-                        catalogGrid(body, keepNav || focusNav, keepType || focusType)
+                        catalogGrid(body, keepNav, keepType || focusType)
                         if (keepInput) searchInput?.requestFocus()
                         else if (keepSuggestion != null) keepSuggestion.requestFocus()
                     }
@@ -1375,7 +1393,7 @@ class MainActivity : Activity() {
                         showCatalog(true)
                     } else {
                         body.removeAllViews()
-                        error(body, problem) { showCatalog(true) }
+                        error(body, problem, focusRetry = nav.none { it.hasFocus() }) { showCatalog(true) }
                         searchSuggestions?.updateNavigation()
                         if (resumeCards.isNotEmpty()) resumeCards.first().requestFocus()
                     }
@@ -2488,14 +2506,16 @@ class MainActivity : Activity() {
         autoplay: Boolean = true,
         cloudProgress: CloudProgress? = null,
         fromRelated: Boolean = false,
+        resumeLatest: Boolean = false,
     ) {
         if (!fromRelated) detailTrail.clear()
         relatedSection = null
         val accountScope = cloudAccount.historyScope
         detailCloudScope = accountScope
         detailCloudProgress =
-            cloudProgress ?: if (!resume) cloudAccount.progress(series.id) else null
+            cloudProgress ?: if (!resume || resumeLatest) cloudAccount.progress(series.id) else null
         pendingDetail = series
+        pendingResumeLatest = resumeLatest
         detailAutoplay = autoplay
         invalidatePage()
         releaseCatalogViews()
@@ -2539,7 +2559,7 @@ class MainActivity : Activity() {
                 error(body, problem) {
                     if (cloudProgress != null && accountScope != cloudAccount.historyScope)
                         showCatalog()
-                    else openDetail(series, resume, detailAutoplay, cloudProgress, fromRelated)
+                    else openDetail(series, resume, detailAutoplay, cloudProgress, fromRelated, resumeLatest)
                 }
             },
         )
@@ -4947,7 +4967,8 @@ class MainActivity : Activity() {
                                         it,
                                         directPlayback,
                                         autoplay = false,
-                                        cloudProgress = cloud.takeIf { directPlayback },
+                                        cloudProgress = cloud.takeIf { directPlayback && !pendingResumeLatest },
+                                        resumeLatest = pendingResumeLatest,
                                     )
                                 }
                             } ?: showCatalog()
