@@ -2,6 +2,7 @@
 package com.hongguotv.nativeapp
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -15,6 +16,40 @@ class DecoderModeTest {
     private val prefs =
         org.robolectric.RuntimeEnvironment.getApplication()
             .getSharedPreferences("decoder-mode-test", 0)
+
+    @Test
+    @Config(sdk = [23, 26])
+    fun decodeFailuresAreRememberedOnlyForTheModeThatWasPlaying() {
+        val context = org.robolectric.RuntimeEnvironment.getApplication()
+        val playback = context.getSharedPreferences("native-playback-v1", 0)
+        val stored = context.getSharedPreferences("native-decoder-lessons-v1", 0)
+        val storeField = CodecCapabilities::class.java.getDeclaredField("prefs").apply { isAccessible = true }
+        fun reload() {
+            storeField.set(CodecCapabilities, null)
+            CodecCapabilities.init(context)
+        }
+        stored.edit().putStringSet("failures", setOf("test-codec")).commit()
+        reload()
+        try {
+            DecoderMode.write(playback, DecoderMode.AUTO)
+            assertTrue(CodecCapabilities.supports("test-codec", 1920, 1080))
+            CodecCapabilities.learnFailure("test-codec", 1920, 1080, DecoderMode.HARDWARE)
+
+            assertTrue(CodecCapabilities.supports("test-codec", 1920, 1080))
+            DecoderMode.write(playback, DecoderMode.SOFTWARE)
+            assertTrue(CodecCapabilities.supports("test-codec", 1920, 1080))
+            DecoderMode.write(playback, DecoderMode.HARDWARE)
+            assertEquals(setOf("test-codec|1920|1080"), stored.getStringSet("failures-HARDWARE", null))
+            reload()
+            assertFalse(CodecCapabilities.supports("test-codec", 1920, 1080))
+            assertTrue(CodecCapabilities.supports("test-codec", 1280, 720))
+            CodecCapabilities.resetLearned()
+            assertTrue(CodecCapabilities.supports("test-codec", 1920, 1080))
+        } finally {
+            CodecCapabilities.resetLearned()
+            storeField.set(CodecCapabilities, null)
+        }
+    }
 
     @Test
     fun cyclesThroughThreeModes() {
