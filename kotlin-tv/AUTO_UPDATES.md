@@ -1,8 +1,10 @@
 # 应用内更新与发布
 
-更新源为 GitCode 本仓库公开 Releases：`tsukiyo-zero/hongguoTV`。
+更新源为 `tsukiyo-zero/hongguoTV` 的正式 Releases。
 
-电视先请求 `https://api.gitcode.com/api/v5/repos/tsukiyo-zero/hongguoTV/releases/latest?type=latest`，获取最新正式发行版标签，再读取该标签附件中的 `update.json`，比较内部版本号，并从 GitCode 根据清单的标签和附件名下载 APK。清单标签必须与接口返回标签一致。仅允许 HTTPS 和 GitCode 官方 API、站点及 file-cdn.gitcode.com 下载域名。此流程由 App 实现；最终覆盖安装由安卓系统执行。
+电视优先通过 GitCode 的最新正式发行版接口取得标签，再下载对应的 `update.json`。清单标签必须与接口返回的标签一致。GitCode 失败时按顺序检查 GitHub 直连及已配置的 GitHub 镜像。手动检查时，即使某个来源给出有效清单，只要没有适用于当前电视的更高版本，仍会继续检查其他来源。没有发现新版时会显示已检查可用来源；全部来源读取失败时显示检查失败。后台检查仍接受首个有效清单。
+
+下载地址由清单来源、固定仓库、版本标签和附件名生成。仅允许 HTTPS 和应用内预设的 GitCode、GitHub、附件 CDN 与镜像域名。APK 仍须通过大小、SHA-256、包名、版本和原签名校验，再由 Android 系统确认安装。
 
 ## 新包名过渡
 
