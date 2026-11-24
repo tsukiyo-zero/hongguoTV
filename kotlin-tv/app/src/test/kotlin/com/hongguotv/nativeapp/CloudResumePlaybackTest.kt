@@ -107,6 +107,70 @@ class CloudResumePlaybackTest {
     }
 
     @Test
+    fun searchRestoresDraftAndSelectedResultAfterReturningFromDetails() =
+        fixture { activity, _, _ ->
+            set(activity, "tab", 1)
+            set(activity, "query", "原搜索")
+            set(activity, "catalog", listOf(Series("72", "第一项"), series))
+            showCatalog(activity)
+            val input = get(activity, "searchInput") as android.widget.EditText
+            input.setText("还没提交的关键词")
+            val grid = (get(activity, "continuousCatalog") as ContinuousCatalogView).grid
+            grid.setSelection(1)
+            grid.performItemClick(View(activity), 1, grid.adapter.getItemId(1))
+            (get(activity, "workJob") as? Future<*>)?.get(5, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper()
+            assertEquals("detail", get(activity, "screen"))
+
+            activity.onBackPressed()
+            layout(activity)
+            val restored = (get(activity, "continuousCatalog") as ContinuousCatalogView).grid
+            assertEquals("原搜索", get(activity, "query"))
+            assertEquals("还没提交的关键词", (get(activity, "searchInput") as android.widget.EditText).text.toString())
+            assertEquals(series.id, (restored.selectedItem as Series).id)
+            assertTrue(restored.hasFocus())
+        }
+
+    @Test
+    fun favoritesRestoreTheSelectedCardAfterReturningFromDetails() =
+        fixture { activity, library, _ ->
+            library.toggle(series)
+            library.toggle(Series("72", "另一部收藏"))
+            set(activity, "tab", 3)
+            showCatalog(activity)
+            fun card() = (get(activity, "catalogCards") as Map<*, *>)[series.id] as View
+            assertTrue(card().requestFocus())
+            assertTrue(card().performClick())
+            (get(activity, "workJob") as? Future<*>)?.get(5, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper()
+            assertEquals("detail", get(activity, "screen"))
+
+            activity.onBackPressed()
+            layout(activity)
+            assertTrue(card().hasFocus())
+        }
+
+    private fun showCatalog(activity: MainActivity) {
+        MainActivity::class.java.getDeclaredMethod(
+            "showCatalog",
+            Boolean::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
+        ).apply { isAccessible = true }.invoke(activity, false, false, false)
+        layout(activity)
+    }
+
+    private fun layout(activity: MainActivity) {
+        val root = activity.window.decorView
+        root.measure(
+            View.MeasureSpec.makeMeasureSpec(960, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(540, View.MeasureSpec.EXACTLY),
+        )
+        root.layout(0, 0, 960, 540)
+        ShadowLooper.idleMainLooper()
+    }
+
+    @Test
     fun cloudHistoryUsesItsEpisodeNumberAndPositionEvenWhenIdsDiffer() =
         fixture { activity, library, _ ->
             library.save(WatchProgress(series, "102", 1, 12000, 90000, false, 3000))

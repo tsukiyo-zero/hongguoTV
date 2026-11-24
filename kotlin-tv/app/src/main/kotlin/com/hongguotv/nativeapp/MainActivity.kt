@@ -320,6 +320,7 @@ class MainActivity : Activity() {
     private var group = 0
     private var synopsisExpanded = false
     private var player: ExoPlayer? = null
+    private var playerDecoderMode = DecoderMode.AUTO
     private var video: RemoteVideo? = null
     private var playbackReady = false
     private var pausedForLifecycle = false
@@ -2508,6 +2509,7 @@ class MainActivity : Activity() {
         fromRelated: Boolean = false,
         resumeLatest: Boolean = false,
     ) {
+        if (screen == "catalog" && tab == 1) saveDiscoveryDraft()
         if (!fromRelated) detailTrail.clear()
         relatedSection = null
         val accountScope = cloudAccount.historyScope
@@ -3705,14 +3707,14 @@ class MainActivity : Activity() {
                         .setBufferDurationsMs(15000, 30000, 1000, 2000)
                         .setTargetBufferBytes(12 * 1024 * 1024)
                         .build()
+                val mode = DecoderMode.read(decoderPrefs)
                 val renderers =
                     androidx.media3.exoplayer
                         .DefaultRenderersFactory(this)
                         .setEnableDecoderFallback(true)
-                        .setMediaCodecSelector(
-                            DecoderMode.selector(DecoderMode.read(decoderPrefs))
-                        )
+                        .setMediaCodecSelector(DecoderMode.selector(mode))
                 ExoPlayer.Builder(this, renderers).setLoadControl(load).build().also {
+                    playerDecoderMode = mode
                     player = it
                     playerView?.player = it
                     it.setAudioAttributes(
@@ -4101,12 +4103,13 @@ class MainActivity : Activity() {
             val rendition = currentRendition
             when {
                 track != null ->
-                    CodecCapabilities.learnFailure(track.fourcc, track.width, track.height)
+                    CodecCapabilities.learnFailure(track.fourcc, track.width, track.height, playerDecoderMode)
                 rendition != null ->
                     CodecCapabilities.learnFailure(
                         rendition.codec,
                         rendition.width,
                         rendition.height,
+                        playerDecoderMode,
                     )
             }
             if (shouldAutoDowngrade(autoDowngrades, 2, currentTiers, attemptedQuality)) {

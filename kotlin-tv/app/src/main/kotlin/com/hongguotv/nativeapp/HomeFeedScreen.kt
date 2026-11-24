@@ -490,7 +490,7 @@ internal class HomeFeedScreen(
         )
             return false
         val knownBefore = CodecCapabilities.learnedCount()
-        CodecCapabilities.learnFailure(track!!.fourcc, track.width, track.height)
+        CodecCapabilities.learnFailure(track!!.fourcc, track.width, track.height, playback.decoderMode)
         if (CodecCapabilities.learnedCount() == knownBefore) return false
         healAttempts += 1
         loadCurrent("设备不支持该清晰度，正在自动切换…")

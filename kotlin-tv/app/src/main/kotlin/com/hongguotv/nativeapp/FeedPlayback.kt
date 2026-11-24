@@ -305,6 +305,7 @@ internal enum class TrialStatus {
 }
 
 internal interface TrialPlayback {
+    val decoderMode: DecoderMode get() = DecoderMode.AUTO
     val view: View
     var status: ((TrialStatus) -> Unit)?
 
@@ -358,6 +359,7 @@ internal fun shouldSelfHealTrial(
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 internal class Media3TrialPlayback(context: Context) : TrialPlayback {
+    override val decoderMode = DecoderMode.read(context.getSharedPreferences("native-playback-v1", 0))
     private var currentIndex = 0
     private var preloading = false
     private val preloadBuilder =
@@ -381,13 +383,7 @@ internal class Media3TrialPlayback(context: Context) : TrialPlayback {
             .setRenderersFactory(
                 DefaultRenderersFactory(context)
                     .setEnableDecoderFallback(true)
-                    .setMediaCodecSelector(
-                        DecoderMode.selector(
-                            DecoderMode.read(
-                                context.getSharedPreferences("native-playback-v1", 0)
-                            )
-                        )
-                    )
+                    .setMediaCodecSelector(DecoderMode.selector(decoderMode))
             )
             .setLoadControl(
                 DefaultLoadControl.Builder()

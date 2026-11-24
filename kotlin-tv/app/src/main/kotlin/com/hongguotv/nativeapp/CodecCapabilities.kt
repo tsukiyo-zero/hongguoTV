@@ -17,20 +17,28 @@ import com.hongguotv.core.VideoTracks
  * (persisted across restarts) override the static probe.
  */
 object CodecCapabilities {
-    private val lessons = DecoderLessons()
+    private val lessons = DecoderMode.entries.associateWith { DecoderLessons() }
     private var prefs: SharedPreferences? = null
     private var playbackPrefs: SharedPreferences? = null
     private val hardwareByMime = HashMap<String, Boolean>()
     private val verdicts = HashMap<String, Boolean>()
     @Volatile private var logged = false
 
+    @Synchronized
     fun init(context: Context) {
         if (prefs != null) return
         val store = context.getSharedPreferences("native-decoder-lessons-v1", Context.MODE_PRIVATE)
         prefs = store
         playbackPrefs = context.getSharedPreferences("native-playback-v1", Context.MODE_PRIVATE)
-        lessons.restore(store.getStringSet("failures", emptySet()) ?: emptySet())
+        // 旧记录没有模式信息，无法判断应归属哪个解码器选择策略。
+        lessons.forEach { (mode, records) ->
+            records.restore(store.getStringSet(lessonKey(mode), emptySet()).orEmpty())
+        }
     }
+
+    private fun lessonKey(mode: DecoderMode) = "failures-${mode.name}"
+
+    private fun requestedMode() = playbackPrefs?.let(DecoderMode::read) ?: DecoderMode.AUTO
 
     fun mime(codec: String): String? =
         when (codec.lowercase()) {
@@ -51,18 +59,23 @@ object CodecCapabilities {
         width: Int?,
         height: Int?,
         respectHardwareMode: Boolean = true,
+    ): Boolean = supports(codec, width, height, respectHardwareMode, requestedMode())
+
+    private fun supports(
+        codec: String,
+        width: Int?,
+        height: Int?,
+        respectHardwareMode: Boolean,
+        mode: DecoderMode,
     ): Boolean {
-        if (lessons.fails(codec, width, height)) return false
+        if (synchronized(this) { lessons.getValue(mode).fails(codec, width, height) }) return false
         // bytevc2（VVC 变体）没有系统解码器，不能按"未知编码视为支持"处理，
         // 否则它会占住候选列表，导致宽松回退拿不到真正可播的 HEVC 档。
         if (codec.lowercase() in setOf("bytevc2", "bvc2")) return false
         val type = mime(codec) ?: return true
         // 强制硬解时跳过本机没有硬件解码器的编码（例如只有软解的 HEVC），让选档回落到 AVC。
         // 放宽模式用于「硬解把全部档位排除后」的回退，避免用户什么也看不了。
-        if (respectHardwareMode) {
-            val mode = playbackPrefs?.let { DecoderMode.read(it) } ?: DecoderMode.AUTO
-            if (DecoderMode.shouldSkipForHardware(mode, hasHardwareDecoder(type))) return false
-        }
+        if (respectHardwareMode && DecoderMode.shouldSkipForHardware(mode, hasHardwareDecoder(type))) return false
         if (width == null || height == null || width <= 0 || height <= 0) return true
         val key = "$type $width $height"
         synchronized(verdicts) {
@@ -123,23 +136,31 @@ object CodecCapabilities {
      * Records a runtime decode failure; true when the static probe had claimed support
      * (over-reporting).
      */
-    fun learnFailure(codec: String, width: Int?, height: Int?): Boolean {
-        val overReported = supports(codec, width, height)
-        val key = lessons.remember(codec, width, height) ?: return false
-        prefs?.edit()?.putStringSet("failures", lessons.keys())?.apply()
+    @Synchronized
+    fun learnFailure(codec: String, width: Int?, height: Int?, mode: DecoderMode): Boolean {
+        val overReported = supports(codec, width, height, respectHardwareMode = true, mode = mode)
+        val records = lessons.getValue(mode)
+        val key = records.remember(codec, width, height) ?: return false
+        prefs?.edit()?.putStringSet(lessonKey(mode), records.keys())?.apply()
         android.util.Log.w(
             "HongguoTV",
-            "Learned decoder failure $key (static probe claimed support: $overReported)",
+            "Learned decoder failure ${mode.name}/$key (static probe claimed support: $overReported)",
         )
         return overReported
     }
 
+    @Synchronized
     fun resetLearned() {
-        lessons.reset()
-        prefs?.edit()?.putStringSet("failures", lessons.keys())?.apply()
+        val edit = prefs?.edit()?.remove("failures")
+        lessons.forEach { (mode, records) ->
+            records.reset()
+            edit?.remove(lessonKey(mode))
+        }
+        edit?.apply()
     }
 
-    fun learnedCount() = lessons.size()
+    @Synchronized
+    fun learnedCount() = lessons.values.sumOf { it.size() }
 
     fun logDeviceCapabilities() {
         if (logged) return
