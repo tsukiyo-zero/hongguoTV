@@ -11,7 +11,7 @@ import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.ConnectionPool
 import okhttp3.HttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -382,10 +382,7 @@ constructor(
         val code = data.optInt("Code", data.optInt("code", 0))
         if (code != 0) throw IOException("播放接口暂不可用（错误码 $code）")
         val map = data.optJSONObject("data") ?: throw IOException("播放信息为空")
-        val row =
-            map.optJSONObject(id)
-                ?: map.keys().asSequence().mapNotNull { map.optJSONObject(it) }.firstOrNull()
-                ?: throw IOException("播放信息为空")
+        val row = map.optJSONObject(id) ?: throw IOException("播放信息未包含指定剧集")
         return JSONObject().put("video_model", row.opt("video_model") ?: row)
     }
 
@@ -828,10 +825,7 @@ constructor(
             if (code != 0) { trace.rejected(code); continue }
             val data = root.optJSONObject("data") ?: continue
             val rows = data.optJSONObject("video_model_data") ?: data
-            val row =
-                rows.optJSONObject(id)
-                    ?: rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.firstOrNull()
-                    ?: continue
+            val row = rows.optJSONObject(id) ?: continue
             val raw = row.opt("video_model") ?: continue
             val model =
                 (when (raw) {
@@ -903,9 +897,15 @@ constructor(
             while (requestedPlaybackModels.size > 64) requestedPlaybackModels.remove(requestedPlaybackModels.first())
         } }
         val handoff = if (firstRead) playbackSession.takeModel(id, playbackModelOwner, clock()) else null
-        if (handoff != null) return parsePlaybackEntry(handoff)
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(if (speculative) 2000 else 8000)
-        val entry = RequestScope.withDeadline(deadline) {
+        return RequestScope.withDeadline(deadline) {
+            if (handoff != null) {
+                try {
+                    return@withDeadline parsePlaybackEntry(handoff)
+                } catch (_: IOException) {
+                    RequestScope.ensureActive()
+                }
+            }
             fun transport(): OkHttpClient {
                 val remaining = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())
                 if (remaining <= 0) throw java.net.SocketTimeoutException("播放信息读取超时")
@@ -916,7 +916,7 @@ constructor(
             val identity = if (speculative) playbackSession.currentProfile()
                 ?: throw IOException("后台播放准备等待前台设备注册")
                 else playbackSession.profile(transport())
-            fun fetch(profile: PlaybackDeviceSession.Profile, fresh: Boolean = false): JSONObject {
+            fun fetch(profile: PlaybackDeviceSession.Profile, fresh: Boolean = false): Pair<JSONObject, StreamLadder> {
                 // 平台在 GET / POST player / POST v1 三种形态间反复切换；
                 // 按「上次成功的形态优先」依次尝试，成功即记住，避免每次改常量发版。
                 val shapes = PlaybackShapeMemory.order()
@@ -1009,10 +1009,12 @@ constructor(
                                                 segment = shape.path.segment,
                                             )
                                 }
+                            val ladder = parsePlaybackEntry(model, client)
+                            RequestScope.ensureActive()
                             PlaybackShapeMemory.success(shape)
-                            return model
+                            return model to ladder
                         } catch (error: IOException) {
-                            if (Thread.currentThread().isInterrupted) throw error
+                            RequestScope.ensureActive()
                             PlaybackShapeMemory.failure(shape)
                             last = error
                         } finally {
@@ -1025,7 +1027,7 @@ constructor(
                 }
             }
             var owner = identity
-            val model = try { fetch(identity) } catch (error: EmptyPlaybackResponseException) {
+            val (model, ladder) = try { fetch(identity) } catch (error: EmptyPlaybackResponseException) {
                 RequestScope.ensureActive()
                 val mayRotate = synchronized(playbackIdentityLock) {
                     if (!speculative && (!emptyPlaybackRotated || clock() - playbackRotationAt >= 30_000)) {
@@ -1040,9 +1042,8 @@ constructor(
             }
             RequestScope.ensureActive()
             owner.offerModel(id, model, playbackModelOwner, clock())
-            model
+            ladder
         }
-        return parsePlaybackEntry(entry)
     }
 
     /** 保留旧传输供离线协议回归使用；正式播放只走上面的 v5 入口。 */
@@ -1171,9 +1172,7 @@ constructor(
                                 if (code != 0) throw IOException("播放接口暂不可用（错误码 $code）")
                                 val map = data.optJSONObject("data") ?: throw IOException("播放信息为空")
                                 responseMap = map
-                                map.optJSONObject(id) ?: (if (ids.size == 1)
-                                    map.keys().asSequence().mapNotNull { map.optJSONObject(it) }.firstOrNull() else null)
-                                    ?: throw IOException("播放信息为空")
+                                map.optJSONObject(id) ?: throw IOException("播放信息未包含指定剧集")
                             }
                             // 只有模型结构有效才记为健康，HTTP 200 或非空正文不能代表播放成功。
                             val model = row.optJSONObject("video_model") ?: runCatching { JSONObject(row.str("video_model")) }.getOrNull()
@@ -1242,8 +1241,10 @@ constructor(
     }
 
     /** 新旧传输共用解析和解密，避免更换接口时放宽电视编码及内容密钥校验。 */
-    private fun parsePlaybackEntry(entry: JSONObject): StreamLadder {
-        val model = entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
+    private fun parsePlaybackEntry(entry: JSONObject, client: OkHttpClient = http): StreamLadder {
+        val model = entry.optJSONObject("video_model")
+            ?: runCatching { JSONObject(entry.str("video_model")) }.getOrNull()
+            ?: throw IOException("播放信息格式异常")
         // The current model already carries plain media URLs, dimensions and CENC keys.
         // Only use the legacy fallback endpoint when this shape has no usable rendition.
         val inline =
@@ -1284,7 +1285,7 @@ constructor(
                     .getOrNull()
             }
         if (inline.isNotEmpty()) return StreamLadder(inline)
-        val raw = model.opt("fallback_api")
+        val raw = model.opt("fallback_api") ?: throw IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
         val fallback =
             when (raw) {
                 is JSONObject -> raw.str("fallback_api")
@@ -1293,9 +1294,10 @@ constructor(
                     runCatching { JSONObject(raw.toString()).str("fallback_api") }
                         .getOrDefault(raw.toString())
             }
-        if (!fallback.startsWith("https://")) throw IOException("播放地址格式异常")
+        val fallbackUrl = fallback.toHttpUrlOrNull()?.takeIf { it.isHttps }
+            ?: throw IOException("播放地址格式异常")
         var info =
-            JSONObject(text(fallback)).optJSONObject("video_info")?.optJSONObject("data")
+            readPlaybackFallback(fallbackUrl.toString(), client)
                 ?: throw IOException("没有播放资源")
         var videoList = info.optJSONObject("video_list") ?: throw IOException("没有可用清晰度")
         val offered = videoList.keys().asSequence().mapNotNull(videoList::optJSONObject).toList()
@@ -1305,11 +1307,11 @@ constructor(
             }) {
             // 官方播放器有 force_codec 和 codec_type=0 的兼容路径。仅全档 bytevc2 时
             // 额外读取一次；参数名不保证返回 h264，必须继续按实际模型与视频轨道选档。
-            val compatible = fallback.toHttpUrl().newBuilder()
+            val compatible = fallbackUrl.newBuilder()
                 .setQueryParameter("codec_type", "0")
                 .setQueryParameter("force_codec", "h264")
                 .build().toString()
-            info = JSONObject(text(compatible)).optJSONObject("video_info")?.optJSONObject("data")
+            info = readPlaybackFallback(compatible, client)
                 ?: throw IOException("没有播放资源")
             videoList = info.optJSONObject("video_list") ?: throw IOException("没有可用清晰度")
         }
@@ -1362,6 +1364,13 @@ constructor(
             }
         if (renditions.isEmpty()) throw IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
         return StreamLadder(renditions)
+    }
+
+    private fun readPlaybackFallback(url: String, client: OkHttpClient): JSONObject? {
+        val response = text(url, client = client)
+        val root = runCatching { JSONObject(response) }.getOrNull()
+            ?: throw IOException("播放信息格式异常")
+        return root.optJSONObject("video_info")?.optJSONObject("data")
     }
 
     private fun dimension(o: JSONObject, vararg keys: String): Int? {

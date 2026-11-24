@@ -98,11 +98,8 @@ internal object MobilePlayback {
             if (code != 0) throw IOException("播放接口暂不可用（错误码 $code）")
             val data = root.optJSONObject("data") ?: throw IOException("播放信息为空")
             val rows = data.optJSONObject("video_model_data") ?: data
-            val row =
-                rows.optJSONObject(id)
-                    ?: rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.firstOrNull()
-                    ?: throw IOException("播放信息为空")
-            val raw = row.opt("video_model") ?: throw IOException("播放信息没有可用资源")
+            val raw = rows.optJSONObject(id)?.opt("video_model")
+                ?: throw IOException("播放信息未包含指定剧集")
             val model =
                 when (raw) {
                     is JSONObject -> raw
@@ -169,11 +166,8 @@ internal object MobilePlayback {
             if (code != 0) throw IOException("播放接口暂不可用（错误码 $code）")
             val data = root.optJSONObject("data") ?: throw IOException("播放信息为空")
             val rows = data.optJSONObject("video_model_data") ?: data
-            val row =
-                rows.optJSONObject(id)
-                    ?: rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.firstOrNull()
-                    ?: throw IOException("播放信息为空")
-            val raw = row.opt("video_model") ?: throw IOException("播放信息没有可用资源")
+            val raw = rows.optJSONObject(id)?.opt("video_model")
+                ?: throw IOException("播放信息未包含指定剧集")
             val model =
                 when (raw) {
                     is JSONObject -> raw

@@ -57,6 +57,17 @@ class MobilePlaybackTest {
     }
 
     @Test
+    fun videoTabAndPreloadRejectModelsForAnotherEpisode() {
+        val response = model(typed = false, encoded = false, id = "456")
+        assertThrows(IOException::class.java) {
+            MobilePlayback.preloadModel("123", device, http(response), signer, 1000)
+        }
+        assertThrows(IOException::class.java) {
+            MobilePlayback.getVideoTab("123", device, http(response), signer, 1000)
+        }
+    }
+
+    @Test
     fun preloadEmptyBodyReportsShape() {
         val error = assertThrows(EmptyPlaybackResponseException::class.java) {
             MobilePlayback.preloadModel("123", device, http(""), signer, 1000)

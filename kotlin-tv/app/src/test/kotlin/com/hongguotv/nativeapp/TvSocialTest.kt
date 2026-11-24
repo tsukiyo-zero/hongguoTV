@@ -172,8 +172,13 @@ class TvSocialTest {
             )
         try {
             social.attach(root)
+            social.foreground(true)
+            val generation = social.javaClass.getDeclaredField("generation").apply { isAccessible = true }
+            ShadowLooper.idleMainLooper()
+            val before = generation.getInt(social)
             social.showComments(anchor)
             flush(social)
+            assertEquals(before, generation.getInt(social))
             val d = ShadowDialog.getLatestDialog()
             val decor = d.window!!.decorView
             assertTrue(views(decor).any { it.text.contains("已加载 2 条") })

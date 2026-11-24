@@ -46,10 +46,7 @@ class TvSocial(
             override fun run() {
                 if (!active) return
                 val next = identity()
-                if (next != key) {
-                    reset()
-                    key = next
-                }
+                updateEpisode(next)
                 val p = player()
                 overlay?.running = p?.isPlaying == true
                 overlay?.invalidate()
@@ -84,6 +81,12 @@ class TvSocial(
             overlay?.running = false
             overlay?.invalidate()
         }
+    }
+
+    private fun updateEpisode(next: Pair<String, String>?) {
+        if (next == key) return
+        reset()
+        key = next
     }
 
     fun reset() {
@@ -275,14 +278,11 @@ class TvSocial(
     }
 
     fun showComments(anchor: View, target: Pair<String, String>? = null) {
-        val ids = target ?: identity() ?: return
+        val episode = identity()
+        val ids = target ?: episode ?: return
+        updateEpisode(episode)
         dialog?.dismiss()
         commentScope?.cancel()
-        key = ids
-        val ticket = ++generation
-        // The timed read belongs to the old generation as well.
-        scope?.cancel()
-        loading = false
         val d = Dialog(activity)
         dialog = d
         d.requestWindowFeature(Window.FEATURE_NO_TITLE)
@@ -378,7 +378,7 @@ class TvSocial(
                         main.post {
                             if (
                                 disposed ||
-                                    ticket != generation ||
+                                    dialog !== d ||
                                     batch != pageGeneration ||
                                     mode != reviewMode
                             )
@@ -409,7 +409,7 @@ class TvSocial(
                         main.post {
                             if (
                                 !disposed &&
-                                    ticket == generation &&
+                                    dialog === d &&
                                     batch == pageGeneration &&
                                     mode == reviewMode
                             ) {
@@ -446,8 +446,11 @@ class TvSocial(
         d.setContentView(body)
         d.setOnDismissListener {
             disposed = true
-            commentScope?.cancel()
-            if (dialog === d) dialog = null
+            if (dialog === d) {
+                commentScope?.cancel()
+                commentScope = null
+                dialog = null
+            }
             if (anchor.isAttachedToWindow) anchor.requestFocus()
         }
         d.show()
@@ -470,14 +473,14 @@ class TvSocial(
 
 
         /** 轨道与文本在 setRows 时算好；绘制只做坐标换算，避免每帧重新分配。 */
+        private var items: List<DanmakuItem> = emptyList()
         private var scheduled: List<ScheduledDanmaku> = emptyList()
 
         private fun areaTop(): Int =
             when (prefs.getString("area", "top")) {
-                "middle" -> dp(220)
-                "bottom" -> dp(420)
-                "full" -> dp(65)
-                else -> dp(65)
+                "middle" -> minOf(dp(220), height / 3)
+                "bottom" -> minOf(dp(420), height * 2 / 3)
+                else -> minOf(dp(65), height / 6)
             }
 
         private fun areaHeight(): Int {
@@ -490,19 +493,34 @@ class TvSocial(
         }
 
         fun setRows(values: List<JSONObject>) {
-            val travel = prefs.getInt("travel", 12000)
-            val textSize = dp(prefs.getInt("font", 24))
-            val configured = prefs.getInt("lanes", 0)
-            val lanes =
-                if (configured > 0) configured
-                else DanmakuLayout.laneCountFor(areaHeight(), textSize, 0)
-            val items =
+            items =
                 values.mapNotNull {
                     val text = it.optString("text").trim()
                     val at = it.optLong("timeMS", -1)
                     if (text.isEmpty() || at < 0) null
                     else DanmakuItem(it.optString("id"), text, at)
                 }
+            scheduleRows()
+        }
+
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+            super.onSizeChanged(w, h, oldw, oldh)
+            scheduleRows()
+        }
+
+        private fun scheduleRows() {
+            val travel = prefs.getInt("travel", 12000)
+            val textSize = dp(prefs.getInt("font", 24))
+            val configured = prefs.getInt("lanes", 0)
+            val automatic = DanmakuLayout.laneCountFor(areaHeight(), textSize, 0)
+            paint.textSize = textSize.toFloat()
+            val metrics = paint.fontMetrics
+            val lanes = DanmakuLayout.visibleLanes(
+                requested = if (configured > 0) configured else automatic,
+                areaHeight = areaHeight(),
+                lineHeight = textSize + dp(12),
+                glyphHeight = kotlin.math.ceil(metrics.bottom - metrics.top).toInt(),
+            )
             scheduled =
                 DanmakuLayout.assign(
                     items = items,
@@ -528,7 +546,7 @@ class TvSocial(
             paint.textSize = dp(prefs.getInt("font", 24)).toFloat()
             val alpha = (prefs.getInt("alpha", 85).coerceIn(20, 100) * 255 / 100)
             val lineHeight = (paint.textSize + dp(12)).toInt()
-            val top = areaTop()
+            val baseline = areaTop() - paint.fontMetrics.top
             // 只绘制当前有效的弹幕，不因缓存总量大而按索引丢弃。
             for (item in scheduled) {
                 if (now < item.startMs || now >= item.endMs) continue
@@ -536,7 +554,7 @@ class TvSocial(
                     width -
                         (width + paint.measureText(item.text)) *
                             (now - item.startMs).toFloat() / travel
-                val y = (top + item.lane * lineHeight).toFloat()
+                val y = baseline + item.lane * lineHeight
                 paint.style = Paint.Style.STROKE
                 paint.strokeWidth = dp(2).toFloat()
                 paint.color = Color.BLACK

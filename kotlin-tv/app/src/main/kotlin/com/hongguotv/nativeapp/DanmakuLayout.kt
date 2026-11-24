@@ -83,6 +83,11 @@ internal object DanmakuLayout {
         return output
     }
 
+    fun visibleLanes(requested: Int, areaHeight: Int, lineHeight: Int, glyphHeight: Int): Int {
+        if (lineHeight <= 0 || areaHeight < glyphHeight) return 0
+        return minOf(requested, 1 + (areaHeight - glyphHeight) / lineHeight)
+    }
+
     /** 按屏幕高度推算可用轨道数，单条行高由字号决定。 */
     fun laneCountFor(heightPx: Int, textSizePx: Int, topPaddingPx: Int, maxLanes: Int = 12): Int {
         if (heightPx <= 0 || textSizePx <= 0) return 1
