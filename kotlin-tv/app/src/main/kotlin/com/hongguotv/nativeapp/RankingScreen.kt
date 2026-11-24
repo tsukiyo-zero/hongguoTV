@@ -174,7 +174,12 @@ internal class RankingScreen(
 
     private fun chooseTopic() {
         val snapshot = state.snapshots[state.board] ?: return
-        val values = listOf("") + snapshot.topics
+        val topics = snapshot.topics
+        if (topics.isEmpty()) {
+            tools.info("筛选题材", "本次榜单暂无可筛选的题材，仍可浏览全部作品或刷新榜单。", filterButton)
+            return
+        }
+        val values = listOf("") + topics
         val labels =
             values.map {
                 if (it.isEmpty()) "全部题材 · ${snapshot.items.size} 部"
