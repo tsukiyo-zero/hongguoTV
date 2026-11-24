@@ -222,7 +222,7 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         }
     }
 
-    private fun <T> work(action: () -> T, done: (T) -> Unit) {
+    private fun <T> work(failure: String, action: () -> T, done: (T) -> Unit) {
         busy = true
         renderActions()
         val ticket = ++generation
@@ -243,9 +243,10 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
                             busy = false
                             ready = false
                             retryAfter = System.currentTimeMillis() + 30 * 60 * 1000L
-                            updateStatus(
-                                if (e is IOException) e.message ?: "更新失败，请重试" else "更新校验失败，请重试"
-                            )
+                            val reason = (e as? IOException)?.message
+                                ?.replace(Regex("https?://\\S+"), "[地址]")
+                                ?.take(160)
+                            updateStatus(if (reason.isNullOrBlank()) "$failure，请稍后重试" else "$failure · $reason")
                             renderActions()
                         }
                     }
@@ -257,7 +258,10 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         if (busy || !active || !idle()) return
         preferences.edit().putLong("last_attempt", System.currentTimeMillis()).apply()
         updateStatus("正在检查新版…")
-        work({ repository.latest() }) { update ->
+        val installedVersion = BuildConfig.VERSION_CODE.toLong()
+        work("检查更新失败", {
+            if (manual) repository.latest(installedVersion, Build.VERSION.SDK_INT) else repository.latest()
+        }) { update ->
             available =
                 update.takeIf {
                     it.newerThan(BuildConfig.VERSION_CODE.toLong(), Build.VERSION.SDK_INT)
@@ -270,7 +274,8 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
                             update.minSdk > Build.VERSION.SDK_INT
                     )
                         "新版需要 Android API ${update.minSdk}，当前电视继续使用本版"
-                    else "已是最新版本 ${BuildConfig.VERSION_NAME}"
+                    else if (manual) "已检查可用来源，未发现新版 · 当前 ${BuildConfig.VERSION_NAME}"
+                    else "当前来源未发现新版 · 当前 ${BuildConfig.VERSION_NAME}"
                 )
                 worker.execute { apk.delete() }
             } else {
@@ -287,7 +292,7 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         if (busy || !active || !idle()) return
         updateStatus("正在下载 ${update.versionName}…")
         val ticket = generation + 1
-        work({
+        work("下载或校验失败", {
             repository.download(update, apk) { percent ->
                 main.post {
                     if (generation == ticket && active)
@@ -421,7 +426,7 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
     private fun install() {
         val update = available ?: return
         if (busy || !active || !ready) return
-        work({
+        work("安装准备失败", {
             validateApk(update)
             prepareLegacyApk(update)
         }) {
@@ -455,7 +460,7 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
                     // 为 Android 6/7 增加标准安装 action；厂商 ROM 是否提供对应入口仍需实机验证。
                     if (!launchInstaller(uri)) {
                         updateStatus("正在准备系统兼容安装…")
-                        work({ runCatching { UpdateInstallSession.submit(activity, apk) } }) { result ->
+                        work("启动系统安装失败", { runCatching { UpdateInstallSession.submit(activity, apk) } }) { result ->
                             if (result.isSuccess) {
                                 updateStatus("已提交系统安装会话，请在系统确认页继续安装")
                             } else {

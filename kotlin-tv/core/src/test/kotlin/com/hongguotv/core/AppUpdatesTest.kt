@@ -5,6 +5,11 @@ import java.io.File
 import java.io.IOException
 import java.nio.file.Files
 import java.security.MessageDigest
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -41,6 +46,77 @@ class AppUpdatesTest {
             block(File(dir, "update.apk"))
         } finally {
             dir.deleteRecursively()
+        }
+    }
+
+    private fun checkRepository(responses: Map<String, String>, requested: MutableList<String>) =
+        AppUpdateRepository(
+            OkHttpClient.Builder().addInterceptor { chain ->
+                val request = chain.request()
+                val url = request.url.toString()
+                requested += url
+                val body = responses[url]
+                Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+                    .code(if (body == null) 503 else 200)
+                    .message(if (body == null) "Unavailable" else "OK")
+                    .body(body.orEmpty().toResponseBody())
+                    .build()
+            }.build(),
+        )
+
+    private fun primaryManifest(version: Int): Map<String, String> {
+        val manifest = json().put("versionCode", version).put("minSdk", 23)
+        val tag = manifest.getString("tag")
+        val release = JSONObject().put("tag_name", tag)
+            .put("assets", JSONArray().put(JSONObject().put("name", "update.json")))
+        return mapOf(
+            AppUpdate.LATEST_API to release.toString(),
+            "${AppUpdate.RELEASES}/download/$tag/update.json" to manifest.toString(),
+        )
+    }
+
+    @Test
+    fun manualCheckContinuesPastStalePrimaryAndFailedDirectSource() {
+        val requested = mutableListOf<String>()
+        val mirror = AppUpdate.MANIFEST_MIRRORS[1]
+        val responses = primaryManifest(78) +
+            (AppUpdate.latestManifestUrl(mirror) to json().put("versionCode", 80).put("minSdk", 23).toString())
+        checkRepository(responses, requested).use { repository ->
+            assertEquals(78L, repository.latest().versionCode)
+            assertEquals(2, requested.size)
+            requested.clear()
+
+            val received = repository.latest(installedVersion = 79, sdk = 23)
+            assertEquals(80L, received.versionCode)
+            assertEquals(AppUpdate.releasesBaseOf(mirror), received.releasesBase)
+            assertEquals(AppUpdate.MANIFEST_MIRRORS.take(2).map { AppUpdate.latestManifestUrl(it) }, requested.drop(2))
+        }
+    }
+
+    @Test
+    fun manualCheckFindsCompatibleUpdateWhenFirstNewerManifestNeedsAndroid8() {
+        val mirror = AppUpdate.MANIFEST_MIRRORS[1]
+        val responses = mapOf(
+            AppUpdate.latestManifestUrl(AppUpdate.MANIFEST_MIRRORS[0]) to
+                json().put("versionCode", 81).put("minSdk", 26).toString(),
+            AppUpdate.latestManifestUrl(mirror) to
+                json().put("versionCode", 80).put("minSdk", 23).toString(),
+        )
+        checkRepository(responses, mutableListOf()).use { repository ->
+            assertEquals(80L, repository.latest(installedVersion = 79, sdk = 23).versionCode)
+            assertEquals(81L, repository.latest(installedVersion = 79, sdk = 26).versionCode)
+        }
+    }
+
+    @Test
+    fun manualCheckDistinguishesNoNewerManifestFromAllSourcesFailing() {
+        val requested = mutableListOf<String>()
+        checkRepository(primaryManifest(79), requested).use {
+            assertEquals(79L, it.latest(installedVersion = 79, sdk = 23).versionCode)
+            assertEquals(2 + AppUpdate.MANIFEST_MIRRORS.size, requested.size)
+        }
+        checkRepository(emptyMap(), mutableListOf()).use {
+            assertThrows(IOException::class.java) { it.latest(installedVersion = 79, sdk = 23) }
         }
     }
 

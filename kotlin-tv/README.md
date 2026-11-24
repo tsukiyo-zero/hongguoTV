@@ -121,7 +121,7 @@ python3 scripts/release-tv.py --publish
 
 `./scripts/build-kotlin.sh` 只做本地 Release 构建和配套清单生成，不发布。它按实际版本写入 `outputs/releases/<tag>/`；调试期间优先使用 assembleDebug，避免用相同版本覆盖本地保存的正式包目录。完整配置与故障恢复见 [AUTO_UPDATES.md](AUTO_UPDATES.md)。
 
-用户后续在同包名果映 TV 内可从 GitCode 检查、下载并校验新版，由系统确认安装。GitHub/GitCode Release 也可手动下载；本地测试包没有上传正式渠道，不会被应用内更新获取。
+果映 TV 优先从 GitCode 检查新版。手动检查如未找到适用于当前电视的更高版本，会继续查看 GitHub 正式发行版及已配置镜像，下载校验后由系统确认安装。GitHub/GitCode Release 也可手动下载；本地测试包没有上传正式渠道，不会被应用内更新获取。
 
 ## 验证边界
 

@@ -18,7 +18,9 @@ Android TV 使用 `kotlin-tv/` 中的 Kotlin 原生客户端，支持 **Android 
 
 [GitHub TV 0.1.38 下载](https://github.com/tsukiyo-zero/hongguoTV/releases/tag/kotlin-v0.1.38) · [GitCode 发布记录](https://gitcode.com/tsukiyo-zero/hongguoTV/releases)
 
-正式 TV 安装包通过 GitHub 和 GitCode 双平台发布；**应用内更新读取 GitCode**。首次安装从正式 Release 下载 APK，在电视上确认安装。后续同包名版本可在「设置 → 版本与更新」检查、下载并校验更新包，最后交给 Android 系统确认安装；无需每次手动到 GitHub 下载，也不支持静默安装。 Android 6/7 会依次尝试标准安装入口与 APK 查看入口，无法打开时尝试系统安全设置；厂商 ROM 兼容性仍需实机确认。若旧版更新入口无法打开，可从正式 Release 下载同包名、同签名 APK 手动覆盖一次，保留本机数据。
+正式 TV 安装包通过 GitHub 和 GitCode 双平台发布；**应用内更新优先读取 GitCode**。首次安装从正式 Release 下载 APK，在电视上确认安装。后续同包名版本可在「设置 → 版本与更新」检查、下载并校验更新包，最后交给 Android 系统确认安装；无需每次手动到 GitHub 下载，也不支持静默安装。 Android 6/7 会依次尝试标准安装入口与 APK 查看入口，无法打开时尝试系统安全设置；厂商 ROM 兼容性仍需实机确认。若旧版更新入口无法打开，可从正式 Release 下载同包名、同签名 APK 手动覆盖一次，保留本机数据。
+
+手动检查时，如果主源未返回适用于当前电视的更高版本，会继续检查同仓库的 GitHub 正式发行版和已配置镜像。状态分别提示检查、下载校验和安装进度。
 
 ### 旧红果 TV 与新果映 TV
 

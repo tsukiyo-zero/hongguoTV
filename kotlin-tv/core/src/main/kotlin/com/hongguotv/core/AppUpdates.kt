@@ -165,8 +165,8 @@ object UpdateFiles {
     }
 }
 
-class AppUpdateRepository : java.io.Closeable {
-    private val http =
+class AppUpdateRepository internal constructor(private val http: OkHttpClient) : java.io.Closeable {
+    constructor() : this(
         OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
@@ -185,6 +185,7 @@ class AppUpdateRepository : java.io.Closeable {
                                 "api.github.com",
                                 "github.com",
                                 "objects.githubusercontent.com",
+                                "release-assets.githubusercontent.com",
                                 "ghproxy.net",
                                 "gh-proxy.com",
                                 "ghfast.top",
@@ -194,6 +195,7 @@ class AppUpdateRepository : java.io.Closeable {
                 chain.proceed(chain.request())
             }
             .build()
+    )
 
     private fun request(url: String) =
         Request.Builder()
@@ -202,11 +204,10 @@ class AppUpdateRepository : java.io.Closeable {
             .header("Cache-Control", "no-cache")
             .build()
 
-    private fun readMetadata(url: String, timeoutSeconds: Long = 25): String {
+    private fun readMetadata(url: String, timeoutSeconds: Long): String {
         val call = http.newCall(request(url))
-        // 清单只有几百字节；回退链上每个源给 8 秒，避免全不通时让用户等两分钟。
         call.timeout().timeout(timeoutSeconds, TimeUnit.SECONDS)
-        return call.execute().use { response ->
+        return RequestScope.execute(call) { response ->
             if (!response.isSuccessful)
                 throw IOException(if (response.code == 404) "尚无可用的自动更新版本" else "无法检查更新，请稍后重试")
             response.body?.byteStream()?.use { input ->
@@ -223,35 +224,45 @@ class AppUpdateRepository : java.io.Closeable {
         }
     }
 
-    fun latest(): AppUpdate {
-        // 1) GitCode API（主源，会按账号限流）
-        runCatching { fromRelease(readMetadata(AppUpdate.LATEST_API), AppUpdate.RELEASES) }
-            .onSuccess { return it }
-            .onFailure { }
-        // 2) `releases/latest/download/update.json`：不需要任何 API，GitHub 直连与国内镜像依次尝试。
-        for (prefix in AppUpdate.MANIFEST_MIRRORS) {
-            runCatching {
+    /** 手动检查传入已安装版本，继续寻找比当前版本更新且与本机兼容的清单。 */
+    fun latest(installedVersion: Long? = null, sdk: Int = Int.MAX_VALUE): AppUpdate {
+        val primaryTimeout = if (installedVersion == null) 25L else 8L
+        val sources = buildList<() -> AppUpdate> {
+            add { fromRelease(readMetadata(AppUpdate.LATEST_API, primaryTimeout), primaryTimeout) }
+            for (prefix in AppUpdate.MANIFEST_MIRRORS) {
+                add {
                     fromManifest(
                         readMetadata(AppUpdate.latestManifestUrl(prefix), 8),
                         AppUpdate.releasesBaseOf(prefix),
                     )
                 }
-                .onSuccess { return it }
-                .onFailure { }
+            }
         }
-        // 只有所有源都失败才提示；单源失败会被下一源吞掉。
-        throw IOException("所有更新源都不可用（共 ${AppUpdate.MANIFEST_MIRRORS.size + 1} 个），请稍后重试")
+        var best: AppUpdate? = null
+        for (source in sources) {
+            RequestScope.ensureActive()
+            val update = try {
+                source()
+            } catch (_: IOException) {
+                continue
+            }
+            if (installedVersion == null || update.newerThan(installedVersion, sdk)) return update
+            if (best == null || update.versionCode > best.versionCode) best = update
+        }
+        RequestScope.ensureActive()
+        return best ?: throw IOException("所有更新源都不可用，请稍后重试")
     }
 
     /** 从 API 返回的发行版 JSON 读取 tag 并下载该 tag 的清单。 */
-    private fun fromRelease(release: String, releasesBase: String): AppUpdate {
+    private fun fromRelease(release: String, timeoutSeconds: Long): AppUpdate {
         val tag =
             try {
                 AppUpdate.latestTag(release)
             } catch (_: Exception) {
                 throw IOException("最新发行版信息格式不正确")
             }
-        return fromManifest(readMetadata("$releasesBase/download/$tag/update.json"), releasesBase, tag)
+        val releasesBase = AppUpdate.RELEASES
+        return fromManifest(readMetadata("$releasesBase/download/$tag/update.json", timeoutSeconds), releasesBase, tag)
     }
 
     /** 解析清单并核对包名、标签；[expectedTag] 为空表示清单已是最新版本的直链。 */
