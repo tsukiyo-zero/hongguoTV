@@ -109,6 +109,50 @@ class TvUsabilityTest {
     }
 
     @Test
+    fun playbackControlsPutEpisodePickerInFirstRowAndSkipUnavailableNeighbors() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+        val activity = controller.get()
+        try {
+            val library = get(activity, "library") as Library
+            (get(library, "loader") as ExecutorService).submit {}.get(5, TimeUnit.SECONDS)
+            ShadowLooper.idleMainLooper()
+            val hud = android.widget.LinearLayout(activity)
+            val controls = android.widget.LinearLayout(activity)
+            hud.addView(controls)
+            activity.setContentView(hud)
+            set(activity, "hud", hud)
+            set(activity, "controls", controls)
+            set(activity, "playbackText", TextView(activity))
+            set(activity, "screen", "player")
+            set(activity, "detail", Detail(Series("123", "测试剧"), listOf("456", "789")))
+            val showPanel = activity.javaClass.getDeclaredMethod("showPanel").apply { isAccessible = true }
+
+            showPanel.invoke(activity)
+            assertEquals(listOf("播放", "上一集", "下一集", "选集"), texts(controls.getChildAt(0)).map { it.text })
+            assertEquals(listOf("评论", "弹幕设置", "播放设置"), texts(controls.getChildAt(1)).map { it.text })
+            val (play, previous, next, episodes) = texts(controls.getChildAt(0))
+            val settings = texts(controls.getChildAt(1)).last()
+            assertTrue(play.hasFocus())
+            assertFalse(previous.isFocusable)
+            assertEquals(next.id, play.nextFocusRightId)
+            assertEquals(settings.id, episodes.nextFocusDownId)
+            assertEquals(episodes.id, settings.nextFocusUpId)
+            assertTrue(episodes.performClick())
+            (get(activity, "episodePanel") as EpisodePanel).dismiss()
+            ShadowLooper.idleMainLooper()
+
+            set(activity, "episodeIndex", 1)
+            showPanel.invoke(activity)
+            val (_, lastPrevious, lastNext, lastEpisodes) = texts(controls.getChildAt(0))
+            assertFalse(lastNext.isFocusable)
+            assertEquals(lastEpisodes.id, lastPrevious.nextFocusRightId)
+            assertEquals(lastPrevious.id, lastEpisodes.nextFocusLeftId)
+        } finally {
+            controller.destroy()
+        }
+    }
+
+    @Test
     fun detailKeepsPlaybackCommentsAndSeparateSecondaryActions() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).create()
         val activity = controller.get()

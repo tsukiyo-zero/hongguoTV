@@ -4466,11 +4466,6 @@ class MainActivity : Activity() {
         showHud()
         controls.visibility = View.VISIBLE
         controls.removeAllViews()
-        if (nextSeasonWork != null) addButton(controls, "取消本次跨季连播") {
-            seasonSuppressed = true
-            cancelNextSeason()
-            showPanel()
-        }
 
         val transport = row()
         controls.addView(transport)
@@ -4479,13 +4474,13 @@ class MainActivity : Activity() {
                     togglePlayback()
                 }
                 .also { transportPlay = it }
-        addButton(transport, "上一集") { if (episodeIndex > 0) playEpisode(episodeIndex - 1) }
+        val previous = addButton(transport, "上一集") { if (episodeIndex > 0) playEpisode(episodeIndex - 1) }
             .apply {
                 isEnabled = episodeIndex > 0
                 isFocusable = episodeIndex > 0
                 alpha = if (episodeIndex > 0) 1f else .4f
             }
-        addButton(transport, "下一集") {
+        val next = addButton(transport, "下一集") {
                 if (episodeIndex < (detail?.episodes?.lastIndex ?: 0)) playEpisode(episodeIndex + 1)
             }
             .apply {
@@ -4494,10 +4489,10 @@ class MainActivity : Activity() {
                 isFocusable = enabled
                 alpha = if (enabled) 1f else .4f
             }
+        lateinit var episodes: TextView
+        episodes = addButton(transport, "选集") { showEpisodePanel(episodes) }
         val options = row().apply { setPadding(0, dp(6), 0, 0) }
         controls.addView(options)
-        lateinit var episodes: TextView
-        episodes = addButton(options, "选集") { showEpisodePanel(episodes) }
         lateinit var commentsButton: TextView
         commentsButton = addButton(options, "评论") { social.showComments(commentsButton) }
         lateinit var danmakuButton: TextView
@@ -4575,6 +4570,27 @@ class MainActivity : Activity() {
                     )
                 }
                 .apply { tag = "playback-settings" }
+        // 横向跳过不可用的上下集按钮，纵向在两排操作之间切换。
+        val transportButtons = listOf(play, previous, next, episodes).filter { it.isEnabled }
+        val optionButtons = listOf(commentsButton, danmakuButton, more)
+        for (buttons in listOf(transportButtons, optionButtons)) {
+            buttons.forEachIndexed { index, button ->
+                button.nextFocusLeftId = buttons.getOrNull(index - 1)?.id ?: button.id
+                button.nextFocusRightId = buttons.getOrNull(index + 1)?.id ?: button.id
+            }
+        }
+        play.nextFocusDownId = commentsButton.id
+        previous.nextFocusDownId = commentsButton.id
+        next.nextFocusDownId = danmakuButton.id
+        episodes.nextFocusDownId = more.id
+        commentsButton.nextFocusUpId = play.id
+        danmakuButton.nextFocusUpId = if (next.isEnabled) next.id else episodes.id
+        more.nextFocusUpId = episodes.id
+        if (nextSeasonWork != null) addButton(controls, "取消本次跨季连播") {
+            seasonSuppressed = true
+            cancelNextSeason()
+            showPanel()
+        }
         play.requestFocus()
         showHud()
     }
