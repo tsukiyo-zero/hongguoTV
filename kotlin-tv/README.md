@@ -135,6 +135,8 @@ python3 scripts/release-tv.py --publish
 
 排查播放、账户或旧系统兼容问题前，先读 [开发排查笔记](../docs/DEVELOPMENT_NOTES.md)。第三方来源与许可见 [NOTICE.md](NOTICE.md)。
 
+播放模型回退按目标剧集 ID 校验响应，解析出可用播放资源后才记住成功的请求组合。
+
 评论与弹幕调试入口和验收范围见 [SOCIAL.md](SOCIAL.md)。
 
 ### 启动与播放界面体验（当前开发分支）

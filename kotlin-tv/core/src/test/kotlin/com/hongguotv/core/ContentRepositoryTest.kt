@@ -410,6 +410,53 @@ class ContentRepositoryTest {
         assertEquals(0, legacyCalls.get())
     }
 
+    @Test
+    fun unusablePreloadFallsThroughToAPlayableModel() {
+        val preload = PlaybackShape(PlaybackPath.POST_PRELOAD, PlaybackSigner.V5)
+        val get = PlaybackShape(PlaybackPath.GET_VIDEO_TAB, PlaybackSigner.V5)
+        val previous = PlaybackShapeMemory.current()
+        PlaybackShapeMemory.restore(preload)
+        val requests = mutableListOf<String>()
+        try {
+            val repo = repository(interceptVideoTab = false) { request ->
+                requests += request.url.encodedPath
+                if (request.url.encodedPath == "/${preload.path.segment}")
+                    """{"code":0,"data":{"123":{"video_model":{"video_list":[]}}}}"""
+                else
+                    JSONObject(inlinePlaybackFixture()).put("code", 0).toString()
+            }
+            assertEquals("https://example.com/video", repo.streamLadder("123").renditions.single().url)
+            assertEquals(listOf(preload.path.segment, get.path.segment), requests.map { it.trim('/') })
+            assertEquals(get, PlaybackShapeMemory.current())
+        } finally {
+            PlaybackShapeMemory.restore(previous)
+        }
+    }
+
+    @Test
+    fun legacyShapesRejectOtherwisePlayableModelsForAnotherEpisode() {
+        val preload = PlaybackShape(PlaybackPath.POST_PRELOAD, PlaybackSigner.V5)
+        val previous = PlaybackShapeMemory.current()
+        try {
+            for (path in listOf(PlaybackPath.GET_VIDEO_TAB, PlaybackPath.POST_VIDEO_MODEL)) {
+                PlaybackShapeMemory.restore(PlaybackShape(path, PlaybackSigner.ARGUS))
+                val requests = mutableListOf<String>()
+                val other = JSONObject(batchPlaybackFixture(listOf("456"))).put("code", 0).toString()
+                val target = JSONObject(inlinePlaybackFixture()).put("code", 0).toString()
+                val repo = repository(interceptVideoTab = false) { request ->
+                    requests += request.url.encodedPath
+                    if (requests.size == 1) other else target
+                }
+                assertEquals("https://example.com/video", repo.streamLadder("123").renditions.single().url)
+                assertTrue(requests.first().startsWith("/${path.segment}"))
+                assertEquals(2, requests.size)
+                assertEquals(preload, PlaybackShapeMemory.current())
+            }
+        } finally {
+            PlaybackShapeMemory.restore(previous)
+        }
+    }
+
     /** 新接口参数不合法或降级时回退旧接口，不改变既有空响应恢复路径。 */
     @Test
     fun streamLadderFallsBackToLegacyPostWhenPreloadEmpty() {
@@ -997,6 +1044,7 @@ class ContentRepositoryTest {
 
     private fun repository(
         clock: () -> Long = System::currentTimeMillis,
+        interceptVideoTab: Boolean = true,
         respond: (Request) -> String,
     ) =
         ContentRepository(
@@ -1006,7 +1054,7 @@ class ContentRepositoryTest {
                     // 本轮起播放先读 video_tab 新接口；只用例覆盖旧接口行为，统一让它回 100103
                     // 让调用方回退，且不进入用例自己的请求计数。
                     val body =
-                        if (request.url.encodedPath.startsWith("/reading/bookapi/video_tab/"))
+                        if (interceptVideoTab && request.url.encodedPath.startsWith("/reading/bookapi/video_tab/"))
                             """{"code":100103,"message":"PARAM_INVALID","data":null}"""
                         else respond(request)
                     Response.Builder()
