@@ -87,4 +87,10 @@ class DanmakuLayoutTest {
         assertTrue(DanmakuLayout.assign(emptyList(), lanes = 8, travelMs = 9000).isEmpty())
         assertTrue(DanmakuLayout.assign(items("A" to 0L), lanes = 0, travelMs = 9000).isEmpty())
     }
+    @Test
+    fun fixedDensityCannotScheduleLanesOutsideTheVisibleArea() {
+        assertEquals(0, DanmakuLayout.visibleLanes(12, 0, 36, 30))
+        assertEquals(3, DanmakuLayout.visibleLanes(12, 120, 36, 30))
+        assertEquals(2, DanmakuLayout.visibleLanes(2, 120, 36, 30))
+    }
 }
