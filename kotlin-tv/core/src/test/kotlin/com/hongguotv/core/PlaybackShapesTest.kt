@@ -40,8 +40,8 @@ class PlaybackShapesTest {
     fun defaultOrderStartsWithRecentlyVerifiedCombination() {
         PlaybackShapeMemory.restore(null)
         val order = PlaybackShapeMemory.order()
-        // 2026-11-23 起 preload 是唯一可用的形态，排在最前。
-        assertEquals(PlaybackShape(PlaybackPath.POST_PRELOAD, PlaybackSigner.V5), order.first())
+        // 2026-11-24 起单集 video_model 重新放行，排在最前。
+        assertEquals(PlaybackShape(PlaybackPath.POST_VIDEO_MODEL, PlaybackSigner.V5), order.first())
         assertEquals(PlaybackShape.all.size, order.size)
     }
 
