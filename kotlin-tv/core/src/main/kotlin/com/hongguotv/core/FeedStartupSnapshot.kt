@@ -38,7 +38,7 @@ object FeedStartupSnapshot {
                     rows?.optJSONObject(item.id)?.let { row ->
                         val id = row.getString("episodeId")
                         val count = row.getInt("episodeCount")
-                        require(id.matches(Regex("[0-9]{1,30}")) && count in 1..10000)
+                        require(id.matches(VidFormat.PATTERN) && count in 1..10000)
                         hints[item.id] = TrialHint(id, count)
                     }
                 }

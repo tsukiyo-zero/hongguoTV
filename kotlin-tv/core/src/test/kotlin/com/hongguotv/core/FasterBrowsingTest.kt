@@ -103,7 +103,8 @@ class FasterBrowsingTest {
         assertEquals(listOf("4", "2"), merged.later.map { it.id })
         assertEquals(setOf("3"), merged.hidden)
         val invalid =
-            JSONObject(LibraryBackup.encode(extra)).put("hidden", org.json.JSONArray(listOf("bad")))
+            // 分集 id 现在允许 [0-9A-Za-z_-]，用含空格的非法值验证校验仍然生效。
+            JSONObject(LibraryBackup.encode(extra)).put("hidden", org.json.JSONArray(listOf("bad id!")))
         assertThrows(IllegalArgumentException::class.java) {
             LibraryBackup.decode(invalid.toString())
         }

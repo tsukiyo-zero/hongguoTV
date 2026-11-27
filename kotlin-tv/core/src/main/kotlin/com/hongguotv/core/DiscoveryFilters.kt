@@ -105,7 +105,7 @@ internal object FilteredDiscoveryParser {
                 .mapNotNull { video ->
                     val id = video.str("series_id")
                     val title = video.str("title")
-                    if (!id.matches(Regex("[0-9]{1,30}")) || title.isBlank()) return@mapNotNull null
+                    if (!id.matches(VidFormat.PATTERN) || title.isBlank()) return@mapNotNull null
                     val tags =
                         runCatching {
                                 JSONArray(video.str("category_schema"))

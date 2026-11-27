@@ -11,6 +11,7 @@ import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.ConnectionPool
 import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -436,7 +437,7 @@ constructor(
 
     private fun valid(rows: List<Series>) =
         rows
-            .filter { it.id.matches(Regex("[0-9]{1,30}")) && it.title.isNotBlank() }
+            .filter { it.id.matches(VidFormat.PATTERN) && it.title.isNotBlank() }
             .distinctBy { it.id }
 
     fun comicRanking(page: Int = 1): CatalogPage {
@@ -691,7 +692,7 @@ constructor(
     private val relatedCache = linkedMapOf<String, List<RelatedWork>>()
 
     fun related(id: String, force: Boolean = false): List<RelatedWork> {
-        require(id.matches(Regex("[0-9]{1,30}")))
+        require(id.matches(VidFormat.PATTERN))
         if (!force)
             synchronized(relatedCache) {
                 relatedCache[id]?.let {
@@ -758,21 +759,81 @@ constructor(
     }
 
     fun detail(id: String): Detail {
-        require(id.matches(Regex("[0-9]{1,30}")))
+        require(id.matches(VidFormat.PATTERN))
         val o =
             router("$site/detail?series_id=$id")
                 .optJSONObject("detail_page")
                 ?.optJSONObject("seriesDetail") ?: throw IOException("剧集详情暂不可用")
-        val raw = o.optJSONArray("vid_list") ?: throw IOException("分集暂不可用")
-        val episodes = (0 until raw.length()).map { raw.getString(it) }
+        // 2026-11-27 起网页详情只给前 3 集且 vid 变成 `v1_` 前缀（播放接口不认），
+        // 完整分集改由 App 目录接口提供（数字 item_id）；网页结果作为兜底。
+        val episodes =
+            appDirectoryEpisodes(id).ifEmpty {
+                val raw = o.optJSONArray("vid_list") ?: throw IOException("分集暂不可用")
+                (0 until raw.length()).map { raw.getString(it) }
+            }
         if (
             episodes.isEmpty() ||
-                episodes.any { !it.matches(Regex("[0-9]{1,30}")) } ||
+                episodes.any { !it.matches(VidFormat.PATTERN) } ||
                 episodes.distinct().size != episodes.size
         )
             throw IOException("分集数据异常")
         return Detail(card(o).copy(id = id), episodes)
     }
+
+    /**
+     * App 目录接口：`GET /reading/bookapi/directory/all_items/v/?book_id=…`
+     * 返回 `data.item_data_list[].item_id`（数字分集 id），是当前唯一完整且可播放的分集来源。
+     * 失败时返回空列表，由调用方回退到网页详情。
+     */
+    private fun appDirectoryEpisodes(seriesId: String): List<String> =
+        try {
+            val profile = playbackSession.profile(http)
+            val ticket = System.currentTimeMillis()
+            val url =
+                "https://${PlayRetryPlan.hosts.first()}/reading/bookapi/directory/all_items/v/"
+                    .toHttpUrl()
+                    .newBuilder()
+                    .apply {
+                        linkedMapOf(
+                            "aid" to "8662",
+                            "app_name" to "novelread",
+                            "version_code" to "74532",
+                            "version_name" to "7.4.5.32",
+                            "channel" to "update_64",
+                            "device_platform" to "android",
+                            "device_type" to "25053RT47C",
+                            "device_brand" to "Redmi",
+                            "os_version" to "16",
+                            "os_api" to "36",
+                            "iid" to profile.values.getValue("iid"),
+                            "cdid" to profile.values.getValue("cdid"),
+                            "device_id" to profile.values.getValue("device_id"),
+                            "_rticket" to ticket.toString(),
+                            "book_id" to seriesId,
+                        ).forEach { (k, v) -> addQueryParameter(k, v) }
+                    }
+                    .build()
+            val signed = MobilePlayback.signer.sign(url.toString(), ByteArray(0), profile.values)
+            val request =
+                Request.Builder()
+                    .url(signed.url)
+                    .header("Accept", "application/json")
+                    .apply { signed.headers.forEach { (k, v) -> header(k, v) } }
+                    .get()
+                    .build()
+            http.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return emptyList()
+                val text = response.body?.string().orEmpty()
+                if (text.isBlank()) return emptyList()
+                val root = runCatching { JSONObject(text) }.getOrNull() ?: return emptyList()
+                val list = root.optJSONObject("data")?.optJSONArray("item_data_list") ?: return emptyList()
+                (0 until list.length())
+                    .mapNotNull { list.optJSONObject(it)?.optString("item_id")?.takeIf(VidFormat::isValid) }
+            }
+        } catch (problem: Exception) {
+            if (Thread.currentThread().isInterrupted) throw problem
+            emptyList()
+        }
 
     /**
      * 官方 App 现行的播放模型接口：`GET /reading/bookapi/video_tab/multi_video_model/v1/`。
@@ -841,7 +902,7 @@ constructor(
 
     /** 诊断旁路：返回原始 video_list 各档（含 bytevc2），不参与正式播放路径；relay 探针专用。 */
     fun rawVideoModel(id: String): List<Rendition> {
-        require(id.matches(Regex("[0-9]{1,30}")))
+        require(id.matches(VidFormat.PATTERN))
         val entry = tabVideoModel(id, playbackSession.profile(http)) ?: return emptyList()
         val model = entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
         return model.optJSONArray("video_list")?.objects().orEmpty().mapNotNull { row ->
@@ -890,8 +951,8 @@ constructor(
     /** 使用已实测的新签名协议；前台八秒、后台两秒，后台不得触发设备注册。 */
     @JvmOverloads
     fun streamLadder(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder {
-        require(id.matches(Regex("[0-9]{1,30}")))
-        require(metadataAhead.size <= 2 && metadataAhead.all { it.matches(Regex("[0-9]{1,30}")) })
+        require(id.matches(VidFormat.PATTERN))
+        require(metadataAhead.size <= 2 && metadataAhead.all { it.matches(VidFormat.PATTERN) })
         RequestScope.ensureActive()
         val firstRead = synchronized(requestedPlaybackModels) { requestedPlaybackModels.add(id).also {
             while (requestedPlaybackModels.size > 64) requestedPlaybackModels.remove(requestedPlaybackModels.first())
@@ -1048,8 +1109,8 @@ constructor(
     /** 保留旧传输供离线协议回归使用；正式播放只走上面的 v5 入口。 */
     @JvmOverloads
     internal fun legacyStreamLadder(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder {
-        require(id.matches(Regex("[0-9]{1,30}")))
-        require(metadataAhead.size <= 2 && metadataAhead.all { it.matches(Regex("[0-9]{1,30}")) })
+        require(id.matches(VidFormat.PATTERN))
+        require(metadataAhead.size <= 2 && metadataAhead.all { it.matches(VidFormat.PATTERN) })
         val firstRead = synchronized(requestedPlaybackModels) {
             val first = requestedPlaybackModels.add(id)
             while (requestedPlaybackModels.size > 64) requestedPlaybackModels.remove(requestedPlaybackModels.first())

@@ -234,7 +234,7 @@ class CloudAccountClient(private val http: OkHttpClient) {
      * read the shelf back before reporting success.
      */
     fun setFavorite(credentials: AccountCredentials, seriesId: String, add: Boolean) {
-        require(seriesId.matches(Regex("[0-9]{1,30}"))) { "剧集编号无效" }
+        require(seriesId.matches(VidFormat.PATTERN)) { "剧集编号无效" }
         val entry =
             JSONObject()
                 .put("book_id", seriesId)
@@ -330,8 +330,8 @@ class CloudAccountClient(private val http: OkHttpClient) {
 
     fun upload(credentials: AccountCredentials, progress: CloudProgress, episodeCount: Int) {
         require(
-            progress.series.id.matches(Regex("[0-9]{1,30}")) &&
-                progress.episodeId.matches(Regex("[0-9]{1,30}"))
+            progress.series.id.matches(VidFormat.PATTERN) &&
+                progress.episodeId.matches(VidFormat.PATTERN)
         )
         val entry =
             JSONObject()
@@ -388,7 +388,7 @@ class CloudAccountClient(private val http: OkHttpClient) {
                         row.str("series_title")
                             .ifBlank { video.str("title") }
                             .ifBlank { row.str("book_name") }
-                    if (!id.matches(Regex("[0-9]{1,30}")) || title.isBlank()) return@mapNotNull null
+                    if (!id.matches(VidFormat.PATTERN) || title.isBlank()) return@mapNotNull null
                     val cover =
                         row.str("series_cover_url")
                             .ifBlank { video.str("cover") }
@@ -457,11 +457,11 @@ class CloudAccountClient(private val http: OkHttpClient) {
                         // series ID.
                         // Namespace that key so it can never be mistaken for a playback ID.
                         val id =
-                            if (seriesId.matches(Regex("[0-9]{1,30}"))) seriesId
+                            if (seriesId.matches(VidFormat.PATTERN)) seriesId
                             else if (
                                 !online &&
                                     video === row &&
-                                    row.str("item_id").matches(Regex("[0-9]{1,30}"))
+                                    row.str("item_id").matches(VidFormat.PATTERN)
                             )
                                 "reservation:" + row.str("item_id")
                             else return@mapNotNull null
@@ -511,7 +511,7 @@ class CloudAccountClient(private val http: OkHttpClient) {
                 .mapNotNull { row ->
                     val id = row.str("series_id").ifEmpty { row.str("book_id") }
                     val episode = row.str("vid")
-                    if (!id.matches(Regex("[0-9]{1,30}")) || !episode.matches(Regex("[0-9]{1,30}")))
+                    if (!id.matches(VidFormat.PATTERN) || !episode.matches(VidFormat.PATTERN))
                         return@mapNotNull null
                     val stamp =
                         row.optLong("last_watch_time").let {

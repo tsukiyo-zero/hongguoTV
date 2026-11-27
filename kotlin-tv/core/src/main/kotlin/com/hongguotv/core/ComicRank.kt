@@ -99,7 +99,7 @@ internal object ComicRank {
                         rankTopics((0 until minOf(tags.length(), 5)).mapNotNull { tags.opt(it) as? String }),
                     )
                 }
-                .filter { it.id.matches(Regex("[0-9]{1,30}")) && it.title.isNotBlank() }
+                .filter { it.id.matches(VidFormat.PATTERN) && it.title.isNotBlank() }
                 .distinctBy { it.id }
         return CatalogPage(
             items,
@@ -137,7 +137,7 @@ internal object ComicRank {
                     val heading = article.attr("aria-labelledby")
                     val id = heading.removePrefix("rank-title-")
                     val title = article.getElementById(heading)?.text().orEmpty()
-                    if (!id.matches(Regex("[0-9]{1,30}")) || title.isBlank()) return@mapNotNull null
+                    if (!id.matches(VidFormat.PATTERN) || title.isBlank()) return@mapNotNull null
                     if (id !in positions)
                         positions[id] =
                             RankPosition(
