@@ -2509,6 +2509,7 @@ class MainActivity : Activity() {
         fromRelated: Boolean = false,
         resumeLatest: Boolean = false,
     ) {
+        val retainedFeed = homeFeed?.takeIf { screen == "catalog" && tab == 0 && resumeLatest }
         if (screen == "catalog" && tab == 1) saveDiscoveryDraft()
         if (!fromRelated) detailTrail.clear()
         relatedSection = null
@@ -2520,16 +2521,21 @@ class MainActivity : Activity() {
         pendingResumeLatest = resumeLatest
         detailAutoplay = autoplay
         invalidatePage()
-        releaseCatalogViews()
-        screen = "detail"
+        if (retainedFeed == null) {
+            releaseCatalogViews()
+            screen = "detail"
+        } else {
+            retainedFeed.resume()
+        }
         directPlayback = resume
         detail = null
         synopsisExpanded = false
-        val body = base(series.title)
-        message(body, "正在加载剧集…")
+        val body = if (retainedFeed == null) base(series.title).also { message(it, "正在加载剧集…") } else null
         work(
             { repository.detail(series.id) },
             { result ->
+                if (retainedFeed != null && (homeFeed !== retainedFeed || homeFeedState.current?.id != series.id))
+                    return@work
                 detail = result
                 library.observeFavorite(
                     series.id,
@@ -2558,7 +2564,20 @@ class MainActivity : Activity() {
                 else showDetail(false)
             },
             { problem ->
-                error(body, problem) {
+                if (retainedFeed != null) {
+                    if (homeFeed === retainedFeed && homeFeedState.current?.id == series.id) {
+                        val notice = if (problem is PublicEpisodeListUnavailableException)
+                            "官网暂未提供可供电视播放的分集列表" else "暂时无法加载分集，可稍后重试"
+                        Toast.makeText(this, notice, Toast.LENGTH_LONG).show()
+                    }
+                    return@work
+                }
+                val errorBody = checkNotNull(body)
+                if (problem is PublicEpisodeListUnavailableException) {
+                    message(base(series.title), problem.message.orEmpty())
+                    return@work
+                }
+                error(errorBody, problem) {
                     if (cloudProgress != null && accountScope != cloudAccount.historyScope)
                         showCatalog()
                     else openDetail(series, resume, detailAutoplay, cloudProgress, fromRelated, resumeLatest)

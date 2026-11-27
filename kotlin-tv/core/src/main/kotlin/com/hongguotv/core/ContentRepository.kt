@@ -86,6 +86,8 @@ data class Series(
 
 data class Detail(val series: Series, val episodes: List<String>)
 
+class PublicEpisodeListUnavailableException : IOException("官网暂未提供可供电视播放的分集列表")
+
 data class RankPosition(val rank: Int?, val heat: String, val metrics: String = "")
 
 data class ComicRanking(
@@ -764,7 +766,8 @@ constructor(
                 .optJSONObject("detail_page")
                 ?.optJSONObject("seriesDetail") ?: throw IOException("剧集详情暂不可用")
         val raw = o.optJSONArray("vid_list") ?: throw IOException("分集暂不可用")
-        val episodes = (0 until raw.length()).map { raw.getString(it) }
+        val episodes = List(raw.length()) { raw.optString(it) }
+        if (episodes.any { it.startsWith("v1_") }) throw PublicEpisodeListUnavailableException()
         if (
             episodes.isEmpty() ||
                 episodes.any { !it.matches(Regex("[0-9]{1,30}")) } ||

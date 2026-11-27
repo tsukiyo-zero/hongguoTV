@@ -17,6 +17,14 @@ class ContentRepositoryTest {
         """{"data":{"123":{"video_model":{"video_list":[{"main_url":"https://example.test/video","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}]}}}}"""
 
     @Test
+    fun detailReportsWebsiteOnlyEpisodeIdentifiers() {
+        val repo = repository {
+            """<script>_ROUTER_DATA={"loaderData":{"detail_page":{"seriesDetail":{"series_id":"123","series_name":"测试","episode_cnt":114,"vid_list":["v1_sampleA","v1_sampleB","v1_sampleC"]}}}};</script>"""
+        }
+        assertThrows(PublicEpisodeListUnavailableException::class.java) { repo.detail("123") }
+    }
+
+    @Test
     fun previewModelCanBeHandedToAnotherRepositoryOnceWithoutDuplicatingRequest() {
         var reads = 0
         val session = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") }
