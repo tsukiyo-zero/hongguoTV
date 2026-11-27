@@ -76,7 +76,7 @@ object RelatedWorks {
                 val type = row.optInt("content_type")
                 if (
                     id == currentId ||
-                        !id.matches(Regex("[0-9]{1,30}")) ||
+                        !id.matches(VidFormat.PATTERN) ||
                         title.isBlank() ||
                         type !in listOf(1004, 1007)
                 )

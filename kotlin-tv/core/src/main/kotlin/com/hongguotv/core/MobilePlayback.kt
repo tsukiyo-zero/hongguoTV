@@ -79,7 +79,7 @@ internal object MobilePlayback {
         payload: String,
         shapeLabel: String,
     ): JSONObject {
-        require(id.matches(Regex("[0-9]{1,30}")))
+        require(id.matches(VidFormat.PATTERN))
         RequestScope.ensureActive()
         val url =
             ("https://reading.snssdk.com" + path)
@@ -145,7 +145,7 @@ internal object MobilePlayback {
         signer: MobilePlaybackSigner,
         now: Long,
     ): JSONObject {
-        require(id.matches(Regex("[0-9]{1,30}")))
+        require(id.matches(VidFormat.PATTERN))
         RequestScope.ensureActive()
         val query =
             linkedMapOf(
@@ -223,7 +223,7 @@ internal object MobilePlayback {
         signer: MobilePlaybackSigner,
         now: Long,
     ): JSONObject {
-        require(id.matches(Regex("[0-9]{1,30}")))
+        require(id.matches(VidFormat.PATTERN))
         RequestScope.ensureActive()
         val query =
             linkedMapOf(
@@ -284,7 +284,7 @@ internal object MobilePlayback {
     fun model(id: String, device: Map<String, String>, http: OkHttpClient,
                signer: MobilePlaybackSigner, now: Long,
                segment: String = "novel/player/multi_video_model/player/v1"): JSONObject {
-        require(id.matches(Regex("[0-9]{1,30}")))
+        require(id.matches(VidFormat.PATTERN))
         RequestScope.ensureActive()
         val query = linkedMapOf("aid" to "8662", "app_name" to "novelread",
             "version_code" to "74532", "version_name" to "7.4.5.32",

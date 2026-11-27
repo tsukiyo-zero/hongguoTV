@@ -28,7 +28,7 @@ object CatalogSnapshot {
                 val rows = o.getJSONArray("items")
                 require(rows.length() in 1..30)
                 val items = (0 until rows.length()).map { Series.fromJson(rows.getJSONObject(it)) }
-                require(items.all { it.id.matches(Regex("[0-9]{1,30}")) && it.title.isNotBlank() })
+                require(items.all { it.id.matches(VidFormat.PATTERN) && it.title.isNotBlank() })
                 CatalogPage(items.distinctBy { it.id }, o.getBoolean("hasMore"))
             }
             .getOrNull()

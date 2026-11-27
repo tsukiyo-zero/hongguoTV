@@ -260,7 +260,8 @@ class FeedStartupCacheTest {
             assertEquals(1, paths.count { it == "/detail" })
             assertEquals(2, paths.count { it == "/novel/player/video_model/v1/" })
             assertEquals(listOf("bytes=0-262143", "bytes=0-262143"), ranges)
-            assertEquals(5, paths.size)
+            // 详情先打 App 目录接口（桩返回空后回退网页），因此比旧实现多一次请求。
+            assertEquals(6, paths.size)
         } finally {
             PlaybackShapeMemory.restore(previousShape)
             controller.pause().stop().destroy()

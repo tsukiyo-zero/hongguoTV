@@ -53,7 +53,7 @@ data class BackupData(
 
 object LibraryBackup {
     const val MAX_BYTES = 2 * 1024 * 1024
-    private val idPattern = Regex("[0-9]{1,30}")
+    private val idPattern = VidFormat.PATTERN
 
     private fun id(value: String) = value.also { require(idPattern.matches(it)) { "剧集标识无效" } }
 
