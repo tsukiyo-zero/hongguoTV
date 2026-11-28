@@ -96,11 +96,11 @@ internal class RelayClient(
 
     /**
      * POST /session：创建转码会话，返回 sessionId to hlsUrl。
-     * 伴机被占用（409）/参数拒绝/网络失败一律 null。会话创建含伴机侧取流与采样表扫描，
-     * 超时放宽到 20s（正常秒级）。
+     * 伴机被占用（409）/参数拒绝/网络失败一律 null。会话创建含伴机侧取流（文件模式含整集
+     * 下载）与采样表扫描，超时放宽到 20s（正常秒级）。
      */
-    fun createSession(videoUrl: String, keyB64: String?, quality: String): Pair<String, String>? {
-        val payload = JSONObject().put("url", videoUrl).put("quality", quality)
+    fun createSession(videoUrl: String, keyB64: String?, quality: String, codec: String): Pair<String, String>? {
+        val payload = JSONObject().put("url", videoUrl).put("quality", quality).put("codec", codec)
         if (keyB64 != null) payload.put("keyB64", keyB64)
         val longCall = http.newBuilder().callTimeout(20, TimeUnit.SECONDS).build()
 

@@ -48,7 +48,6 @@ internal fun playbackFailureSummary(problem: Throwable, decoderMode: DecoderMode
             "视频服务器不支持分段读取",
             // 伴机交互文案原样透出（RelayException 的全部消息以「伴机」开头）。
             "伴机",
-            "本集没有 bytevc2 档位",
         )
     causes
         .mapNotNull { it.message }

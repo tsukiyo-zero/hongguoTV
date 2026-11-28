@@ -33,6 +33,16 @@ internal object RelayLocations {
         return legacy.takeIf { Files.exists(it) && legacy.startsWith(cwd.normalize()) }
     }
 
+    /**
+     * 自动升级下载目录（状态目录下 updates/）：存放已校验的安装包与安装脚本。
+     * 不自动创建，使用前自行 mkdirs；路径校验沿 stateDir 同款规范。
+     */
+    fun updatesDir(home: Path, appData: String?, osName: String = System.getProperty("os.name").orEmpty()): Path {
+        val dir = stateDir(home, appData, osName).resolve("updates").normalize()
+        require(dir.startsWith(stateDir(home, appData, osName))) { "更新目录路径异常" }
+        return dir
+    }
+
     /** 仅保留站点内 IPv4（排除回环/链路本地/IPv6），供多网卡地址展示。 */
     fun filterSiteLocalV4(addresses: List<java.net.InetAddress>): List<String> =
         addresses

@@ -43,6 +43,10 @@ android {
         }
     }
     buildTypes {
+        getByName("debug") {
+            // 测试版独立包名（debug 签名），与电视上安装的正式版并存互不覆盖。
+            applicationIdSuffix = ".debug"
+        }
         getByName("release") {
             signingConfig = signingConfigs.getByName("delivery")
             isMinifyEnabled = true

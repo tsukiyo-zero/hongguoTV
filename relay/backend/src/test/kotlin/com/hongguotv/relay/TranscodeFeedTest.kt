@@ -60,6 +60,32 @@ class TranscodeFeedTest {
         assertEquals("8M", TranscodeFeed.videoBitrate(table(emptyList()).let {
             Mp4SampleTable.Table(it.fourcc, 1080, 1920, it.timescale, it.samples, it.syncSamples)
         }))
+        // 几何钳制：1080×1920 源按目标 1280 取 5M（与 720×1280 输出同档）。
+        assertEquals(
+            "5M",
+            TranscodeFeed.videoBitrate(
+                table(emptyList()).let {
+                    Mp4SampleTable.Table(it.fourcc, 1080, 1920, it.timescale, it.samples, it.syncSamples)
+                },
+                1280,
+            ),
+        )
+    }
+
+    @Test
+    fun `seekSeconds 吸附到最近同步样本`() {
+        // 10 样本、dts 步进 200ms、sync=[0,5]（0s 与 1.0s）
+        val snapped =
+            Mp4SampleTable.Table(
+                "bvc2", 720, 1280, 10_000,
+                (0 until 10).map { Mp4SampleTable.Sample(it * 28L, 28, it * 200_000L, it * 200_000L) },
+                listOf(0, 5),
+            )
+        assertEquals(1.0, TranscodeFeed.seekSeconds(snapped, listOf(0, 5), 1.5), 1e-9)
+        assertEquals(0.0, TranscodeFeed.seekSeconds(snapped, listOf(0, 5), 0.4), 1e-9)
+        assertEquals(1.0, TranscodeFeed.seekSeconds(snapped, listOf(0, 5), 6.0), 1e-9)
+        // 同步样本信息缺失：原样返回
+        assertEquals(2.5, TranscodeFeed.seekSeconds(snapped, emptyList(), 2.5), 1e-9)
     }
 
     /** 按样本表构造带指定首 NAL 类型的假源字节。 */
