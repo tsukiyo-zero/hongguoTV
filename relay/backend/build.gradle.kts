@@ -88,7 +88,13 @@ tasks.register("bundleFfmpeg") {
             else -> "intel"
         }
         val zipName = if (arch == "arm") "ffmpeg902arm.zip" else "ffmpeg80intel.zip"
-        val url = "https://www.osxexperts.net/$zipName"
+        // 下载源：优先 fork 内部镜像（GitHub 直链对 runner 稳定；osxexperts 已于 2026-11-28
+        // 下架 arm 包，404），最后回退原源以防未来镜像缺失。
+        val mirror =
+            if (zipName == "ffmpeg902arm.zip")
+                "https://github.com/WingkySky/hongguoTV/releases/download/relay-build-deps/$zipName"
+            else null
+        val urls = listOfNotNull(mirror, mirror, "https://www.osxexperts.net/$zipName")
         val expected =
             Properties().apply {
                 rootProject.file("ffmpeg-hashes.properties").inputStream().use { load(it) }
@@ -102,6 +108,7 @@ tasks.register("bundleFfmpeg") {
         var expanded = false
         var lastProblem: Exception? = null
         for (attempt in 1..3) {
+            val url = urls[attempt - 1].let { if (it.isNotBlank()) it else urls.last() }
             if (!zipFile.exists() || zipFile.length() < 10_000_000L) {
                 logger.lifecycle("下载 $url（第 $attempt 次）")
                 zipFile.delete()

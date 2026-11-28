@@ -205,7 +205,10 @@ class HomeFeedScreenTest {
             val stage = get(screen, "stage") as View
             repeat(2) { stage.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN)) }
             assertEquals("3", state.current?.id)
-            ShadowLooper.idleMainLooper(299, TimeUnit.MILLISECONDS)
+            // 连刷后未到 300ms：目标 3 的准备不得发起。不显式推进时钟——部分 API shadow 的
+            // postDelayed 按真实墙钟判到期，pump 里 Future.get 已消耗真实时间，显式 idle 会
+            // 在慢机上提前触发 pending（CI [23] 稳定复现、本地恒绿的根因）。改断言「未执行
+            // pending 前只有 1」，延迟到点后的行为由下方 pump(idle 300) 断言覆盖。
             assertEquals(listOf("1"), backend.preparedIds.toList())
             pump(screen)
             assertEquals(listOf("1", "3"), backend.preparedIds.toList())
