@@ -12,18 +12,25 @@ import java.awt.datatransfer.StringSelection
 import java.awt.image.BufferedImage
 import java.nio.file.Path
 
-/** 菜单栏壳（AWT SystemTray）：状态行、状态窗口、复制地址/令牌、开机自启开关、退出。 */
+/** 菜单栏壳（AWT SystemTray）：状态行、状态窗口、复制地址/令牌、检查更新、开机自启开关、退出。 */
 internal class RelayTray private constructor(
     private val trayIcon: TrayIcon,
     private val onCopyAddress: () -> String,
     private val onCopyToken: () -> String,
     private val onShowWindow: () -> Unit,
+    private val onCheckUpdates: () -> Unit,
     autostartHome: Path?,
     appRoot: Path?,
     private val onAutostartChanged: (Boolean) -> Unit,
     private val onExit: () -> Unit,
 ) {
     private val statusItem = MenuItem("启动中…").apply { isEnabled = false }
+    private val exitItem = action("退出") { onExit() }
+
+    /** 升级执行期间除状态行与「退出」外全部禁用，避免半途再起会话/触发其他动作。 */
+    private val upgradableItems: List<MenuItem>
+
+    @Volatile private var upgrading = false
     private val autostartItem =
         if (autostartHome == null || appRoot == null) null // 自启 plist 为 macOS 专属
         else
@@ -43,18 +50,30 @@ internal class RelayTray private constructor(
             }
 
     init {
+        val checkItem = action("检查更新") { onCheckUpdates() }
         val popup = PopupMenu()
         popup.add(statusItem)
         popup.addSeparator()
-        popup.add(action("打开状态窗口") { onShowWindow() })
-        popup.add(action("复制地址") { copyToClipboard(onCopyAddress()) })
-        popup.add(action("复制令牌") { copyToClipboard(onCopyToken()) })
+        val showItem = action("打开状态窗口") { onShowWindow() }
+        val copyAddressItem = action("复制地址") { copyToClipboard(onCopyAddress()) }
+        val copyTokenItem = action("复制令牌") { copyToClipboard(onCopyToken()) }
+        popup.add(showItem)
+        popup.add(copyAddressItem)
+        popup.add(copyTokenItem)
+        popup.add(checkItem)
+        upgradableItems = buildList {
+            add(showItem)
+            add(copyAddressItem)
+            add(copyTokenItem)
+            add(checkItem)
+            autostartItem?.let { add(it) }
+        }
         autostartItem?.let {
             popup.addSeparator()
             popup.add(it)
         }
         popup.addSeparator()
-        popup.add(action("退出") { onExit() })
+        popup.add(exitItem)
         trayIcon.popupMenu = popup
         SystemTray.getSystemTray().add(trayIcon)
     }
@@ -63,6 +82,12 @@ internal class RelayTray private constructor(
     fun status(text: String, notify: Boolean = false, error: Boolean = false) {
         statusItem.label = text
         if (notify) notify(text, error)
+    }
+
+    /** 升级执行期间锁定菜单（状态行/退出除外）；完成后（自动重启前无需解锁）由退出路径兜底。 */
+    fun setUpgrading(value: Boolean) {
+        upgrading = value
+        upgradableItems.forEach { it.isEnabled = !value }
     }
 
     private fun notify(text: String, error: Boolean) {
@@ -89,6 +114,7 @@ internal class RelayTray private constructor(
             onCopyAddress: () -> String,
             onCopyToken: () -> String,
             onShowWindow: () -> Unit,
+            onCheckUpdates: () -> Unit,
             onAutostartChanged: (Boolean) -> Unit,
             onExit: () -> Unit,
         ): RelayTray? =
@@ -97,7 +123,7 @@ internal class RelayTray private constructor(
                 val trayIcon = TrayIcon(iconImage(), "果映伴机")
                 trayIcon.isImageAutoSize = true
                 RelayTray(
-                    trayIcon, onCopyAddress, onCopyToken, onShowWindow,
+                    trayIcon, onCopyAddress, onCopyToken, onShowWindow, onCheckUpdates,
                     autostartHome, appRoot, onAutostartChanged, onExit,
                 )
             }.getOrNull()

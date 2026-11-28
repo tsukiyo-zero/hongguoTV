@@ -8,17 +8,20 @@ import com.hongguotv.core.ContentRepository
 import com.hongguotv.core.RelaySourcePicker
 import okhttp3.OkHttpClient
 import java.awt.Dialog
+import java.awt.EventQueue
 import java.awt.Frame
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.URI
+import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import javax.jmdns.JmDNS
 import javax.jmdns.ServiceInfo
 import javax.swing.JOptionPane
+import kotlin.concurrent.thread
 
 const val VERSION = "1.1.0"
 
@@ -87,6 +90,8 @@ fun main(args: Array<String>) {
         ProcessHandle.current().info().command().orElse(null),
     )
     val window = RelayWindow.install()
+    // 自动升级：托盘菜单「检查更新」经此槽转发（checkUpdates 在 tray 之后定义）。
+    val manualCheck = java.util.concurrent.atomic.AtomicReference<(() -> Unit)?>(null)
     val tray =
         RelayTray.install(
             autostartHome = if (osIsMac) home else null, // 自启 plist 为 macOS 专属
@@ -94,6 +99,7 @@ fun main(args: Array<String>) {
             onCopyAddress = { addresses.joinToString("\n") },
             onCopyToken = { relayToken },
             onShowWindow = { window?.showWindow() },
+            onCheckUpdates = { manualCheck.get()?.invoke() },
             onAutostartChanged = { enabled ->
                 println("开机自启：${if (enabled) "开" else "关"}")
             },
@@ -167,6 +173,114 @@ fun main(args: Array<String>) {
             server.stop()
             jmdns?.let { runCatching { it.unregisterAllServices(); it.close() } }
         },
+    )
+
+    // 自动升级接线：启动 8 秒后静默检查，之后每 24 小时一次；失败静默（手动检查才提示）。
+    // 清单基底可被环境变量 GUOYING_UPDATE_BASE 或系统属性 guoying.updateBase 覆盖（开发/演练）。
+    val updateBase =
+        System.getenv("GUOYING_UPDATE_BASE")?.takeIf { it.isNotBlank() }
+            ?: System.getProperty("guoying.updateBase")
+            ?: "https://github.com/WingkySky/hongguoTV/releases/download/relay-stable/"
+    val updater = RelayUpdater(http, updateBase, VERSION, RelayLocations.updatesDir(home, System.getenv("APPDATA")))
+    fun updateStatus(text: String, notify: Boolean = false, error: Boolean = false) {
+        println(text)
+        tray?.status(text, notify, error)
+        window?.updateActivity(text)
+    }
+
+    /** 确认对话框（EDT）；headless 等异常场景按「下次再说」处理。 */
+    fun confirmUpgrade(message: String): Boolean {
+        var proceed = false
+        runCatching {
+            EventQueue.invokeAndWait {
+                proceed =
+                    JOptionPane.showOptionDialog(
+                        null, message, "果映伴机升级",
+                        JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE, null,
+                        arrayOf("立即升级", "下次再说"), "立即升级",
+                    ) == 0
+            }
+        }
+        return proceed
+    }
+
+    fun reveal(file: Path) {
+        runCatching { ProcessBuilder(RelayUpdater.revealCommand(file)).start() }
+    }
+
+    /** 现有 .app 包目录（appRoot=Contents，向上一层）；fat jar/非标准布局返回 null（不自动替换）。 */
+    fun appBundleTarget(): Path? {
+        if (!RelayUpdater.IS_WINDOWS) {
+            val bundle = appRoot?.parent ?: return null
+            return bundle.takeIf { it.fileName.toString().endsWith(".app") }
+        }
+        return null // Windows 走 msi 向导，无需包目录
+    }
+
+    fun checkUpdates(manual: Boolean) {
+        thread(isDaemon = true, name = "update-check") {
+            try {
+                val manifest = updater.check() ?: run {
+                    if (manual) updateStatus("已检查可用来源，未发现新版 · 当前 $VERSION")
+                    return@thread
+                }
+                updateStatus("发现新版 ${manifest.version}，正在后台下载…", notify = true)
+                val file = updater.download(manifest) { percent ->
+                    updateStatus("正在下载 ${manifest.version} · $percent%")
+                }
+                updateStatus("${manifest.version} 已就绪，待确认升级", notify = true)
+                val proceed =
+                    confirmUpgrade(
+                        "发现伴机新版 ${manifest.version}\n${manifest.notes.take(120)}\n\n" +
+                            "立即升级将退出伴机、替换应用并自动重启（正在进行的转码会结束）。",
+                    )
+                if (!proceed) {
+                    updateStatus("已下载 ${manifest.version}，可在菜单「检查更新」再次确认升级")
+                    return@thread
+                }
+                tray?.setUpgrading(true)
+                updateStatus("正在升级到 ${manifest.version}…")
+                manager.shutdown()
+                if (RelayUpdater.IS_WINDOWS) {
+                    ProcessBuilder(RelayUpdater.winInstallCommand(file.toString())).start()
+                    println("已启动安装向导，伴机退出（安装器接管）")
+                } else {
+                    val bundle = appBundleTarget()
+                    if (bundle == null) {
+                        reveal(file)
+                        tray?.setUpgrading(false)
+                        updateStatus(
+                            "未能定位伴机安装位置（开发启动模式），请在打开的窗口中手动安装 ${manifest.version}",
+                            error = true,
+                        )
+                        return@thread
+                    }
+                    val script = updater.updatesDir.resolve("install.sh")
+                    script.toFile().writeText(RelayUpdater.macInstallScript(file.toString(), bundle.toString()))
+                    val proc = ProcessBuilder("sh", script.toString()).start()
+                    val quickFailed = proc.waitFor(4, TimeUnit.SECONDS) && proc.exitValue() != 0
+                    if (quickFailed) {
+                        tray?.setUpgrading(false)
+                        reveal(file)
+                        updateStatus(
+                            "自动升级失败（安装脚本退出码 ${proc.exitValue()}），已保留安装包可手动安装",
+                            error = true,
+                        )
+                        return@thread
+                    }
+                    println("自动升级脚本执行中，伴机退出")
+                }
+                kotlin.system.exitProcess(0)
+            } catch (problem: Exception) {
+                if (manual) updateStatus("检查更新失败：${problem.message?.take(80)}", error = true)
+                else println("检查更新失败（静默）：${problem.message?.take(120)}")
+            }
+        }
+    }
+    manualCheck.set { checkUpdates(manual = true) }
+    scheduler.scheduleAtFixedRate(
+        { checkUpdates(manual = false) },
+        8, 24 * 3600, TimeUnit.SECONDS,
     )
 
     selftest?.let { episode ->

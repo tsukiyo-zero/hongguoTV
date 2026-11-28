@@ -68,6 +68,15 @@ export PATH="/path/to/wix314:$PATH"
 - 同时仅 1 个会话；10 分钟无人拉流自动回收
 - 电视端持续监测转码速度，低于实时会提示「伴机性能不足」
 
+## 自动升级
+
+- 启动后台静默检查 + 每 24 小时一次 + 托盘菜单「检查更新」手动触发；清单取自固定 Release 的 `relay-update.json`（version/notes + 两平台 fileName/size/sha256）
+- 发现新版即后台下载到 `updates/`（状态目录下），size+sha256 双校验；完成后弹「立即升级／下次再说」
+- macOS 确认后自动替换应用并重启（退出 → 挂载 dmg → 覆盖 .app → 重启）；Windows 确认后启动 msi 安装向导（用户点两下完成）
+- 脚本失败或开发模式（非 .app 启动）时回退：在 Finder 展示已校验安装包 + 文字指引；「下次再说」下次启动重新提示
+- 发版配套：`python3 scripts/relay-update-manifest.py <版本> <dmg> <msi> > relay-update.json`（本地生成，`--verify` 可反向核对），人工将 dmg/msi/json 四件上传 relay-stable 覆盖更新
+- 已知限制：1.0.0 老伴机无检查更新能力，升级到 1.1.0 需手动一次；真实端到端自升级路径自 1.1.1 发版起生效
+
 ## 安全模型
 
 - 令牌仅防局域网内其他设备**借用算力**；伴机不持有任何账号凭据
