@@ -8,6 +8,7 @@ local.properties
 .gradle/
 .kotlin/
 build/
+bin/
 dist/
 node_modules/
 .venv/
