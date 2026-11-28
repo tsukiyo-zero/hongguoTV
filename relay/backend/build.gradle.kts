@@ -95,22 +95,40 @@ tasks.register("bundleFfmpeg") {
             }.getProperty(zipName) ?: error("ffmpeg-hashes.properties 缺少 $zipName 的校验值")
 
         val zipFile = ffmpegBundleDir.get().file(zipName).asFile
-        if (!zipFile.exists() || zipFile.length() < 10_000_000L) {
-            logger.lifecycle("下载 $url")
-            exec {
-                // curl 自动继承 https_proxy 环境变量；构建机需代理时以 -Prelay.proxy 传入。
-                commandLine("curl", "-sL", "--retry", "3", "--max-time", "600", "-o", zipFile, url)
-                providers.gradleProperty("relay.proxy").orNull?.let { proxy ->
-                    environment("https_proxy", proxy)
-                    environment("http_proxy", proxy)
+
+        // 下载 + 解压重试：osxexperts 在部分网络/构建机会半途截断响应（HTTP 200 也可能留残缺
+        // 文件，curl --retry 对此不生效），损坏 zip 若仅按大小判缓存会被反复误用。
+        // 因此每次尝试都实际试解压，失败即删缓存重下，最多 3 次。
+        var expanded = false
+        var lastProblem: Exception? = null
+        for (attempt in 1..3) {
+            if (!zipFile.exists() || zipFile.length() < 10_000_000L) {
+                logger.lifecycle("下载 $url（第 $attempt 次）")
+                zipFile.delete()
+                exec {
+                    // curl 自动继承 https_proxy 环境变量；构建机需代理时以 -Prelay.proxy 传入。
+                    commandLine("curl", "-sL", "--retry", "3", "--max-time", "600", "-o", zipFile, url)
+                    providers.gradleProperty("relay.proxy").orNull?.let { proxy ->
+                        environment("https_proxy", proxy)
+                        environment("http_proxy", proxy)
+                    }
                 }
             }
+            try {
+                copy {
+                    from(zipTree(zipFile))
+                    into(dir)
+                }
+                expanded = true
+                break
+            } catch (problem: Exception) {
+                lastProblem = problem
+                logger.lifecycle("zip 不可读（第 $attempt 次）：${problem.message?.take(120)}，删除后重下")
+                zipFile.delete()
+                dir.listFiles()?.forEach { it.deleteRecursively() }
+            }
         }
-
-        copy {
-            from(zipTree(zipFile))
-            into(dir)
-        }
+        if (!expanded) throw IllegalStateException("ffmpeg zip 三次下载/解压均失败", lastProblem)
         val binary = File(dir, "ffmpeg").apply { setExecutable(true) }
         val actual =
             MessageDigest.getInstance("SHA-256")
