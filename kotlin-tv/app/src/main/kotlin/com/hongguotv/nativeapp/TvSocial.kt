@@ -219,9 +219,9 @@ class TvSocial(
         }
         option({
             val lanes = prefs.getInt("lanes", 0)
-            "密度：${when (lanes) { 4 -> "少"; 0 -> "标准（自动）"; 12 -> "多"; else -> "自定义 $lanes 行" }}"
+            "密度：${when (lanes) { 2 -> "极少"; 4 -> "少"; 0 -> "标准（自动）"; 12 -> "多"; else -> "自定义 $lanes 行" }}"
         }) {
-            val steps = listOf(4, 0, 12)
+            val steps = listOf(2, 4, 0, 12)
             val current = steps.indexOf(prefs.getInt("lanes", 0))
             prefs.edit().putInt("lanes", steps[(current + 1) % steps.size]).apply()
         }
@@ -236,7 +236,7 @@ class TvSocial(
         val advanced = section("更多设置")
         option({ "精确行数：${if (prefs.getInt("lanes", 0) > 0) "${prefs.getInt("lanes", 0)} 行" else "自动"}" }, advanced) {
             // 0 表示按屏幕高度自动计算；其余为固定值，避免旧版本只有 1–4 行可选。
-            val steps = listOf(0, 4, 6, 8, 10, 12)
+            val steps = listOf(0, 2, 4, 6, 8, 10, 12)
             val index = steps.indexOf(prefs.getInt("lanes", 0)).let { if (it >= 0) it else 0 }
             prefs.edit().putInt("lanes", steps[(index + 1) % steps.size]).apply()
         }
@@ -269,6 +269,7 @@ class TvSocial(
                 .setMessage(report).setPositiveButton("关闭", null).show()
         })
         body.addView(label("真实时间轴弹幕；无内容时不使用普通评论代替。", 14f))
+        body.addView(label("行数越少越克制：密集时部分弹幕会主动让位，丢弃数见弹幕排查诊断。", 14f))
         body.addView(button("关闭") { d.dismiss() })
         d.setContentView(ScrollView(activity).apply { addView(body) })
         d.setOnDismissListener { if (anchor.isAttachedToWindow) anchor.requestFocus() }
@@ -476,6 +477,9 @@ class TvSocial(
         private var items: List<DanmakuItem> = emptyList()
         private var scheduled: List<ScheduledDanmaku> = emptyList()
 
+        /** 最近一次排程因严格零重叠被丢弃的数量，供诊断展示。 */
+        private var lastDropped = 0
+
         private fun areaTop(): Int =
             when (prefs.getString("area", "top")) {
                 "middle" -> minOf(dp(220), height / 3)
@@ -512,7 +516,7 @@ class TvSocial(
             val travel = prefs.getInt("travel", 12000)
             val textSize = dp(prefs.getInt("font", 24))
             val configured = prefs.getInt("lanes", 0)
-            val automatic = DanmakuLayout.laneCountFor(areaHeight(), textSize, 0)
+            val automatic = DanmakuLayout.laneCountFor(areaHeight(), textSize, 0, lineGapPx = dp(12))
             paint.textSize = textSize.toFloat()
             val metrics = paint.fontMetrics
             val lanes = DanmakuLayout.visibleLanes(
@@ -521,20 +525,31 @@ class TvSocial(
                 lineHeight = textSize + dp(12),
                 glyphHeight = kotlin.math.ceil(metrics.bottom - metrics.top).toInt(),
             )
-            scheduled =
+            // 画布尚未布局时无法做几何判定，等 onSizeChanged 再排。
+            if (width <= 0 || lanes <= 0) {
+                scheduled = emptyList()
+                lastDropped = 0
+                invalidate()
+                return
+            }
+            val result =
                 DanmakuLayout.assign(
                     items = items,
                     lanes = lanes,
                     travelMs = travel,
+                    screenWidthPx = width,
+                    widthOf = { paint.measureText(it) },
                     merge = prefs.getBoolean("merge", true),
                 )
+            scheduled = result.scheduled
+            lastDropped = result.droppedCount
             invalidate()
         }
 
         fun diagnostics(): String {
             val now = player()?.currentPosition ?: 0
             val visible = scheduled.count { now >= it.startMs && now < it.endMs }
-            return "合并排程 ${scheduled.size} 条，当前时间范围内 $visible 条\n播放 ${now / 1000} 秒，画布 ${width}×${height}"
+            return "合并排程 ${scheduled.size} 条，防重叠丢弃 $lastDropped 条，当前时间范围内 $visible 条\n播放 ${now / 1000} 秒，画布 ${width}×${height}"
         }
 
         override fun onDraw(canvas: Canvas) {
