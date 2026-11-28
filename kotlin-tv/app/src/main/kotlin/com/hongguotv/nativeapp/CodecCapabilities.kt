@@ -77,6 +77,9 @@ object CodecCapabilities {
         // 放宽模式用于「硬解把全部档位排除后」的回退，避免用户什么也看不了。
         if (respectHardwareMode && DecoderMode.shouldSkipForHardware(mode, hasHardwareDecoder(type))) return false
         if (width == null || height == null || width <= 0 || height <= 0) return true
+        if (type == MediaFormat.MIMETYPE_VIDEO_HEVC && mode != DecoderMode.SOFTWARE &&
+            gokeHevcQuirk?.supports(width, height) == true
+        ) return true
         val key = "$type $width $height"
         synchronized(verdicts) {
             verdicts[key]?.let {
@@ -115,6 +118,30 @@ object CodecCapabilities {
                     .getOrDefault(true)
             }
         }
+
+    internal val gokeHevcQuirk: GokeHevcQuirk? by lazy {
+        if (Build.VERSION.SDK_INT != Build.VERSION_CODES.P) return@lazy null
+        runCatching {
+                val codecs = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+                fun videoCapabilities(name: String, type: String) =
+                    codecs.firstOrNull { !it.isEncoder && !it.isSoftwareDecoder() && it.name == name }
+                        ?.getCapabilitiesForType(type)
+                        ?.videoCapabilities
+
+                val hevc = videoCapabilities(GokeHevcQuirk.HEVC_DECODER, MediaFormat.MIMETYPE_VIDEO_HEVC)
+                    ?: return@runCatching null
+                val avc = videoCapabilities(GokeHevcQuirk.AVC_DECODER, MediaFormat.MIMETYPE_VIDEO_AVC)
+                    ?: return@runCatching null
+                GokeHevcQuirk.fromReportedSizes(
+                    Build.VERSION.SDK_INT,
+                    hevc.supportedWidths.upper,
+                    hevc.supportedHeights.upper,
+                    avc.supportedWidths.upper,
+                    avc.supportedHeights.upper,
+                )
+            }
+            .getOrNull()
+    }
 
     private fun MediaCodecInfo.isSoftwareDecoder(): Boolean =
         if (Build.VERSION.SDK_INT >= 29) isSoftwareOnly
