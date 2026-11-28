@@ -858,13 +858,17 @@ constructor(
         trace: PlaybackRequestTrace = PlaybackRequestTrace(),
         transport: OkHttpClient = http,
         strict: Boolean = false,
+        compat: Boolean = false,
     ): JSONObject? {
         val extra = mapOf(
             "video_id" to id, "video_id_type" to "0", "device_level" to "1",
             "need_all_video_definition" to "1", "need_mp4_align" to "0",
             "use_os_player" to "0", "video_platform" to "1024", "source" to "0",
             "from_video_id" to "",
-        )
+        ) +
+            // 官方播放器的兼容路径参数（issue #56 实测形态）。仅诊断旁路按需携带，
+            // 正式取源路径保持默认关闭。
+            if (compat) mapOf("codec_type" to "0", "force_codec" to "h264") else emptyMap()
         // One preferred request; the legacy path retains the bounded cross-host retry budget.
         for (host in listOf(PlayRetryPlan.hosts.first())) {
             val request = playbackRequest(
@@ -901,9 +905,9 @@ constructor(
     }
 
     /** 诊断旁路：返回原始 video_list 各档（含 bytevc2），不参与正式播放路径；relay 探针专用。 */
-    fun rawVideoModel(id: String): List<Rendition> {
+    fun rawVideoModel(id: String, compat: Boolean = false): List<Rendition> {
         require(id.matches(VidFormat.PATTERN))
-        val entry = tabVideoModel(id, playbackSession.profile(http)) ?: return emptyList()
+        val entry = tabVideoModel(id, playbackSession.profile(http), compat = compat) ?: return emptyList()
         val model = entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
         return model.optJSONArray("video_list")?.objects().orEmpty().mapNotNull { row ->
             runCatching {

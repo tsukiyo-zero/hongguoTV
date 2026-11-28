@@ -380,6 +380,45 @@ fun main(args: Array<String>) {
         }
         return
     }
+    if (args.contains("--ladder-compat")) {
+        // 官方兼容参数对照（issue #56 形态）：同一集、同一设备身份，video_tab GET
+        // 不带参数与追加 codec_type=0 + force_codec=h264 各一发，打印原始档位
+        // （含 bytevc2，仅元数据）。用于判断兼容参数能否对「单档 1080P 竖屏
+        // bytevc1」类供给翻出可硬解档位，同时区分空响应窗口与参数被拒。
+        val idx = args.indexOf("--ladder-compat")
+        val episodeId = args.getOrNull(idx + 1) ?: error("用法: --ladder-compat <episodeId>")
+        val repository = ContentRepository()
+        fun dump(label: String, renditions: List<com.hongguotv.core.Rendition>) {
+            if (renditions.isEmpty()) println("ladderCompat form=$label; result=EMPTY")
+            else
+                for (r in renditions)
+                    println(
+                        "ladderCompat form=$label; q=${r.quality}; codec=${r.codec}; " +
+                            "${r.width ?: "?"}x${r.height ?: "?"}"
+                    )
+        }
+        try {
+            // 单发请求受空响应窗口影响大：全新身份最多 3 轮，取首个 base 非空轮次做同轮对照。
+            for (round in 1..3) {
+                val fresh = ContentRepository()
+                val base = fresh.rawVideoModel(episodeId)
+                if (base.isEmpty()) {
+                    println("ladderCompat round=$round; result=BASE_EMPTY")
+                    continue
+                }
+                dump("base", base)
+                Thread.sleep(600)
+                dump("compat", fresh.rawVideoModel(episodeId, compat = true))
+                break
+            }
+        } catch (e: Exception) {
+            println("ladderCompat error=${e.message?.take(150)}")
+        } finally {
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
     if (args.contains("--signmatrix")) {
         // 2026-11-06 结论仲裁：main 注释称旧 POST 接口「带完整签名头也全空」，2026-11-05 实测
         // 却是「带 x-gorgon/x-helios/x-medusa 签名 POST 恢复五档」，且 0.1.22 线上仍偶发空响应。
@@ -631,6 +670,23 @@ fun main(args: Array<String>) {
                 println(
                     "allSearchPage=$page; items=${result.items.size}; hasMore=${result.hasMore}; titles=${result.items.take(5).joinToString { it.title }}"
                 )
+                if (!result.hasMore) break
+            }
+        } finally {
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
+    if (args.contains("--search-ids")) {
+        // --search-all 只打印标题，无法定位待探剧集。同关键词逐页打印搜索结果的 id 与标题
+        // 对（仅元数据，不含地址与凭据），供 --tab-episodes / --tab-matrix 后续定位。
+        try {
+            val keyword = args.getOrNull(args.indexOf("--search-ids") + 1) ?: "大佬"
+            for (page in 1..2) {
+                val result = repository.searchAll(keyword, page)
+                for (item in result.items)
+                    println("searchId page=$page; id=${item.id}; title=${item.title}")
                 if (!result.hasMore) break
             }
         } finally {
