@@ -91,12 +91,18 @@ class Session(
         val index = indexFile.toString()
         val command =
             if (fileMode) {
+                // 输出几何钳制：竖屏高 >1280 时降到 720×1280（bytevc2 时代电视端长期验证的
+                // 安全几何）。MTK AVC 硬解竖屏 H.264 有平台缺陷：宽度非 16 倍数时按对齐垃圾
+                // 列重复渲染（1080 宽=2 幅、718 宽=3 幅，2026-11-28 实机确认），因此宽度用
+                // -16 取整到 16 倍数（分家 1080×1928 源会算出 718，正是三幅堆叠的根因）；
+                // 横屏源 ih≤1280 不缩放不放大。
                 listOf(
                     ffmpegPath, "-hide_banner", "-loglevel", "error", "-nostdin",
                     "-ss", offsetSec.toString(),
                     "-i", inputFile.toString(),
                     "-map", "0:v:0", "-map", "0:a:0?",
-                    "-c:v", encoder, "-b:v", TranscodeFeed.videoBitrate(table), "-g", "50",
+                    "-vf", "scale=-16:min(ih\\,1280)",
+                    "-c:v", encoder, "-b:v", TranscodeFeed.videoBitrate(table, 1280), "-g", "50",
                     "-c:a", "copy",
                     "-progress", progressFile.toString(),
                     "-f", "hls", "-hls_time", "2", "-hls_list_size", "0",

@@ -95,10 +95,15 @@ object TranscodeFeed {
     }
 
     /** 分辨率 → H.264 目标码率：局域网带宽富余，按「VVC 源 ×2 以上」给足，转码画质尽量无损感。 */
-    fun videoBitrate(table: Mp4SampleTable.Table): String = when {
-        maxOf(table.width, table.height) >= 1900 -> "8M"
-        maxOf(table.width, table.height) >= 1200 -> "5M"
-        maxOf(table.width, table.height) >= 1000 -> "3M"
-        else -> "1500k"
+    fun videoBitrate(table: Mp4SampleTable.Table, maxDimCap: Int? = null): String {
+        val maxDim = maxOf(table.width, table.height).let { max ->
+            if (maxDimCap != null) minOf(max, maxDimCap) else max
+        }
+        return when {
+            maxDim >= 1900 -> "8M"
+            maxDim >= 1200 -> "5M"
+            maxDim >= 1000 -> "3M"
+            else -> "1500k"
+        }
     }
 }
