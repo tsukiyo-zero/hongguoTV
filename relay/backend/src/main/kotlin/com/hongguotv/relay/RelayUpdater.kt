@@ -195,7 +195,8 @@ internal class RelayUpdater(
                 "rm -rf $target",
                 "ditto --rsrc \"\$APP_SRC\" $target",
                 "xattr -dr com.apple.quarantine $target 2>/dev/null || true",
-                "open $target",
+                // LaunchServices 在旧实例刚注销时偶发拒绝首次启动（1.1.1 实装反馈），带重试兜底。
+                "open $target || (sleep 2; open $target)",
             ).joinToString("\n") + "\n"
         }
 

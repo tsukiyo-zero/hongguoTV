@@ -23,7 +23,7 @@ import javax.jmdns.ServiceInfo
 import javax.swing.JOptionPane
 import kotlin.concurrent.thread
 
-const val VERSION = "1.1.1"
+const val VERSION = "1.1.2"
 
 private const val IDLE_TIMEOUT_MS = 10 * 60_000L
 
@@ -257,7 +257,12 @@ fun main(args: Array<String>) {
                     }
                     val script = updater.updatesDir.resolve("install.sh")
                     script.toFile().writeText(RelayUpdater.macInstallScript(file.toString(), bundle.toString()))
-                    val proc = ProcessBuilder("sh", script.toString()).start()
+                    // 脚本输出落 install.log：升级失败时留痕可查（1.1.1 首次实战「未自动重启」无日志可查的教训）。
+                    val proc =
+                        ProcessBuilder("sh", script.toString())
+                            .redirectErrorStream(true)
+                            .redirectOutput(ProcessBuilder.Redirect.appendTo(updater.updatesDir.resolve("install.log").toFile()))
+                            .start()
                     val quickFailed = proc.waitFor(4, TimeUnit.SECONDS) && proc.exitValue() != 0
                     if (quickFailed) {
                         tray?.setUpgrading(false)
@@ -301,11 +306,11 @@ fun main(args: Array<String>) {
     }
 
     tray?.status(
-        if (osIsWindows) "运行中 · $publicBase（驻留右下角托盘，Win11 默认收在「^」溢出区，可拖出常显）"
-        else "运行中 · $publicBase",
+        if (osIsWindows) "运行中 · v$VERSION · $publicBase（驻留右下角托盘，Win11 默认收在「^」溢出区，可拖出常显）"
+        else "运行中 · v$VERSION · $publicBase",
         notify = true,
     )
-    window?.update("运行中", addresses, relayToken)
+    window?.update("运行中 · v$VERSION", addresses, relayToken)
     if (osIsMac) window?.showWindow() // macOS 保留启动弹窗（已验收）；Windows 驻留以托盘为锚，状态窗口从托盘菜单按需打开（AWT Frame 在 Windows 必占任务栏）
     println("果映伴机 $VERSION 已启动：$publicBase（encoder=$encoder）")
     println("伴机令牌：$relayToken（TV 端播放设置需填入同一令牌；文件 $tokenFile）")
