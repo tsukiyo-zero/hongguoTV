@@ -31,10 +31,16 @@ internal data class ScheduleResult(
 internal object DanmakuLayout {
 
     /** 相邻两条弹幕入轨时刻之间的额外视觉呼吸间隔。 */
-    const val ENTRY_GAP_MS = 120L
+    const val ENTRY_GAP_MS = 80L
 
-    /** 允许的最大顺延；仍无安全轨道则丢弃，绝不与已有弹幕重叠。 */
-    const val MAX_DELAY_MS = 2000L
+    /** 自适应顺延：基准 2 秒，每轨道 +200ms，总上限 4 秒；行数越多越能吸收开场洪峰。 */
+    const val DELAY_BASE_MS = 2000L
+    const val DELAY_PER_LANE_MS = 200L
+    const val DELAY_CAP_MS = 4000L
+
+    /** 按轨道数推算顺延上限；仍无安全轨道则丢弃，绝不与已有弹幕重叠。 */
+    fun adaptiveDelayMs(lanes: Int): Long =
+        (DELAY_BASE_MS + DELAY_PER_LANE_MS * lanes.coerceAtLeast(0)).coerceAtMost(DELAY_CAP_MS)
 
     /**
      * 同轨道相邻两条（A 先入轨）零重叠所需的最早入轨时刻。
@@ -66,6 +72,7 @@ internal object DanmakuLayout {
      * @param screenWidthPx 画布宽度，几何判定的 S
      * @param widthOf 与绘制同一 Paint 的文本宽度实测（合并文本 ×N 也按合并后宽度）
      * @param merge 五秒内相同文本是否合并为「文字 ×N」，保留最早出现时间
+     * @param maxDelayMs 顺延上限；小于 0 表示按轨道数自适应（2000+200×lanes，上限 4000）
      */
     fun assign(
         items: List<DanmakuItem>,
@@ -74,9 +81,10 @@ internal object DanmakuLayout {
         screenWidthPx: Int,
         widthOf: (String) -> Float,
         merge: Boolean = true,
-        maxDelayMs: Long = MAX_DELAY_MS,
+        maxDelayMs: Long = -1L,
         entryGapMs: Long = ENTRY_GAP_MS,
     ): ScheduleResult {
+        val delayCap = if (maxDelayMs >= 0) maxDelayMs else adaptiveDelayMs(lanes)
         if (items.isEmpty() || lanes <= 0 || travelMs <= 0 || screenWidthPx <= 0) {
             return ScheduleResult(emptyList(), 0)
         }
@@ -119,7 +127,7 @@ internal object DanmakuLayout {
                 }
             }
             // 严格零重叠：超过顺延上限仍无安全轨道就丢弃，绝不叠进已占用轨道。
-            if (bestStart > at + maxDelayMs.coerceAtLeast(0)) {
+            if (bestStart > at + delayCap) {
                 dropped++
                 continue
             }
@@ -142,11 +150,11 @@ internal object DanmakuLayout {
         return minOf(requested, 1 + (areaHeight - glyphHeight) / lineHeight)
     }
 
-    /** 按屏幕高度推算可用轨道数，单条行高由字号决定。 */
-    fun laneCountFor(heightPx: Int, textSizePx: Int, topPaddingPx: Int, maxLanes: Int = 12): Int {
+    /** 按屏幕高度推算可用轨道数；行高与渲染一致（字号 + 行间距），避免容量被高估行高压低。 */
+    fun laneCountFor(heightPx: Int, textSizePx: Int, topPaddingPx: Int, lineGapPx: Int = 0, maxLanes: Int = 14): Int {
         if (heightPx <= 0 || textSizePx <= 0) return 1
         val usable = heightPx - topPaddingPx
-        val lineHeight = (textSizePx * 1.8f).toInt().coerceAtLeast(1)
+        val lineHeight = (textSizePx + lineGapPx).coerceAtLeast(1)
         return (usable / lineHeight).coerceIn(1, maxLanes)
     }
 }

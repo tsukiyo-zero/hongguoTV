@@ -68,12 +68,12 @@ class DanmakuLayoutTest {
 
     @Test
     fun burstIsDroppedNotStacked() {
-        // 同一刻 60 条、2 条轨道：宁可丢弃也不堆叠，顺延不超过 2 秒。
+        // 同一刻 60 条、2 条轨道：宁可丢弃也不堆叠，顺延上限按行数自适应（2 行 = 2.4 秒）。
         val rows = (0 until 60).map { DanmakuItem("id$it", "弹幕$it", 1000L) }
         val result = assign(rows, lanes = 2, travelMs = 12000)
         assertEquals(60, result.scheduled.size + result.droppedCount)
         assertTrue(result.droppedCount > 0)
-        assertTrue(result.scheduled.all { it.startMs in 1000L..3000L })
+        assertTrue(result.scheduled.all { it.startMs in 1000L..3400L })
         assertNoOverlap(result.scheduled, 12000, widthOf)
     }
 
@@ -106,7 +106,7 @@ class DanmakuLayoutTest {
         val w = max(widthOf("短"), widthOf(long.text)).toDouble()
         val settle = ceil(w * 12000 / (screenW + w)).toLong()
         assertTrue("长弹幕入轨早于安全窗口：${long.startMs} < $settle + $gap", long.startMs >= settle + gap)
-        assertTrue(long.startMs <= 1000L + DanmakuLayout.MAX_DELAY_MS)
+        assertTrue(long.startMs <= 1000L + DanmakuLayout.adaptiveDelayMs(1))
     }
 
     @Test
@@ -157,7 +157,7 @@ class DanmakuLayoutTest {
         val rows = (0 until 300).map { DanmakuItem("id$it", "弹幕$it", 1000) }
         val result = assign(rows, lanes = 2, travelMs = 12000)
         assertEquals(300, result.scheduled.size + result.droppedCount)
-        assertTrue(result.scheduled.all { it.startMs in 1000L..3000L })
+        assertTrue(result.scheduled.all { it.startMs in 1000L..3400L })
         assertNoOverlap(result.scheduled, 12000, widthOf)
     }
 
@@ -171,11 +171,12 @@ class DanmakuLayoutTest {
 
     @Test
     fun laneCountFollowsScreenHeight() {
-        // 1080p 屏幕、24dp 字号（约 72px 高）：可用高度能放下多条轨道
-        val lanes = DanmakuLayout.laneCountFor(heightPx = 1000, textSizePx = 72, topPaddingPx = 100)
-        assertTrue(lanes in 3..10)
+        // 1080p 屏幕、24dp 字号（行高与渲染一致 = 字号 + 行间距）：
+        assertEquals(12, DanmakuLayout.laneCountFor(heightPx = 1000, textSizePx = 72, topPaddingPx = 100))
         assertEquals(1, DanmakuLayout.laneCountFor(heightPx = 0, textSizePx = 72, topPaddingPx = 0))
-        assertEquals(12, DanmakuLayout.laneCountFor(heightPx = 10000, textSizePx = 10, topPaddingPx = 0))
+        assertEquals(14, DanmakuLayout.laneCountFor(heightPx = 10000, textSizePx = 10, topPaddingPx = 0))
+        // 上部区域 + 行间距 24px：可用 950px / 行高 72px = 13 行（旧 1.8 倍行高公式只有 11 行）
+        assertEquals(13, DanmakuLayout.laneCountFor(heightPx = 950, textSizePx = 48, topPaddingPx = 0, lineGapPx = 24))
     }
 
     @Test

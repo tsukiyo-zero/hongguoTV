@@ -269,6 +269,7 @@ class TvSocial(
                 .setMessage(report).setPositiveButton("关闭", null).show()
         })
         body.addView(label("真实时间轴弹幕；无内容时不使用普通评论代替。", 14f))
+        body.addView(label("行数越少越克制：密集时部分弹幕会主动让位，丢弃数见弹幕排查诊断。", 14f))
         body.addView(button("关闭") { d.dismiss() })
         d.setContentView(ScrollView(activity).apply { addView(body) })
         d.setOnDismissListener { if (anchor.isAttachedToWindow) anchor.requestFocus() }
@@ -515,7 +516,7 @@ class TvSocial(
             val travel = prefs.getInt("travel", 12000)
             val textSize = dp(prefs.getInt("font", 24))
             val configured = prefs.getInt("lanes", 0)
-            val automatic = DanmakuLayout.laneCountFor(areaHeight(), textSize, 0)
+            val automatic = DanmakuLayout.laneCountFor(areaHeight(), textSize, 0, lineGapPx = dp(12))
             paint.textSize = textSize.toFloat()
             val metrics = paint.fontMetrics
             val lanes = DanmakuLayout.visibleLanes(

@@ -26,6 +26,14 @@
 4. 用户终端提交（中文 Conventional Commits，Mimosa 约定）：①docs 设计+计划；②fix 排程核心+接线+测试；③docs README/SOCIAL 同步。push 后开 PR 到 main。
 5. 用户验收合并后，正式发版另行走 `release-tv.py` 统一入口（不属本计划）。
 
+## M4 迭代 2：实机反馈调优（2026-11-28）
+
+1. DanmakuLayout：`adaptiveDelayMs`（2000+200×lanes≤4000）替代固定 MAX_DELAY_MS（`assign` 的 `maxDelayMs<0` 走自适应）；`laneCountFor` 行高对齐渲染（新增 `lineGapPx` 参数、maxLanes 14）；`ENTRY_GAP_MS` 80。
+2. TvSocial：`laneCountFor` 传 `dp(12)`；设置底部加取舍提示行。
+3. 测试：新增 `delayCapScalesWithLanes`；burst/dense 顺延断言随自适应放宽；`laneCountFollowsScreenHeight` 改精确断言并补 13 行用例。
+4. 文档：README/SOCIAL 顺延描述改「2–4 秒自适应」+ 迭代段；spec/plan 补迭代 2 记录。
+5. 全量检查绿后追加提交到 fix-danmaku-overlap（PR #152 自动更新），临时 .debug 后缀重打包装机复测，装后还原。
+
 ## 工程约束
 
 - 提交：中文 Conventional Commits；Mimosa 拦 git commit → 我改文件、用户终端提交（沿用既有约定）。
