@@ -36,7 +36,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          # macos-14 已被 GitHub 托管 runner 退役（注解「configuration not supported」），
+          # 升到 macos-15：同为 arm64，JDK/ffmpeg 捆绑/jpackage 全链不变。
+          - os: macos-15
             name: macOS-arm64
           - os: windows-latest
             name: Windows-x64
