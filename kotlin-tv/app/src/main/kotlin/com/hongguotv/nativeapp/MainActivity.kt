@@ -3766,9 +3766,11 @@ class MainActivity : Activity() {
             ) ?: throw RelayException("伴机会话创建失败（可能正被占用）")
         val label =
             buildString {
-                append(if (pick.quality > 0) "${pick.quality}P" else "自动")
-                if ((pick.width ?: 0) > 0 && (pick.height ?: 0) > 0)
-                    append(" · ${pick.width}×${pick.height}")
+                append(if (pick.quality > 0) "${pick.quality}P源" else "自动源")
+                // 实际输出几何：伴机把竖屏高钳制到 1280（720P 安全域），源≤1280 原样透传。
+                val sourceH = pick.height ?: 0
+                if (sourceH > 1280) append(" · 输出 720×1280")
+                else if (sourceH > 0 && (pick.width ?: 0) > 0) append(" · 输出 ${pick.width}×$sourceH")
             }
         return RelayPlayback(sessionId, hlsUrl, label)
     }
@@ -3805,6 +3807,8 @@ class MainActivity : Activity() {
         p.setMediaSource(source)
         p.seekTo(position.coerceAtLeast(0))
         p.prepare()
+        // 倍速偏好对伴机源同样生效：此前切换伴机后会回落 1 倍速，需手动重按倍速。
+        p.setPlaybackSpeed(library.playbackSpeed)
         p.playWhenReady = foreground && requestedAutoplay && !pausedForLifecycle
     }
 
