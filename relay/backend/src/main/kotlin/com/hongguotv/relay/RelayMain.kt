@@ -23,7 +23,7 @@ import javax.jmdns.ServiceInfo
 import javax.swing.JOptionPane
 import kotlin.concurrent.thread
 
-const val VERSION = "1.1.0"
+const val VERSION = "1.1.1"
 
 private const val IDLE_TIMEOUT_MS = 10 * 60_000L
 
