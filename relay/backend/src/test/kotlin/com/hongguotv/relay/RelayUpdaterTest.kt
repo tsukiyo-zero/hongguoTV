@@ -243,6 +243,10 @@ class RelayUpdaterTest {
     @Test
     fun `失败回退命令按平台展示安装包`() {
         val file = File(temp.root, "x.dmg").toPath()
-        assertEquals(listOf("open", "-R", file.toString()), RelayUpdater.revealCommand(file))
+        // 回退命令本就随平台分派：Windows=资源管理器定位，mac=Finder 定位（CI matrix 两端都会跑到）。
+        val expected =
+            if (RelayUpdater.IS_WINDOWS) listOf("explorer", "/select,", file.toString())
+            else listOf("open", "-R", file.toString())
+        assertEquals(expected, RelayUpdater.revealCommand(file))
     }
 }
