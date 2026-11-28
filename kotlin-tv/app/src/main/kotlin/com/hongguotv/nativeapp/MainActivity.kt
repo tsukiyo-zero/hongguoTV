@@ -3729,7 +3729,12 @@ class MainActivity : Activity() {
                 }
             }
 
-    /** 解析 bytevc2 档并让伴机起转码会话；失败抛 RelayException。 */
+    /**
+     * 解析伴机可转码档并起转码会话；失败抛 RelayException。
+     * 两级选档（core RelaySourcePicker）：bytevc2 最高档优先（现行 VVC 管道），否则
+     * streamLadder 最高档——接管「单档 1080P 竖屏 bytevc1」等硬解播不了的新供给形态。
+     * 伴机 /health caps 缺失（老伴机）视为仅 bytevc2，此时不发起会话以免必败。
+     */
     private fun relayOpen(episodeId: String): RelayPlayback {
         val host = relayStore.host
         if (host.isBlank()) throw RelayException("伴机地址未配置，请在播放设置里填写")
@@ -3739,11 +3744,17 @@ class MainActivity : Activity() {
             throw RelayException("伴机缺少 VVC 解码器，请在其电脑上安装 ffmpeg 7+")
         health.optJSONObject("session")?.takeIf { it.optString("state") == "RUNNING" }
             ?.let { throw RelayException("伴机正被其他播放占用") }
+        val caps =
+            health.optJSONArray("caps")?.let { json ->
+                (0 until json.length()).mapNotNull { json.optString(it).takeIf(String::isNotEmpty) }
+            }
         val pick =
-            repository.rawVideoModel(episodeId)
-                .filter { it.codec in setOf("bytevc2", "bvc2") }
-                .maxByOrNull { it.quality }
-                ?: throw RelayException("本集没有 bytevc2 档位，伴机无用武之地")
+            RelaySourcePicker.pick(
+                repository.rawVideoModel(episodeId),
+                runCatching { repository.streamLadder(episodeId).renditions }.getOrDefault(emptyList()),
+            ) ?: throw RelayException("伴机没有可转码的档位")
+        if (!RelaySourcePicker.capsAllow(caps, pick.codec))
+            throw RelayException("伴机版本过旧，请升级伴机后重试")
         val keyB64 =
             pick.key?.let { android.util.Base64.encodeToString(it, android.util.Base64.NO_WRAP) }
         val (sessionId, hlsUrl) =
@@ -3751,6 +3762,7 @@ class MainActivity : Activity() {
                 pick.url,
                 keyB64,
                 if (pick.quality > 0) "${pick.quality}P" else "自动",
+                pick.codec,
             ) ?: throw RelayException("伴机会话创建失败（可能正被占用）")
         val label =
             buildString {

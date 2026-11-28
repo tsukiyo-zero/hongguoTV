@@ -1,6 +1,6 @@
 # 伴机兜底扩展：接管「单档 1080P 竖屏 bytevc1」新供给形态
 
-> **状态（2026-11-28）**：设计定稿，待实施。分支 `feature-relay-portrait-bytevc1`。
+> **状态（2026-11-28）**：已实施——core 选档器、伴机文件模式、caps/selftest、TV relayOpen 两级化全部落地；`:core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :relay:test` 全绿；实流冒烟《两块五的工钱，一条命的代价》EP1（88.8s 内容约 20s 转完 ≈4.4x 实时，progress/seek 正常）。待用户实机验收与 PR。实施记录见 2026-11-28-relay-portrait-bytevc1-plan.md。
 
 2026-11-28。前置调查结论（当日实网探针 + 电视 logcat，证据链见下）：官方**没有**新编码器。变化在**供给形态**：《两块五的工钱，一条命的代价》（series `7702704387797306430`，96 集）EP1–EP3 阶梯**仅一档** `1080P bytevc1 1080×1920`，容器为标准 `hvc1`+`hvcC`（muxer 签名 `ByteVC1-v1.9.4.4-ot`）。该形态同时打穿两条既有兜底：
 

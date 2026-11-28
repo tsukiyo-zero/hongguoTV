@@ -54,8 +54,12 @@ class RelayClientTest {
             playbackFailureSummary(RelayException("伴机不可达（1.2.3.4:46521）")),
         )
         assertEquals(
-            "本集没有 bytevc2 档位，伴机无用武之地",
-            playbackFailureSummary(RelayException("本集没有 bytevc2 档位，伴机无用武之地")),
+            "伴机没有可转码的档位",
+            playbackFailureSummary(RelayException("伴机没有可转码的档位")),
+        )
+        assertEquals(
+            "伴机版本过旧，请升级伴机后重试",
+            playbackFailureSummary(RelayException("伴机版本过旧，请升级伴机后重试")),
         )
     }
 
@@ -78,7 +82,7 @@ class RelayClientTest {
         server.enqueue(MockResponse().setResponseCode(500))
         val client = client()
         assertNull(client.health())
-        assertNull(client.createSession("https://cdn/x", null, "720P"))
+        assertNull(client.createSession("https://cdn/x", null, "720P", "bytevc2"))
         assertFalse(client.stop("abc"))
         // 已关端口：伴机不可达
         val port = server.port
@@ -96,7 +100,7 @@ class RelayClientTest {
                     .toString(),
             ),
         )
-        val session = client().createSession("https://cdn/x", "a2V5", "720P")!!
+        val session = client().createSession("https://cdn/x", "a2V5", "720P", "bytevc1")!!
         assertEquals("abc123", session.first)
         assertEquals("http://192.168.1.100:46521/hls/abc123/index.m3u8", session.second)
         val recorded = server.takeRequest()
@@ -104,6 +108,7 @@ class RelayClientTest {
         assertEquals("https://cdn/x", body.optString("url"))
         assertEquals("a2V5", body.optString("keyB64"))
         assertEquals("720P", body.optString("quality"))
+        assertEquals("bytevc1", body.optString("codec"))
         assertEquals("/session", recorded.path)
     }
 
@@ -123,7 +128,7 @@ class RelayClientTest {
                     .toString(),
             ),
         )
-        val session = client().createSession("https://cdn/x", null, "720P")!!
+        val session = client().createSession("https://cdn/x", null, "720P", "bytevc2")!!
         assertEquals("new1", session.first)
         assertEquals("/session", server.takeRequest().path)
         assertEquals("/session/old1", server.takeRequest().path) // 主动结束占用会话

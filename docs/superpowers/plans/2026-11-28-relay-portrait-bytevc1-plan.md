@@ -2,6 +2,8 @@
 
 2026-11-28。前置：设计 spec（../specs/2026-11-28-relay-portrait-bytevc1-design.md）。分支 `feature-relay-portrait-bytevc1`（基于 main `e510388`）。背景调查证据（供给形态实测、容器字节、电视故障链）记录在 spec 头部与当日会话，不在计划内重复。
 
+> **状态（2026-11-28）**：M0 已由用户提交（f969e75）；M1/M2/M3 代码与文档全部完成——四任务 + `:relay:test` 全绿；selftest 实流冒烟 EP1 整集 88.8s 约 20s 转完（≈4.4x 实时，progress 追加式读取修正后位置/速度正常）；验收包 `outputs/debug/hongguotv-tv-0.1.41-relay-portrait-bytevc1-debug.apk`（0.1.41/82 未动）。待用户实机验收 + M1/M2/M3 提交与 PR。
+
 ## M0 分支与探针落库（用户终端提交，Mimosa 约定）
 
 1. `git switch -c feature-relay-portrait-bytevc1`（未提交改动随分支携带；`.gitignore` 为用户既有改动，不包含在以下任何提交）。
