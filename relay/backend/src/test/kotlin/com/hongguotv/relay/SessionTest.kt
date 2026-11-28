@@ -165,11 +165,12 @@ class SessionTest {
         assertTrue(firstArgs.contains("-ss 0.0"))
         assertFalse(firstArgs.contains("-f vvc"))
         assertFalse(firstArgs.contains("pipe:0"))
-        // seek：缓存文件保留、命令换成目标 -ss，不重新下载（长度不变即复用）。
+        // seek：缓存文件保留、命令换成吸附后的 -ss（假表 sync=[0,5]、5fps → 1.5s 吸附到 1.0s
+        // 关键帧），不重新下载（长度不变即复用）。
         assertTrue(target.seek(1.5))
         eventually { File(temp.root, "args-slow.log").readLines().size >= 4 }
         assertTrue(File(dir, "input.mp4").isFile)
-        assertEquals(1.5, Regex("-ss ([0-9.]+)").find(File(temp.root, "args-slow.log").readLines().last())?.groupValues?.get(1)?.toDoubleOrNull() ?: -1.0, 1e-9)
+        assertEquals(1.0, Regex("-ss ([0-9.]+)").find(File(temp.root, "args-slow.log").readLines().last())?.groupValues?.get(1)?.toDoubleOrNull() ?: -1.0, 1e-9)
         target.stop()
         assertEquals(Session.State.STOPPED, target.state)
         assertFalse(dir.exists()) // stop 连缓存文件一并清理

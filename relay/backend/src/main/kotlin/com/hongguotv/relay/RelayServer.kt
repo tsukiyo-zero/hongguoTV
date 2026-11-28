@@ -54,11 +54,17 @@ class RelayServer(
             Mp4SampleTable.parse(source.readHeader())
                 ?: throw IOException("视频轨采样表解析失败（非 progressive MP4？）")
         if (fileMode) {
-            // 文件模式：音频取自缓存文件，无需音频回环通道与带内 RAP 扫描。
-            println("采样表（文件模式 $codec）：${table.samples.size} 样本，fps=${TranscodeFeed.frameRate(table)}")
+            // 文件模式：音频取自缓存文件，无需音频回环通道；stss 缺失时带内扫描补齐
+            // seek 吸附所需的同步样本（复用远程取流通道一次性读取）。
+            val rapIndices =
+                if (table.syncSamples.isEmpty()) TranscodeFeed.scanSyncSamples(source, table) else emptyList()
+            println(
+                "采样表（文件模式 $codec）：${table.samples.size} 样本，stss=${table.syncSamples.size} 项，" +
+                    "带内 RAP=${rapIndices.size} 个，fps=${TranscodeFeed.frameRate(table)}",
+            )
             return manager.create(id) { dir ->
                 Session(
-                    id, source, source, table, emptyList(), dir,
+                    id, source, source, table, rapIndices, dir,
                     "http://127.0.0.1:$listenPort/a/$id/audio.mp4", ffmpegPath, encoder, codec,
                 )
             }

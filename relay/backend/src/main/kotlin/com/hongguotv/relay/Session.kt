@@ -42,6 +42,8 @@ class Session(
     private val fileMode = codec.lowercase() !in setOf("bytevc2", "bvc2")
     private val inputFile = workDir.resolve(INPUT_FILE)
     private val progressFile = workDir.resolve("progress.txt")
+    /** seek 吸附用的同步样本集：stss 在表里直接用；stss 缺失时用 buildSession 带内扫描的 RAP 下标。 */
+    private val seekSync: List<Int> = table.syncSamples.ifEmpty { rapIndices }
 
     @Volatile var state = State.RUNNING
         private set
@@ -91,19 +93,24 @@ class Session(
         val index = indexFile.toString()
         val command =
             if (fileMode) {
+                // seek 目标吸附到关键帧：音视频落点一致，HLS 分段时间轴才不会出现
+                // 重叠/空洞（seek 后音画越播越歪的根因，2026-11-28 实测复现）。
+                val seekSec = TranscodeFeed.seekSeconds(table, seekSync, offsetSec)
+                positionUs = (seekSec * 1_000_000).toLong()
                 // 输出几何钳制：竖屏高 >1280 时降到 720×1280（bytevc2 时代电视端长期验证的
                 // 安全几何）。MTK AVC 硬解竖屏 H.264 有平台缺陷：宽度非 16 倍数时按对齐垃圾
                 // 列重复渲染（1080 宽=2 幅、718 宽=3 幅，2026-11-28 实机确认），因此宽度用
                 // -16 取整到 16 倍数（分家 1080×1928 源会算出 718，正是三幅堆叠的根因）；
-                // 横屏源 ih≤1280 不缩放不放大。
+                // 横屏源 ih≤1280 不缩放不放大。音频重编码 AAC：流复制在 seek 后时间轴会
+                // 与视频分段错位，重编码让音视频时间戳同源严格对齐。
                 listOf(
                     ffmpegPath, "-hide_banner", "-loglevel", "error", "-nostdin",
-                    "-ss", offsetSec.toString(),
+                    "-ss", seekSec.toString(),
                     "-i", inputFile.toString(),
                     "-map", "0:v:0", "-map", "0:a:0?",
                     "-vf", "scale=-16:min(ih\\,1280)",
                     "-c:v", encoder, "-b:v", TranscodeFeed.videoBitrate(table, 1280), "-g", "50",
-                    "-c:a", "copy",
+                    "-c:a", "aac", "-b:a", "160k",
                     "-progress", progressFile.toString(),
                     "-f", "hls", "-hls_time", "2", "-hls_list_size", "0",
                     "-hls_playlist_type", "event",
@@ -138,7 +145,7 @@ class Session(
         val gen = generation.incrementAndGet()
         if (fileMode) {
             // 无喂帧线程；进度由 watch 从 -progress 产物解析（out_time_us）。
-            positionUs = (offsetSec * 1_000_000).toLong()
+            // positionUs 已在命令构建时按吸附后的 seekSec 置初值，交由 watch 跟随。
         } else {
             feedThread =
                 thread(isDaemon = true, name = "feed-$id") { feed(proc, startIdx, gen) }

@@ -106,4 +106,24 @@ object TranscodeFeed {
             else -> "1500k"
         }
     }
+
+    /**
+     * 把 seek 目标吸附到 ≤ 目标的最近同步样本（关键帧）时间，避免 ffmpeg 输入级 -ss 落在
+     * GOP 中间：音视频 seek 落点一致，HLS 分段时间轴才能保持连续（2026-11-28 实测 seek 后
+     * 分段 PTS 重叠+音频空洞是音画越播越歪的根因）。同步样本信息为空时原样返回。
+     */
+    fun seekSeconds(
+        table: Mp4SampleTable.Table,
+        syncSamples: List<Int>,
+        offsetSec: Double,
+    ): Double {
+        if (syncSamples.isEmpty()) return offsetSec
+        val targetUs = (offsetSec * 1_000_000).toLong()
+        var best: Long? = null
+        for (index in syncSamples) {
+            val dts = table.samples.getOrNull(index)?.dts ?: continue
+            if (dts <= targetUs && (best == null || dts > best)) best = dts
+        }
+        return (best ?: return offsetSec) / 1_000_000.0
+    }
 }
