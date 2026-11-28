@@ -70,6 +70,8 @@ class TvSocialTest {
             assertEquals("密度：标准（自动）", density.text.toString())
             row("精确行数").performClick()
             row("精确行数").performClick()
+            // 新档位表 0→2→4→6：三击经过新增的 2 行档后落在非预设的 6 行，覆盖「自定义」分支
+            row("精确行数").performClick()
             assertEquals("密度：自定义 6 行", density.text.toString())
             val page = JSONObject().put("items", JSONArray())
             val field = social.javaClass.getDeclaredField("pages").apply { isAccessible = true }
