@@ -22,6 +22,8 @@ class RelayServer(
     private val ffmpegOk: Boolean,
     private val ffmpegPath: String,
     private val relayToken: String,
+    /** 伴机可转码的供给侧编码族（codec_type 词表子集），TV 端据此决定是否发起兜底。 */
+    private val caps: List<String>,
     private val activitySink: (String) -> Unit,
     private val sourceFactory: (StreamInfo) -> VideoSource,
 ) {
@@ -42,26 +44,37 @@ class RelayServer(
 
     fun stop() = server.stop(0)
 
-    /** 解析采样表并创建会话；selftest 与 REST 共用。 */
-    fun buildSession(info: StreamInfo): Session {
+    /** 解析采样表并创建会话；selftest 与 REST 共用。codec 决定输入模式（bytevc2=VVC 管道，其他=整文件缓存）。 */
+    fun buildSession(info: StreamInfo, codec: String): Session {
         val id = UUID.randomUUID().toString().replace("-", "").take(12)
+        val fileMode = codec.lowercase() !in setOf("bytevc2", "bvc2")
         val source = sourceFactory(info)
         source.prepare()
         val table =
             Mp4SampleTable.parse(source.readHeader())
                 ?: throw IOException("视频轨采样表解析失败（非 progressive MP4？）")
+        if (fileMode) {
+            // 文件模式：音频取自缓存文件，无需音频回环通道与带内 RAP 扫描。
+            println("采样表（文件模式 $codec）：${table.samples.size} 样本，fps=${TranscodeFeed.frameRate(table)}")
+            return manager.create(id) { dir ->
+                Session(
+                    id, source, source, table, emptyList(), dir,
+                    "http://127.0.0.1:$listenPort/a/$id/audio.mp4", ffmpegPath, encoder, codec,
+                )
+            }
+        }
         val audioSource = sourceFactory(info).also { it.prepare() }
         // 字节家流 stss 缺失：从带内 NAL 类型扫描真实随机访问点，供 seek 回退。
         val rapIndices =
             if (table.syncSamples.isEmpty()) TranscodeFeed.scanSyncSamples(source, table) else emptyList()
         println(
-            "采样表：${table.samples.size} 样本，stss=${table.syncSamples.size} 项，" +
+            "采样表（VVC 管道）：${table.samples.size} 样本，stss=${table.syncSamples.size} 项，" +
                 "带内 RAP=${rapIndices.size} 个，fps=${TranscodeFeed.frameRate(table)}",
         )
         return manager.create(id) { dir ->
             Session(
                 id, source, audioSource, table, rapIndices, dir,
-                "http://127.0.0.1:$listenPort/a/$id/audio.mp4", ffmpegPath, encoder,
+                "http://127.0.0.1:$listenPort/a/$id/audio.mp4", ffmpegPath, encoder, codec,
             )
         }
     }
@@ -106,6 +119,7 @@ class RelayServer(
                 .put("version", version)
                 .put("encoder", encoder)
                 .put("ffmpegOk", ffmpegOk)
+                .put("caps", org.json.JSONArray(caps))
                 .put(
                     "session",
                     current?.let {
@@ -134,9 +148,17 @@ class RelayServer(
             body.optString("keyB64").takeIf(String::isNotBlank)
                 ?.let { Base64.getDecoder().decode(it) }
         val quality = body.optString("quality").takeIf(String::isNotBlank) ?: "自动"
+        // 供给侧编码标签：缺省按 bytevc2（老 TV 客户端无此字段，行为不变）；未知标签一律拒绝。
+        val codec = body.optString("codec").takeIf(String::isNotBlank) ?: "bytevc2"
+        require(codec.lowercase() in setOf("bytevc2", "bvc2", "bytevc1", "bvc1", "hvc1", "hev1")) {
+            "不支持的编码标签：$codec"
+        }
+        require(caps.any { it.equals(codec, ignoreCase = true) }) {
+            "伴机 ffmpeg 不支持该编码（版本过旧？）：$codec"
+        }
         val session =
             try {
-                buildSession(StreamInfo(url, key, quality))
+                buildSession(StreamInfo(url, key, quality), codec)
             } catch (busy: SessionManager.BusyException) {
                 // 409 带上占用会话 id，TV 端可自行 DELETE 后重试。
                 return json(

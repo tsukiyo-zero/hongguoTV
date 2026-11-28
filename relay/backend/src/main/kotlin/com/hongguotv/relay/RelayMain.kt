@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// 果映伴机：局域网转码服务。TV 端遇 bytevc2 锁定集时把 stream info 交给本服务，
-// 本机完成 VVC 软解 + H.264 转码并以 HLS 供 TV 硬解播放。零登录态、密钥仅存内存。
+// 果映伴机：局域网转码服务。TV 端硬解播不了（bytevc2 锁定集、单档 1080P 竖屏 bytevc1 等
+// 供给形态）时把 stream info 交给本服务，本机完成 VVC/HEVC 软解 + H.264 转码并以 HLS 供
+// TV 硬解播放。零登录态、密钥仅存内存。
 package com.hongguotv.relay
 
 import com.hongguotv.core.ContentRepository
+import com.hongguotv.core.RelaySourcePicker
 import okhttp3.OkHttpClient
 import java.awt.Dialog
 import java.awt.Frame
@@ -18,7 +20,7 @@ import javax.jmdns.JmDNS
 import javax.jmdns.ServiceInfo
 import javax.swing.JOptionPane
 
-const val VERSION = "1.0.0"
+const val VERSION = "1.1.0"
 
 private const val IDLE_TIMEOUT_MS = 10 * 60_000L
 
@@ -109,6 +111,10 @@ fun main(args: Array<String>) {
             }.getOrDefault(false)
         })
     val encoder = ffmpegResolved?.let { detectEncoder(it) } ?: ""
+    // caps：供给侧 codec_type 词表（vvc 解码器↔bytevc2，hevc 解码器↔bytevc1），TV 端据此
+    // 判断该集能否交给本伴机（缺探测失败/无 ffmpeg → 空，TV 端回落错误面板）。
+    val caps = ffmpegResolved?.let { detectCaps(it) } ?: emptyList()
+    println("caps：${if (caps.isEmpty()) "无（ffmpeg 能力探测失败）" else caps.joinToString("、")}")
     if (ffmpegResolved == null) {
         val message = "未找到带 VVC 解码器的 ffmpeg（需 7+）。已尝试捆绑目录、GUOYING_FFMPEG 与系统 PATH。"
         tray?.status("错误：缺少 ffmpeg", notify = true, error = true)
@@ -128,6 +134,7 @@ fun main(args: Array<String>) {
                 ffmpegResolved != null,
                 ffmpegResolved ?: ffmpegExplicit ?: "ffmpeg",
                 relayToken,
+                caps,
                 { line -> println(line); window?.updateActivity(line) },
             ) { info ->
                 RemoteVideoSource(http, info)
@@ -164,13 +171,18 @@ fun main(args: Array<String>) {
 
     selftest?.let { episode ->
         println("自测模式：解析 $episode …")
-        val renditions =
-            ContentRepository().rawVideoModel(episode)
-                .filter { it.codec in setOf("bytevc2", "bvc2") }
-                .sortedByDescending { it.quality }
-        require(renditions.isNotEmpty()) { "该集没有 bytevc2 档位" }
-        println("bytevc2 档位：" + renditions.joinToString("、") { "${it.quality}P(${it.width}x${it.height})" })
-        val session = server.buildSession(renditions.first().toStreamInfo())
+        val repo = ContentRepository()
+        // 两级选档与 TV 端 relayOpen 同策略：bytevc2 优先，否则 ladder 最高档（新供给形态兜底）。
+        val picked =
+            RelaySourcePicker.pick(
+                repo.rawVideoModel(episode),
+                runCatching { repo.streamLadder(episode).renditions }.getOrDefault(emptyList()),
+            )
+        requireNotNull(picked) { "该集没有可转码的档位" }
+        println(
+            "所选档位：${picked.quality}P ${picked.codec}（${picked.width}x${picked.height}）",
+        )
+        val session = server.buildSession(picked.toStreamInfo(), picked.codec)
         println("自测会话 ${session.id} 已启动：${publicBase}/hls/${session.id}/index.m3u8")
     }
 
@@ -216,6 +228,21 @@ private fun detectEncoder(ffmpeg: String): String {
         }.getOrDefault(false)
     return if (videoToolbox) "h264_videotoolbox" else "libx264"
 }
+
+/** ffmpeg 解码器能力 → 供给侧 codec_type 词表子集（vvc↔bytevc2，hevc↔bytevc1）。 */
+private fun detectCaps(ffmpeg: String): List<String> =
+    runCatching {
+        val process =
+            ProcessBuilder(ffmpeg, "-hide_banner", "-decoders")
+                .redirectErrorStream(true)
+                .start()
+        val output = process.inputStream.bufferedReader().readText()
+        process.waitFor()
+        buildList {
+            if (Regex("\\bvvc\\b").containsMatchIn(output)) add("bytevc2")
+            if (Regex("\\bhevc\\b").containsMatchIn(output)) add("bytevc1")
+        }
+    }.getOrDefault(emptyList())
 
 private fun registerMdns(port: Int): JmDNS {
     val jmdns = JmDNS.create(InetAddress.getLocalHost(), "guoying-relay")

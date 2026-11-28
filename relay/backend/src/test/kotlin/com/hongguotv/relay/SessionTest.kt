@@ -70,6 +70,17 @@ class SessionTest {
             "http://127.0.0.1:9/a/t1/audio.mp4", script.absolutePath, "libx264",
         )
 
+    /** 文件模式会话：bytevc1 标签 + 2MB 假源（ensureInput 落盘 input.mp4）。 */
+    private fun fileSession(
+        script: File,
+        dir: File,
+        total: Long = 2L * (1 shl 20),
+        limit: Long = Session.MAX_INPUT_BYTES,
+    ) = Session(
+        "t1", FakeSource(total), FakeSource(total), fakeTable(), emptyList(), dir.toPath(),
+        "http://127.0.0.1:9/a/t1/audio.mp4", script.absolutePath, "libx264", "bytevc1", limit,
+    )
+
     private fun eventually(timeoutMs: Long = 8_000, check: () -> Boolean) {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
@@ -140,5 +151,38 @@ class SessionTest {
         assertTrue(target.alive)
         manager.sweepIdle(System.currentTimeMillis() + 120_000, 60_000)
         assertEquals(Session.State.STOPPED, target.state)
+    }
+
+    @Test
+    fun `文件模式走整文件输入且 seek 复用缓存`() {
+        val dir = temp.newFolder("filemode")
+        val target = fileSession(fakeFfmpeg(slow = true), dir)
+        eventually { File(dir, "input.mp4").isFile }
+        assertEquals((2L * (1 shl 20)), File(dir, "input.mp4").length())
+        eventually { File(temp.root, "args-slow.log").readLines().size >= 2 }
+        val firstArgs = File(temp.root, "args-slow.log").readLines().last()
+        assertTrue(firstArgs.contains("-i ${dir.absolutePath}/input.mp4"))
+        assertTrue(firstArgs.contains("-ss 0.0"))
+        assertFalse(firstArgs.contains("-f vvc"))
+        assertFalse(firstArgs.contains("pipe:0"))
+        // seek：缓存文件保留、命令换成目标 -ss，不重新下载（长度不变即复用）。
+        assertTrue(target.seek(1.5))
+        eventually { File(temp.root, "args-slow.log").readLines().size >= 4 }
+        assertTrue(File(dir, "input.mp4").isFile)
+        assertEquals(1.5, Regex("-ss ([0-9.]+)").find(File(temp.root, "args-slow.log").readLines().last())?.groupValues?.get(1)?.toDoubleOrNull() ?: -1.0, 1e-9)
+        target.stop()
+        assertEquals(Session.State.STOPPED, target.state)
+        assertFalse(dir.exists()) // stop 连缓存文件一并清理
+    }
+
+    @Test
+    fun `文件模式超限源按失败处理不起转码`() {
+        val dir = temp.newFolder("toobig")
+        // 2MB 假源 + 1MB 阈值：ensureInput 首个 1MB 块后即超限中止，不起 ffmpeg。
+        val target = fileSession(fakeFfmpeg(slow = true), dir, limit = 1 shl 20)
+        eventually { target.state == Session.State.FAILED }
+        assertTrue(target.failReason.orEmpty().contains("源体积超限"))
+        assertFalse(File(dir, "input.mp4").exists())
+        assertFalse(File(temp.root, "args-slow.log").exists()) // ffmpeg 从未启动
     }
 }
